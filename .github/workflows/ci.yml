@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+
+jobs:
+  # CI runs on plain CPU runners: no GPU, no NVIDIA runtime, no model weights.
+  backend:
+    name: Backend (ruff, mypy, contracts, pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Type check (mypy, strict)
+        run: mypy
+
+      - name: Architecture contracts (import-linter)
+        run: lint-imports --config .importlinter
+        env:
+          PYTHONPATH: src
+
+      - name: Unit tests
+        # Integration tests need live infrastructure and are excluded here;
+        # they run in the `integration` job below.
+        run: pytest -m "not integration and not gpu"
+
+  integration:
+    name: Integration (postgres, redis, minio)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: visionforge
+          POSTGRES_PASSWORD: visionforge
+          POSTGRES_DB: visionforge
+        ports: ["5442:5432"]
+        options: >-
+          --health-cmd "pg_isready -U visionforge"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6389:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 3s --health-retries 5
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: visionforge
+          MINIO_ROOT_PASSWORD: visionforge-dev-secret
+          MINIO_DEFAULT_BUCKETS: visionforge-media,visionforge-derivatives,visionforge-renders
+        ports: ["9000:9000"]
+    env:
+      DATABASE_URL: postgresql+psycopg://visionforge:visionforge@localhost:5442/visionforge
+      REDIS_URL: redis://localhost:6389/0
+      S3_ENDPOINT_URL: http://localhost:9000
+      S3_ACCESS_KEY: visionforge
+      S3_SECRET_KEY: visionforge-dev-secret
+      ENVIRONMENT: ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Apply migrations
+        run: alembic upgrade head
+        env:
+          PYTHONPATH: src
+
+      - name: Integration tests
+        run: pytest -m integration
+
+  frontend:
+    name: Frontend (lint, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
+
+  infrastructure:
+    name: Infrastructure (compose config)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose
+        run: docker compose config --quiet
+
+      - name: Fail if .env is tracked
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env must never be committed"
+            exit 1
+          fi
+          echo ".env is not tracked"

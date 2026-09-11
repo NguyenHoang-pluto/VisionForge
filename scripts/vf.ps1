@@ -1,0 +1,124 @@
+<#
+.SYNOPSIS
+    VisionForge developer commands (Windows).
+.DESCRIPTION
+    GNU make is not installed on this machine, so this script is the primary
+    developer entrypoint. A Makefile with the same targets exists for Linux/CI.
+.EXAMPLE
+    .\scripts\vf.ps1 infra-up
+    .\scripts\vf.ps1 check
+#>
+param(
+    [Parameter(Position = 0)]
+    [ValidateSet('setup', 'infra-up', 'infra-down', 'infra-reset', 'infra-status',
+                 'migrate', 'api', 'web', 'worker-cpu',
+                 'test', 'test-integration', 'lint', 'format', 'typecheck',
+                 'contracts', 'web-lint', 'web-build', 'compose-check', 'check', 'help')]
+    [string]$Command = 'help'
+)
+
+$ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
+$Python = Join-Path $Root '.venv\Scripts\python.exe'
+$ApiDir = Join-Path $Root 'apps\api'
+$WebDir = Join-Path $Root 'apps\web'
+$Compose = Join-Path $Root 'docker-compose.yml'
+
+function Invoke-Step([string]$Name, [scriptblock]$Body) {
+    Write-Host "==> $Name" -ForegroundColor Cyan
+    & $Body
+    if ($LASTEXITCODE -ne 0) { throw "$Name failed (exit $LASTEXITCODE)" }
+}
+
+function Invoke-Api([scriptblock]$Body) {
+    Push-Location $ApiDir
+    $env:PYTHONPATH = 'src'
+    try { & $Body } finally { Pop-Location }
+}
+
+function Invoke-Web([scriptblock]$Body) {
+    Push-Location $WebDir
+    try { & $Body } finally { Pop-Location }
+}
+
+switch ($Command) {
+    'setup' {
+        Invoke-Step 'create venv'      { py -3.11 -m venv (Join-Path $Root '.venv') }
+        Invoke-Step 'install backend'  { & $Python -m pip install -e "$ApiDir[dev]" }
+        Invoke-Step 'install frontend' { Invoke-Web { pnpm install } }
+        Write-Host 'Setup complete. Next: .\scripts\vf.ps1 infra-up' -ForegroundColor Green
+    }
+
+    'infra-up' {
+        Invoke-Step 'start infrastructure' { docker compose -f $Compose up -d }
+        Invoke-Step 'apply migrations'     { Invoke-Api { & $Python -m alembic upgrade head } }
+    }
+    'infra-down'   { docker compose -f $Compose down }
+    'infra-reset'  { docker compose -f $Compose down -v }
+    'infra-status' { docker compose -f $Compose ps }
+    'migrate'      { Invoke-Api { & $Python -m alembic upgrade head } }
+
+    'api' { Invoke-Api { & $Python -m visionforge } }
+    'web' { Invoke-Web { pnpm dev } }
+    'worker-cpu' {
+        Invoke-Api {
+            & $Python -m celery -A visionforge.workers.cpu worker `
+                --pool=threads --concurrency=2 -Q cpu -l info
+        }
+    }
+
+    'test'             { Invoke-Api { & $Python -m pytest -m 'not integration and not gpu' } }
+    'test-integration' { Invoke-Api { & $Python -m pytest -m integration } }
+    'lint' {
+        Invoke-Api { & $Python -m ruff check . ; if ($?) { & $Python -m ruff format --check . } }
+    }
+    'format' {
+        Invoke-Api { & $Python -m ruff check --fix . ; & $Python -m ruff format . }
+    }
+    'typecheck' { Invoke-Api { & $Python -m mypy } }
+    'contracts' { Invoke-Api { & (Join-Path $Root '.venv\Scripts\lint-imports.exe') --config .importlinter } }
+    'web-lint'  { Invoke-Web { pnpm lint } }
+    'web-build' { Invoke-Web { pnpm build } }
+    'compose-check' {
+        docker compose -f $Compose config --quiet
+        if ($?) { Write-Host 'compose config valid' -ForegroundColor Green }
+    }
+
+    'check' {
+        Invoke-Step 'ruff check'  { Invoke-Api { & $Python -m ruff check . } }
+        Invoke-Step 'ruff format' { Invoke-Api { & $Python -m ruff format --check . } }
+        Invoke-Step 'mypy'        { Invoke-Api { & $Python -m mypy } }
+        Invoke-Step 'contracts'   { Invoke-Api { & (Join-Path $Root '.venv\Scripts\lint-imports.exe') --config .importlinter } }
+        Invoke-Step 'pytest'      { Invoke-Api { & $Python -m pytest -m 'not integration and not gpu' } }
+        Invoke-Step 'web lint'    { Invoke-Web { pnpm lint } }
+        Invoke-Step 'web build'   { Invoke-Web { pnpm build } }
+        Invoke-Step 'compose'     { docker compose -f $Compose config --quiet }
+        Write-Host 'All checks passed.' -ForegroundColor Green
+    }
+
+    default {
+        Write-Host "VisionForge developer commands"
+        Write-Host ""
+        Write-Host "  Setup"
+        Write-Host "    setup              Create the venv and install backend + frontend deps"
+        Write-Host ""
+        Write-Host "  Infrastructure (postgres, redis, minio)"
+        Write-Host "    infra-up           Start containers and apply migrations"
+        Write-Host "    infra-down         Stop containers, keep data"
+        Write-Host "    infra-reset        Stop containers and DELETE data volumes"
+        Write-Host "    infra-status       Show container status"
+        Write-Host "    migrate            Apply Alembic migrations"
+        Write-Host ""
+        Write-Host "  Run"
+        Write-Host "    api                Start the API on http://localhost:8000"
+        Write-Host "    web                Start the web app on http://localhost:3000"
+        Write-Host "    worker-cpu         Start a Celery worker on the cpu queue"
+        Write-Host ""
+        Write-Host "  Quality"
+        Write-Host "    check              Run everything CI runs"
+        Write-Host "    test               Unit tests (no infrastructure needed)"
+        Write-Host "    test-integration   Integration tests (requires infra-up)"
+        Write-Host "    lint / format / typecheck / contracts"
+        Write-Host "    web-lint / web-build / compose-check"
+    }
+}

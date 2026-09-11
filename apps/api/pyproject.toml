@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visionforge-api"
+version = "0.1.0"
+description = "VisionForge API - AI-assisted media creation platform"
+requires-python = "==3.11.*"
+dependencies = [
+    # --- Web framework ---
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    # --- Configuration & validation ---
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    # --- Database ---
+    "sqlalchemy==2.0.36",
+    "alembic==1.14.0",
+    "psycopg[binary]==3.2.3",
+    "pgvector==0.3.6",
+    # --- Cache / broker ---
+    "redis==5.2.1",
+    "celery==5.4.0",
+    # --- Object storage (S3-compatible: MinIO locally, S3 later) ---
+    "boto3==1.35.92",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.1",
+    "httpx==0.28.1",
+    "ruff==0.8.6",
+    "mypy==1.14.1",
+    "import-linter==2.1",
+    "types-boto3==1.35.92",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "B",         # bugbear
+    "UP",        # pyupgrade
+    "C4",        # comprehensions
+    "SIM",       # simplify
+    "TID",       # tidy imports
+    "RUF",       # ruff-specific
+]
+ignore = [
+    "B008",  # FastAPI uses function calls in argument defaults (Depends)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["visionforge"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+packages = ["visionforge"]
+
+[[tool.mypy.overrides]]
+module = ["celery.*", "pgvector.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: requires live infrastructure (postgres/redis/minio)",
+    "gpu: requires a CUDA-capable GPU (never run in CI)",
+]

@@ -1,0 +1,42 @@
+# Mechanically enforces the Phase 0 layering decision.
+# Run with: lint-imports --config .importlinter
+[importlinter]
+root_package = visionforge
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Clean architecture layers (api -> application -> domain <- infra)
+type = layers
+layers =
+    visionforge.api
+    visionforge.application
+    visionforge.domain
+containers =
+
+[importlinter:contract:domain-is-pure]
+name = Domain layer must not depend on infrastructure
+type = forbidden
+source_modules =
+    visionforge.domain
+forbidden_modules =
+    visionforge.infra
+    visionforge.api
+    sqlalchemy
+    fastapi
+    redis
+    boto3
+    celery
+
+[importlinter:contract:api-never-touches-media]
+name = Phase 0 rule #1 - the API process never imports heavy media/ML code
+type = forbidden
+source_modules =
+    visionforge.api
+    visionforge.application
+forbidden_modules =
+    torch
+    torchvision
+    cv2
+    ffmpeg
+    numpy
+    PIL
