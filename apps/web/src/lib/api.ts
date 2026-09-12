@@ -148,6 +148,66 @@ export type AspectRatio = "16:9" | "9:16" | "1:1";
 export type ClipOrder = "score_desc" | "sequence";
 export type RenderStatus = "pending" | "rendering" | "ready" | "failed" | "cancelled";
 
+export type PlannerMode = "automatic" | "rules" | "ai";
+export type QualityPreset = "draft" | "balanced" | "high";
+export type EditStyle =
+  | "cinematic"
+  | "fast_montage"
+  | "sports_highlight"
+  | "gaming"
+  | "anime"
+  | "nature"
+  | "social"
+  | "custom";
+
+/** What the server can plan with. Never contains a credential. */
+export interface PlannerCapabilities {
+  ai_available: boolean;
+  provider: string | null;
+  model: string | null;
+  /** True when the "provider" is the deterministic local stub, not a model. */
+  is_stub: boolean;
+  error: string | null;
+  modes: PlannerMode[];
+  styles: {
+    value: EditStyle;
+    label: string;
+    description: string;
+    default_duration_ms: number;
+    default_aspect: AspectRatio;
+    min_clip_ms: number;
+    max_clip_ms: number;
+  }[];
+  aspect_ratios: { value: AspectRatio; width: number; height: number }[];
+  fps_presets: number[];
+  quality_presets: QualityPreset[];
+  prompt_version: string;
+  max_request_chars: number;
+}
+
+/** Which planner ran, and why. Present on every plan. */
+export interface ModeRecord {
+  mode: PlannerMode;
+  reason: string;
+  inferred_style: EditStyle | null;
+}
+
+/** Provenance for a plan a model was involved in. Never contains a key. */
+export interface LlmRecord {
+  provider: string | null;
+  model: string | null;
+  prompt_version: string;
+  status: string;
+  attempts: number;
+  latency_ms: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  request_id: string | null;
+  fallback_reason: string | null;
+  fallback_detail: string | null;
+  violations: { code: string; message: string }[];
+}
+
 export interface PlanSegment {
   media_id: string;
   order: number;
@@ -168,6 +228,7 @@ export interface PlanDocument {
     fps: number;
     fit: string;
     audio: string;
+    quality: QualityPreset;
   };
   segments: PlanSegment[];
   total_duration_ms: number;
@@ -190,6 +251,8 @@ export interface EditPlan {
   created_at: string;
   plan: PlanDocument;
   selection: SelectionRecord;
+  mode: ModeRecord | null;
+  llm: LlmRecord | null;
 }
 
 export interface Render {
@@ -212,12 +275,34 @@ export interface Render {
 }
 
 export interface PlanOptions {
+  mode?: PlannerMode;
+  style?: EditStyle | null;
+  /** The user's own words. Bounded server-side; never stored, only digested. */
+  request_text?: string | null;
   target_duration_ms?: number;
   max_clips?: number;
   min_clips?: number;
   aspect_ratio?: AspectRatio;
   fps?: number;
   order?: ClipOrder;
+  quality?: QualityPreset;
+}
+
+/** One planning call, successful or not. */
+export interface LlmRun {
+  id: string;
+  edit_plan_id: string | null;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  status: string;
+  attempts: number;
+  latency_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  fallback_reason: string | null;
+  fallback_detail: string | null;
+  created_at: string;
 }
 
 export interface UploadTicket {
@@ -371,6 +456,12 @@ export const api = {
 
   getRender: (projectId: string, renderId: string) =>
     request<Render>(`/api/projects/${projectId}/renders/${renderId}`),
+
+  // --- planner ---
+  plannerCapabilities: () => request<PlannerCapabilities>("/api/planner/capabilities"),
+
+  listLlmRuns: (projectId: string) =>
+    request<{ items: LlmRun[]; total: number }>(`/api/projects/${projectId}/llm-runs`),
 };
 
 /**

@@ -9,8 +9,11 @@ import {
   type AspectRatio,
   type ClipOrder,
   type EditPlan,
+  type EditStyle,
   type MediaAsset,
+  type PlannerMode,
   type PlanSegment,
+  type QualityPreset,
   type Render,
   type RenderStatus,
 } from "@/lib/api";
@@ -34,6 +37,43 @@ const ORDERS: { value: ClipOrder; label: string }[] = [
   { value: "score_desc", label: "Strongest first" },
   { value: "sequence", label: "Upload order" },
 ];
+
+const MODES: { value: PlannerMode; label: string; note: string }[] = [
+  {
+    value: "automatic",
+    label: "Automatic",
+    note: "Picks the planner from what you ask for.",
+  },
+  {
+    value: "rules",
+    label: "Rules",
+    note: "Deterministic scoring. Same input, same edit, every time.",
+  },
+  {
+    value: "ai",
+    label: "AI",
+    note: "A model chooses the clips. Falls back to rules if it fails.",
+  },
+];
+
+const QUALITIES: { value: QualityPreset; label: string }[] = [
+  { value: "draft", label: "Draft" },
+  { value: "balanced", label: "Balanced" },
+  { value: "high", label: "High" },
+];
+
+const FPS_OPTIONS = [24, 30, 60];
+
+/** Fallback reasons, in the words a user can act on. */
+const FALLBACK_TEXT: Record<string, string> = {
+  provider_disabled: "no AI provider is configured",
+  provider_unavailable: "the AI provider was unreachable",
+  provider_error: "the AI provider returned an error",
+  invalid_output: "the model's answer could not be used",
+  invalid_plan: "the model's edit did not pass validation",
+  no_usable_media: "not enough usable footage",
+  unexpected_error: "an unexpected error in the AI planner",
+};
 
 const RENDER_STATUS_CLASS: Record<RenderStatus, string> = {
   pending: "text-slate-500",
@@ -172,6 +212,66 @@ function RejectionList({
   );
 }
 
+/**
+ * Where a plan came from: which planner, which model, what it cost, and whether
+ * it fell back.
+ *
+ * A row of measured values in the same register as the render readout below it,
+ * not a badge announcing that AI was involved. If the model was not used, this
+ * says so and says why -- a fallback nobody can see is indistinguishable from a
+ * feature that silently does nothing.
+ */
+function Provenance({ plan }: { plan: EditPlan }) {
+  const llm = plan.llm;
+  const fell = llm?.fallback_reason ?? null;
+
+  const fields: [string, string][] = [
+    ["Planner", `${plan.plan.planner}@${plan.plan.planner_version}`],
+  ];
+  if (plan.mode) fields.push(["Mode", plan.mode.mode]);
+  if (llm?.provider) {
+    fields.push(["Provider", llm.model ? `${llm.provider} · ${llm.model}` : llm.provider]);
+    fields.push(["Prompt", llm.prompt_version]);
+    if (llm.latency_ms) fields.push(["Latency", `${Math.round(llm.latency_ms)} ms`]);
+    const tokens = (llm.input_tokens ?? 0) + (llm.output_tokens ?? 0);
+    if (tokens > 0) fields.push(["Tokens", `${llm.input_tokens ?? 0} in / ${llm.output_tokens ?? 0} out`]);
+    if (llm.attempts > 1) fields.push(["Attempts", String(llm.attempts)]);
+  }
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-slate-800/60 pt-2">
+      <dl className="flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-[10px] tabular-nums">
+        {fields.map(([label, value]) => (
+          <div key={label} className="flex gap-1.5">
+            <dt className="text-slate-600">{label}</dt>
+            <dd className="text-slate-400">{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {fell && (
+        <p className="border-l-2 border-amber-800/70 pl-2 text-[10px] leading-snug text-amber-500/90">
+          Planned by the rules engine — {FALLBACK_TEXT[fell] ?? fell.replace(/_/g, " ")}.
+          {llm?.fallback_detail && (
+            <span className="block truncate text-slate-600">{llm.fallback_detail}</span>
+          )}
+        </p>
+      )}
+
+      {plan.mode?.reason && !fell && (
+        <p className="text-[10px] leading-snug text-slate-600">{plan.mode.reason}.</p>
+      )}
+
+      {typeof plan.plan.metadata?.rationale === "string" &&
+        plan.plan.metadata.rationale.length > 0 && (
+          <p className="text-[10px] leading-snug text-slate-500">
+            {String(plan.plan.metadata.rationale)}
+          </p>
+        )}
+    </div>
+  );
+}
+
 export function EditPanel({
   projectId,
   media,
@@ -181,11 +281,27 @@ export function EditPanel({
 }) {
   const queryClient = useQueryClient();
 
+  const [mode, setMode] = useState<PlannerMode>("automatic");
+  const [style, setStyle] = useState<EditStyle | "">("");
+  const [requestText, setRequestText] = useState("");
   const [targetSeconds, setTargetSeconds] = useState(25);
   const [maxClips, setMaxClips] = useState(5);
   const [aspect, setAspect] = useState<AspectRatio>("16:9");
+  const [fps, setFps] = useState(30);
+  const [quality, setQuality] = useState<QualityPreset>("balanced");
   const [order, setOrder] = useState<ClipOrder>("score_desc");
   const [error, setError] = useState<string | null>(null);
+
+  // Server-declared, so the AI control reflects what this deployment can
+  // actually do rather than what the build hopes it can.
+  const capabilities = useQuery({
+    queryKey: ["planner-capabilities"],
+    queryFn: api.plannerCapabilities,
+    staleTime: 5 * 60 * 1000,
+  });
+  const aiAvailable = capabilities.data?.ai_available ?? false;
+  const styles = capabilities.data?.styles ?? [];
+  const activeMode: PlannerMode = mode === "ai" && !aiAvailable ? "rules" : mode;
 
   const names = new Map(media.map((asset) => [asset.id, asset.original_filename]));
   const readyCount = media.filter((asset) => asset.status === "ready").length;
@@ -213,15 +329,21 @@ export function EditPanel({
   const generate = useMutation({
     mutationFn: () =>
       api.createEditPlan(projectId, {
+        mode: activeMode,
+        style: style || null,
+        request_text: requestText.trim() || null,
         target_duration_ms: targetSeconds * 1000,
         max_clips: maxClips,
         min_clips: 1,
         aspect_ratio: aspect,
+        fps,
+        quality,
         order,
       }),
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["edit-plans", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["llm-runs", projectId] });
     },
     onError: (caught: unknown) => {
       setError(
@@ -253,6 +375,72 @@ export function EditPanel({
       <div className="grid gap-4 p-3 lg:grid-cols-[minmax(0,1fr)_300px]">
         {/* ---------------- plan ---------------- */}
         <div className="flex flex-col gap-3">
+          {/* -------- direction: how to plan, and what you want -------- */}
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="Mode">
+              <div className="flex rounded-sm border border-slate-800">
+                {MODES.map((item) => {
+                  const disabled = item.value === "ai" && !aiAvailable;
+                  return (
+                    <button
+                      key={item.value}
+                      type="button"
+                      title={disabled ? "No AI provider is configured on this server." : item.note}
+                      disabled={disabled}
+                      onClick={() => setMode(item.value)}
+                      className={`border-r border-slate-800 px-2 py-1 text-[11px] transition last:border-r-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-600 disabled:cursor-not-allowed disabled:text-slate-700 ${
+                        mode === item.value && !disabled
+                          ? "bg-slate-800 text-slate-100"
+                          : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+
+            <Field label="Style">
+              <select
+                id="edit-style"
+                value={style}
+                onChange={(event) => setStyle(event.target.value as EditStyle | "")}
+                className={SELECT_CLASS}
+                title={styles.find((item) => item.value === style)?.description ?? ""}
+              >
+                <option value="">None</option>
+                {styles.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Request">
+              <input
+                id="request-text"
+                type="text"
+                value={requestText}
+                maxLength={capabilities.data?.max_request_chars ?? 500}
+                placeholder="Describe the edit you want"
+                onChange={(event) => setRequestText(event.target.value)}
+                className={`${SELECT_CLASS} w-72`}
+              />
+            </Field>
+
+            <button
+              type="button"
+              onClick={() => generate.mutate()}
+              disabled={readyCount === 0 || generate.isPending}
+              className="rounded-sm border border-sky-700 bg-sky-900/40 px-2.5 py-1 text-[11px] text-sky-200 transition hover:bg-sky-900/70 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {generate.isPending ? "Generating…" : "Generate edit"}
+            </button>
+          </div>
+
+          {/* -------- target: what the file should be -------- */}
           <div className="flex flex-wrap items-end gap-3">
             <Field label="Duration">
               <input
@@ -290,6 +478,34 @@ export function EditPanel({
                 ))}
               </select>
             </Field>
+            <Field label="Frame rate">
+              <select
+                id="fps"
+                value={fps}
+                onChange={(event) => setFps(Number(event.target.value))}
+                className={`${SELECT_CLASS} tabular-nums`}
+              >
+                {(capabilities.data?.fps_presets ?? FPS_OPTIONS).map((value) => (
+                  <option key={value} value={value}>
+                    {value} fps
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Quality">
+              <select
+                id="quality"
+                value={quality}
+                onChange={(event) => setQuality(event.target.value as QualityPreset)}
+                className={SELECT_CLASS}
+              >
+                {QUALITIES.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <Field label="Order">
               <select
                 id="clip-order"
@@ -305,14 +521,14 @@ export function EditPanel({
               </select>
             </Field>
 
-            <button
-              type="button"
-              onClick={() => generate.mutate()}
-              disabled={readyCount === 0 || generate.isPending}
-              className="rounded-sm border border-sky-700 bg-sky-900/40 px-2.5 py-1 text-[11px] text-sky-200 transition hover:bg-sky-900/70 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-600 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {generate.isPending ? "Generating…" : "Generate edit"}
-            </button>
+            {/* Says what this server actually has. No claim beyond it. */}
+            <span className="ml-auto font-mono text-[10px] text-slate-600">
+              {aiAvailable
+                ? capabilities.data?.is_stub
+                  ? `planner: ${capabilities.data.provider} (deterministic stub, not a model)`
+                  : `planner: ${capabilities.data?.provider} · ${capabilities.data?.model}`
+                : "planner: rules engine only"}
+            </span>
           </div>
 
           {error && (
@@ -325,7 +541,9 @@ export function EditPanel({
             <p className="text-[11px] text-slate-600">
               {readyCount === 0
                 ? "No analysed media yet. Upload clips and run analysis first."
-                : "No edit generated. Clips are ranked on sharpness, exposure, contrast, resolution and duration; near-duplicates are dropped."}
+                : activeMode === "ai"
+                  ? "No edit generated. A model will choose from clips that already passed the quality gates; if it fails, the rules engine plans instead."
+                  : "No edit generated. Clips are ranked on sharpness, exposure, contrast, resolution and duration; near-duplicates are dropped."}
             </p>
           )}
 
@@ -348,6 +566,7 @@ export function EditPanel({
                 names={names}
               />
               <RejectionList plan={latestPlan} names={names} />
+              <Provenance plan={latestPlan} />
 
               <div>
                 <button
