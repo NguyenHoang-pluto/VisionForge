@@ -2,5 +2,6 @@
 
 from visionforge.infra.storage.client import build_s3_client
 from visionforge.infra.storage.probe import StorageProbe
+from visionforge.infra.storage.s3_store import S3ObjectStore
 
-__all__ = ["StorageProbe", "build_s3_client"]
+__all__ = ["S3ObjectStore", "StorageProbe", "build_s3_client"]

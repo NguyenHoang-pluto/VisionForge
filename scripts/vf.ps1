@@ -11,7 +11,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('setup', 'infra-up', 'infra-down', 'infra-reset', 'infra-status',
-                 'migrate', 'api', 'web', 'worker-cpu',
+                 'migrate', 'api', 'web', 'worker-cpu', 'e2e',
                  'test', 'test-integration', 'lint', 'format', 'typecheck',
                  'contracts', 'web-lint', 'web-build', 'compose-check', 'check', 'help')]
     [string]$Command = 'help'
@@ -61,10 +61,16 @@ switch ($Command) {
     'api' { Invoke-Api { & $Python -m visionforge } }
     'web' { Invoke-Web { pnpm dev } }
     'worker-cpu' {
+        # --pool=solo: FFmpeg is the real concurrency limit on a 6-core laptop,
+        # and one job at a time keeps memory and disk predictable.
         Invoke-Api {
             & $Python -m celery -A visionforge.workers.cpu worker `
-                --pool=threads --concurrency=2 -Q cpu -l info
+                --pool=solo -Q cpu -l info
         }
+    }
+    'e2e' {
+        # Needs infra-up, the API and a cpu worker already running.
+        & $Python (Join-Path $Root 'scripts\e2e_acceptance.py')
     }
 
     'test'             { Invoke-Api { & $Python -m pytest -m 'not integration and not gpu' } }
@@ -110,9 +116,10 @@ switch ($Command) {
         Write-Host "    migrate            Apply Alembic migrations"
         Write-Host ""
         Write-Host "  Run"
-        Write-Host "    api                Start the API on http://localhost:8000"
+        Write-Host "    api                Start the API (host/port from .env; default 127.0.0.1:8000)"
         Write-Host "    web                Start the web app on http://localhost:3000"
         Write-Host "    worker-cpu         Start a Celery worker on the cpu queue"
+        Write-Host "    e2e                End-to-end acceptance test (needs api + worker)"
         Write-Host ""
         Write-Host "  Quality"
         Write-Host "    check              Run everything CI runs"

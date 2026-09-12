@@ -11,6 +11,7 @@ dependencies = [
     # --- Web framework ---
     "fastapi==0.115.6",
     "uvicorn[standard]==0.34.0",
+    "sse-starlette==2.2.1",
     # --- Configuration & validation ---
     "pydantic==2.10.4",
     "pydantic-settings==2.7.0",
@@ -35,6 +36,7 @@ dev = [
     "mypy==1.14.1",
     "import-linter==2.1",
     "types-boto3==1.35.92",
+    "pytest-cov==6.0.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -78,8 +80,14 @@ mypy_path = "src"
 packages = ["visionforge"]
 
 [[tool.mypy.overrides]]
-module = ["celery.*", "pgvector.*"]
+module = ["celery.*", "pgvector.*", "sse_starlette.*"]
 ignore_missing_imports = true
+
+# Celery's @task decorator is untyped, which under --strict makes every task it
+# wraps untyped too. Scoped to this one module rather than relaxed globally.
+[[tool.mypy.overrides]]
+module = ["visionforge.workers.tasks"]
+disallow_untyped_decorators = false
 
 # ---------------------------------------------------------------- pytest
 [tool.pytest.ini_options]

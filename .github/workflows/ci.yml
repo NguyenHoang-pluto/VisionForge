@@ -75,7 +75,7 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 10s --health-timeout 3s --health-retries 5
       minio:
-        image: bitnami/minio:latest
+        image: bitnami/minio:2024.10.13
         env:
           MINIO_ROOT_USER: visionforge
           MINIO_ROOT_PASSWORD: visionforge-dev-secret
@@ -95,6 +95,14 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+
+      # Integration tests probe and transcode real media, so FFmpeg is required
+      # here. The backend job above deliberately does not need it.
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffprobe -version | head -1
 
       - name: Install dependencies
         run: pip install -e ".[dev]"

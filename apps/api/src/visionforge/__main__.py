@@ -22,9 +22,9 @@ def main() -> None:
     settings = get_settings()
     uvicorn.run(
         "visionforge.api.main:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=settings.is_local,
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=settings.is_local and settings.api_reload,
         log_config=None,  # visionforge.core.logging owns log configuration
     )
 

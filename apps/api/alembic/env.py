@@ -17,6 +17,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from visionforge.core.config import get_settings
+from visionforge.infra.db import models  # noqa: F401  (registers tables on Base.metadata)
 from visionforge.infra.db.base import Base
 
 config = context.config

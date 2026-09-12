@@ -7,9 +7,10 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 1 — Foundation.**
-> Infrastructure and application skeleton only. No AI, media processing or
-> editing features are implemented yet. See [Roadmap](#roadmap).
+> **Current phase: Phase 2 — Media ingest and the job system.**
+> Upload a folder, and each file is probed, hashed, thumbnailed and proxied by an
+> asynchronous worker with live progress. No AI, editing or rendering yet.
+> See [Roadmap](#roadmap).
 
 ---
 
@@ -103,9 +104,30 @@ Design decisions are recorded in [`docs/adr/`](docs/adr).
 | pnpm           | 10+                | `npm install -g pnpm`                       |
 | Docker Desktop | with Compose v2    | For Postgres, Redis and MinIO               |
 | Git            | 2.40+              |                                             |
+| **FFmpeg**     | **6.0+**           | `ffmpeg` and `ffprobe` on PATH              |
 
-FFmpeg and a CUDA-capable GPU are **not** needed for Phase 1. They become
-requirements in Phase 2 (rendering) and Phase 3 (inference).
+A CUDA-capable GPU is **not** needed until Phase 3 (model inference).
+
+### Installing FFmpeg
+
+FFmpeg is a hard dependency: workers assert it at start-up and refuse to accept
+jobs they cannot process.
+
+**Windows** (no admin needed):
+
+1. Download the release build from <https://www.gyan.dev/ffmpeg/builds/>
+   (`ffmpeg-release-essentials.zip`).
+2. Extract it, e.g. to `E:\ffmpeg`, so that `E:\ffmpeg\bin\ffmpeg.exe` exists.
+3. Add `E:\ffmpeg\bin` to your user `PATH`:
+   ```powershell
+   [Environment]::SetEnvironmentVariable(
+     "Path", [Environment]::GetEnvironmentVariable("Path","User") + ";E:\ffmpeg\bin", "User")
+   ```
+4. Open a new terminal and verify: `ffprobe -version`.
+
+**Linux / WSL:** `sudo apt install ffmpeg`  ·  **macOS:** `brew install ffmpeg`
+
+This project was developed against **9.0.1**; the minimum enforced version is 6.
 
 ---
 
@@ -141,6 +163,8 @@ Copy `.env.example` to `.env`. It is git-ignored and must never be committed.
 | `S3_ENDPOINT_URL` | MinIO locally; empty on AWS (use an IAM role) | `http://localhost:9000` |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY` | Object storage credentials | dev values |
 | `S3_BUCKET_MEDIA` / `_DERIVATIVES` / `_RENDERS` | Bucket names | `visionforge-*` |
+| `API_HOST` / `API_PORT` | Where the API binds | `127.0.0.1` / `8000` |
+| `API_RELOAD` | Auto-reload on code changes (local only) | `true` |
 | `CORS_ORIGINS` | JSON array of allowed browser origins | `["http://localhost:3000"]` |
 | `POSTGRES_PORT` / `REDIS_PORT` / `MINIO_PORT` | Host ports | `5442` / `6389` / `9000` |
 | `NEXT_PUBLIC_API_URL` | API base URL baked into the web bundle | `http://localhost:8000` |
@@ -186,6 +210,45 @@ this machine has 7.4 GB of RAM and containerising everything does not fit. See
 | `GET /health/live`  | Liveness — restart the process if this fails                |
 | `GET /health/ready` | Readiness — probes Postgres, Redis and storage; **503** when a required dependency is down |
 | `GET /version`      | Application name, version and environment                   |
+
+### Projects and media
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/projects` | Create a project |
+| `GET /api/projects` | List projects |
+| `GET /api/projects/{id}` | One project |
+| `POST /api/projects/{id}/media/upload-url` | Reserve a media row, get a presigned `PUT` |
+| `POST /api/projects/{id}/media/{media_id}/complete` | Confirm the upload, dispatch ingest |
+| `GET /api/projects/{id}/media` | Media library listing |
+| `GET /api/projects/{id}/media/{media_id}` | One asset with full metadata |
+| `GET /api/projects/{id}/media/{media_id}/thumbnail` | Presigned thumbnail URL |
+| `GET /api/projects/{id}/media/{media_id}/proxy` | Presigned 720p proxy URL |
+| `GET /api/projects/{id}/jobs` | Recent jobs for a project |
+
+### Jobs
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/jobs` | Create a job (honours `Idempotency-Key`) |
+| `GET /api/jobs/{id}` | Job with its steps and progress |
+| `POST /api/jobs/{id}/cancel` | Request cooperative cancellation |
+| `GET /api/jobs/{id}/events` | **SSE** progress stream |
+
+Every media and job route resolves access through project ownership. There is no
+endpoint that reaches a media row by id alone.
+
+### The ingest pipeline
+
+```
+upload  ->  VALIDATE  ->  METADATA  ->  HASH  ->  THUMBNAIL  ->  PROXY  ->  FINALIZE
+            exists?       ffprobe      sha256    480px jpeg     720p      mark ready
+            magic bytes   is truth     dedupe    (not audio)    (>720p
+            download                                            video only)
+```
+
+Each step is a row in `job_steps` with its own status, attempt count and timing,
+so reported progress is measured rather than estimated.
 
 Use `python -m visionforge`, not `uvicorn` directly: on Windows the event-loop
 policy must be set before uvicorn creates its loop
@@ -250,11 +313,11 @@ VisionForge/
 │  ├─ api/                      FastAPI backend (Python 3.11)
 │  │  ├─ src/visionforge/
 │  │  │  ├─ core/               config, logging, request context, runtime fixes
-│  │  │  ├─ api/                routers, schemas, middleware, DI
-│  │  │  ├─ application/        use cases
-│  │  │  ├─ domain/             entities and ports — pure Python
-│  │  │  ├─ infra/              db · redis · storage · queue
-│  │  │  ├─ workers/            Celery entrypoints: cpu · gpu · render
+│  │  │  ├─ api/                routers, schemas, middleware, DI, serializers
+│  │  │  ├─ application/        media_service · job_dispatch · health_service
+│  │  │  ├─ domain/             media · jobs · storage · errors · ports — pure Python
+│  │  │  ├─ infra/              db · redis · storage · queue · ffmpeg
+│  │  │  ├─ workers/            runtime · media_ingest · tasks · cpu/gpu/render
 │  │  │  └─ __main__.py         dev entrypoint (python -m visionforge)
 │  │  ├─ alembic/               migrations
 │  │  ├─ tests/                 unit/ · integration/
@@ -269,6 +332,7 @@ VisionForge/
 ├─ docs/adr/                    architecture decision records
 ├─ infrastructure/docker/       production Dockerfiles (Phase 2)
 ├─ scripts/vf.ps1               developer commands (Windows)
+├─ scripts/e2e_acceptance.py    end-to-end acceptance test
 ├─ .github/workflows/ci.yml
 ├─ docker-compose.yml           postgres · redis · minio
 ├─ Makefile                     same targets for Linux/WSL/CI
@@ -283,19 +347,25 @@ queue they consume. They ship as the same image with a different command.
 
 ## Current phase
 
-**Phase 1 — Foundation.** Complete when the repository is clean, reproducible and
-testable end to end:
+**Phase 2 — Media ingest and the job system.**
 
-- [x] Git repository with a `.gitignore` that excludes secrets, media and weights
-- [x] Python 3.11 virtual environment, no global packages
-- [x] Backend skeleton with layered architecture and enforced contracts
-- [x] Frontend skeleton reporting live infrastructure status
-- [x] PostgreSQL 16 + pgvector, Redis and MinIO in Docker Compose
-- [x] Alembic initialised with a first migration
-- [x] `/health`, `/health/live`, `/health/ready`, `/version`
-- [x] Structured JSON logging with request correlation IDs
-- [x] ruff, mypy (strict), import-linter, pytest and frontend build all green
-- [x] CI that needs no GPU, no model weights and no NVIDIA runtime
+- [x] Seven MVP tables: users, projects, media_assets, media_derivatives, jobs,
+      job_steps, events
+- [x] Presigned direct-to-storage upload; no media byte transits the API
+- [x] Three-layer validation: extension allow-list, magic bytes, ffprobe
+- [x] ffprobe metadata for image, video and audio
+- [x] SHA-256 deduplication scoped to `(project_id, sha256)`
+- [x] Thumbnails for images and video; 720p proxies for video above 720p
+- [x] Job state machine in PostgreSQL with steps, retry, `RETRY_WAIT` and
+      cooperative cancellation
+- [x] Commit-then-publish dispatch with recovery for undispatched jobs
+- [x] Idempotency keys on job creation
+- [x] SSE progress that replays last known state on reconnect
+- [x] Media library UI: projects, folder upload, grid, live job progress
+- [x] 141 tests (83 unit, 58 integration) plus a 35-check end-to-end script
+
+Deliberately **not** in Phase 2: authentication, AI analysis, editing,
+rendering, asset search.
 
 ---
 
@@ -303,8 +373,8 @@ testable end to end:
 
 | Phase | Weeks | Scope |
 |-------|-------|-------|
-| **1** | 1     | Foundation — infrastructure, skeleton, CI *(current)* |
-| 2     | 2–3   | Media ingest (presigned upload, ffprobe, thumbnails) and the job system |
+| 1     | 1     | Foundation — infrastructure, skeleton, CI |
+| **2** | 2–3   | Media ingest and the job system *(current)* |
 | 3     | 4–6   | Analysis lanes — quality, dedupe, scenes, CLIP embeddings, faces |
 | 4     | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI |
 | 5     | 9–10  | Music, beat synchronisation, manual and hybrid timeline editing |

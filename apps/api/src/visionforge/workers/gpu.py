@@ -6,6 +6,7 @@ single-slot worker *is* the GPU mutex. See docs/adr/0003-job-state-ownership.md.
 """
 
 from visionforge.infra.queue.celery_app import QUEUE_GPU, celery_app
+from visionforge.workers import tasks  # noqa: F401  (registers tasks with Celery)
 
 app = celery_app
 QUEUE = QUEUE_GPU
