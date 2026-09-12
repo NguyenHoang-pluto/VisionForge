@@ -23,6 +23,7 @@ from visionforge.domain.storage import ObjectStore
 from visionforge.infra.db import DatabaseProbe, get_sessionmaker
 from visionforge.infra.db.models import Project
 from visionforge.infra.db.repositories import (
+    AnalysisRepository,
     EventRepository,
     JobRepository,
     MediaRepository,
@@ -73,6 +74,10 @@ def get_media_repo(session: AsyncSession = Depends(get_session)) -> MediaReposit
 
 def get_job_repo(session: AsyncSession = Depends(get_session)) -> JobRepository:
     return JobRepository(session)
+
+
+def get_analysis_repo(session: AsyncSession = Depends(get_session)) -> AnalysisRepository:
+    return AnalysisRepository(session)
 
 
 def get_event_repo(session: AsyncSession = Depends(get_session)) -> EventRepository:

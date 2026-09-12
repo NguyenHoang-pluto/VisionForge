@@ -12,7 +12,9 @@ to redeliver the message at the time PostgreSQL already recorded.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from celery import Task
@@ -24,9 +26,9 @@ from visionforge.domain.media import MediaStatus
 from visionforge.infra.db.models import Job, MediaAsset
 from visionforge.infra.db.sync_session import get_sync_sessionmaker
 from visionforge.infra.ffmpeg import assert_ffmpeg_available
-from visionforge.infra.queue.celery_app import QUEUE_CPU, celery_app
+from visionforge.infra.queue.celery_app import QUEUE_CPU, QUEUE_GPU, celery_app
 from visionforge.infra.redis.events import publish_sync
-from visionforge.workers import media_ingest
+from visionforge.workers import media_analysis, media_ingest
 from visionforge.workers.runtime import JobContext, JobRunner
 
 logger = logging.getLogger(__name__)
@@ -154,4 +156,72 @@ def _mark_media_failed(session: Session, job: Job) -> None:
         session.commit()
 
 
-__all__ = ["media_ingest_task"]
+@celery_app.task(
+    bind=True,
+    name="visionforge.media_analyze_cpu",
+    queue=QUEUE_CPU,
+    acks_late=True,
+    max_retries=None,
+)
+def media_analyze_cpu_task(self: Task, job_id: str) -> str:
+    """Deterministic CPU analysis: quality, scenes, perceptual hash."""
+    return _run_analysis(self, job_id, media_analysis.CPU_STEPS)
+
+
+@celery_app.task(
+    bind=True,
+    name="visionforge.media_analyze_gpu",
+    queue=QUEUE_GPU,
+    acks_late=True,
+    max_retries=None,
+)
+def media_analyze_gpu_task(self: Task, job_id: str) -> str:
+    """Model inference: CLIP embeddings and face detection.
+
+    Routed to the ``gpu`` queue, whose worker runs ``--pool=solo``. That single
+    slot is the process-level GPU mutex (ADR-0003); ``GpuLeaseManager`` enforces
+    the VRAM budget within it.
+    """
+    return _run_analysis(self, job_id, media_analysis.GPU_STEPS)
+
+
+def _run_analysis(task: Task, job_id: str, steps: Mapping[str, Any]) -> str:
+    """Shared body for both analysis job types.
+
+    Identical to the ingest task's shape: the same terminal-status guard, the
+    same cancellation check, the same retry hand-off. Analysis needs no FFmpeg
+    assertion -- OpenCV decodes its own inputs.
+    """
+    with get_sync_sessionmaker()() as session:
+        job = session.get(Job, UUID(job_id))
+        if job is None:
+            logger.warning("job not found; message discarded", extra={"job_id": job_id})
+            return "missing"
+
+        if JobStatus(job.status) in TERMINAL:
+            return str(job.status)
+
+        if job.cancel_requested:
+            _finish(session, job, JobStatus.CANCELLED)
+            return str(JobStatus.CANCELLED)
+
+        ctx = JobContext(session, job)
+        try:
+            JobRunner(session, job).run(steps)
+        finally:
+            media_analysis.cleanup(ctx)
+
+        session.refresh(job)
+        status = JobStatus(job.status)
+
+        if status is JobStatus.RETRY_WAIT:
+            return _schedule_retry(task, session, job)
+
+        return str(status)
+
+
+__all__ = [
+    "media_analyze_cpu_task",
+    "media_analyze_gpu_task",
+    "media_ingest_task",
+]

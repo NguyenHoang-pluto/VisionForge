@@ -18,8 +18,8 @@ from typing import Any
 
 import numpy as np
 import open_clip
-from numpy.typing import NDArray
 import torch
+from numpy.typing import NDArray
 from PIL import Image
 
 from visionforge.domain.analysis import (

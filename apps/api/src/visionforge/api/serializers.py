@@ -6,6 +6,7 @@ computed in exactly one place and cannot drift between endpoints.
 
 from __future__ import annotations
 
+from visionforge.api.schemas.analysis import AnalysisResponse
 from visionforge.api.schemas.media import (
     DerivativeResponse,
     JobResponse,
@@ -14,7 +15,7 @@ from visionforge.api.schemas.media import (
 )
 from visionforge.domain.jobs import StepStatus
 from visionforge.domain.media import DerivativeKind
-from visionforge.infra.db.models import Job, MediaAsset
+from visionforge.infra.db.models import Job, MediaAnalysis, MediaAsset
 
 
 def serialize_media(media: MediaAsset) -> MediaResponse:
@@ -93,4 +94,24 @@ def serialize_job(job: Job) -> JobResponse:
             )
             for s in sorted(job.steps, key=lambda s: s.seq)
         ],
+    )
+
+
+def serialize_analysis(row: MediaAnalysis) -> AnalysisResponse:
+    """Serialise one analysis row.
+
+    The embedding is reported as a boolean rather than 512 floats: the vector is
+    large, and the similarity endpoint is a better answer to every question a
+    client would use it for.
+    """
+    return AnalysisResponse(
+        id=row.id,
+        media_id=row.media_id,
+        analyzer=str(row.analyzer),
+        analyzer_version=row.analyzer_version,
+        status=str(row.status),
+        payload=row.payload,
+        metrics=row.metrics,
+        has_embedding=row.embedding is not None,
+        created_at=row.created_at,
     )

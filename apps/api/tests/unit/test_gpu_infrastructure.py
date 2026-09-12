@@ -203,7 +203,8 @@ class TestLease:
     def test_lease_is_released_even_when_the_body_raises(self) -> None:
         manager = GpuLeaseManager(budget_mb=3000, timeout_s=0.5)
 
-        with pytest.raises(RuntimeError):
+        # Nesting is the assertion: the error must escape the lease context.
+        with pytest.raises(RuntimeError):  # noqa: SIM117
             with manager.acquire(model="a", estimated_mb=10):
                 raise RuntimeError("inference blew up")
 
@@ -214,7 +215,8 @@ class TestLease:
     def test_same_thread_can_reenter(self) -> None:
         """RLock: a nested lease inside one task must not self-deadlock."""
         manager = GpuLeaseManager(budget_mb=3000, timeout_s=0.5)
-        with manager.acquire(model="a", estimated_mb=10):
+        # Nesting is the assertion: a re-entrant acquire must not self-deadlock.
+        with manager.acquire(model="a", estimated_mb=10):  # noqa: SIM117
             with manager.acquire(model="a", estimated_mb=10):
                 pass
 
