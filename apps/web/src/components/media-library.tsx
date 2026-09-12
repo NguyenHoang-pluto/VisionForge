@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import { useJobEvents } from "@/lib/use-job-events";
 import { AnalysisInspector } from "@/components/analysis-inspector";
+import { EditPanel } from "@/components/edit-panel";
 import { MediaCard } from "@/components/media-card";
 import { JobList } from "@/components/job-list";
 
@@ -365,6 +366,8 @@ export function MediaLibrary() {
               />
             )}
           </div>
+
+          <EditPanel projectId={projectId} media={items} />
 
           <JobList
             jobs={jobs.data ?? []}

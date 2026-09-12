@@ -10,11 +10,11 @@ export default function Home() {
             VisionForge
           </h1>
           <span className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
-            Media Intelligence
+            Automatic Edit
           </span>
         </div>
         <p className="font-mono text-[10px] text-slate-600">
-          quality · scenes · phash · clip · faces
+          analyse · select · plan · timeline · render
         </p>
       </header>
 

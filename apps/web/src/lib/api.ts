@@ -144,6 +144,82 @@ export interface SimilarMediaResponse {
   results: SimilarityHit[];
 }
 
+export type AspectRatio = "16:9" | "9:16" | "1:1";
+export type ClipOrder = "score_desc" | "sequence";
+export type RenderStatus = "pending" | "rendering" | "ready" | "failed" | "cancelled";
+
+export interface PlanSegment {
+  media_id: string;
+  order: number;
+  source_in_ms: number;
+  source_out_ms: number;
+  duration_ms: number;
+  transition_in: string;
+}
+
+export interface PlanDocument {
+  project_id: string;
+  planner: string;
+  planner_version: string;
+  output: {
+    aspect_ratio: AspectRatio;
+    width: number;
+    height: number;
+    fps: number;
+    fit: string;
+    audio: string;
+  };
+  segments: PlanSegment[];
+  total_duration_ms: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface SelectionRecord {
+  selected: { media_id: string; score: number; components: Record<string, number> }[];
+  rejected: { media_id: string; reason: string; detail: string | null }[];
+  duplicate_groups: string[][];
+}
+
+export interface EditPlan {
+  id: string;
+  project_id: string;
+  planner: string;
+  planner_version: string;
+  segment_count: number;
+  total_duration_ms: number;
+  created_at: string;
+  plan: PlanDocument;
+  selection: SelectionRecord;
+}
+
+export interface Render {
+  id: string;
+  project_id: string;
+  edit_plan_id: string;
+  job_id: string | null;
+  status: RenderStatus;
+  bytes_size: number | null;
+  duration_ms: number | null;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  spec: Record<string, unknown> | null;
+  metrics: Record<string, unknown> | null;
+  error: { code?: string; message?: string; hint?: string } | null;
+  created_at: string;
+  playback_url: string | null;
+  playback_expires_in_s: number | null;
+}
+
+export interface PlanOptions {
+  target_duration_ms?: number;
+  max_clips?: number;
+  min_clips?: number;
+  aspect_ratio?: AspectRatio;
+  fps?: number;
+  order?: ClipOrder;
+}
+
 export interface UploadTicket {
   media_id: string;
   object_key: string;
@@ -269,6 +345,32 @@ export const api = {
     request<SimilarMediaResponse>(
       `/api/projects/${projectId}/media/${mediaId}/similar`,
     ),
+
+  // --- edit plans and renders ---
+  createEditPlan: (projectId: string, options: PlanOptions = {}) =>
+    request<EditPlan>(`/api/projects/${projectId}/edit-plan`, {
+      method: "POST",
+      body: JSON.stringify(options),
+    }),
+
+  listEditPlans: (projectId: string) =>
+    request<{ items: EditPlan[]; total: number }>(
+      `/api/projects/${projectId}/edit-plan`,
+    ),
+
+  createRender: (projectId: string, editPlanId: string) =>
+    request<Render>(`/api/projects/${projectId}/render`, {
+      method: "POST",
+      body: JSON.stringify({ edit_plan_id: editPlanId }),
+    }),
+
+  listRenders: (projectId: string) =>
+    request<{ items: Render[]; total: number }>(
+      `/api/projects/${projectId}/renders`,
+    ),
+
+  getRender: (projectId: string, renderId: string) =>
+    request<Render>(`/api/projects/${projectId}/renders/${renderId}`),
 };
 
 /**
