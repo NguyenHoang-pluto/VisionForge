@@ -7,10 +7,11 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 3 — Media intelligence and the GPU lane.**
-> Media is analysed into structured signals: quality, scene boundaries,
-> perceptual hashes, CLIP embeddings and face counts. No editing, planning or
-> rendering yet. See [Roadmap](#roadmap).
+> **Current phase: Phase 4 — the first vertical slice.**
+> A folder of clips goes in and a watchable MP4 comes out: analysis, then
+> deterministic selection, an `EditPlan`, a timeline, and an FFmpeg render.
+> The planner is a rules engine, not a language model — Phase 4 builds the
+> boundary an LLM will later sit behind. See [Roadmap](#roadmap).
 
 ---
 
@@ -215,8 +216,10 @@ this machine has 7.4 GB of RAM and containerising everything does not fit. See
 
 ```powershell
 .\scripts\vf.ps1 api          # http://localhost:8000  (docs at /docs)
-.\scripts\vf.ps1 worker-cpu   # Celery worker on the cpu queue
-.\scripts\vf.ps1 migrate      # alembic upgrade head
+.\scripts\vf.ps1 worker-cpu    # Celery worker on the cpu queue
+.\scripts\vf.ps1 worker-gpu    # ...           on the gpu queue    (solo pool)
+.\scripts\vf.ps1 worker-render # ...           on the render queue (solo pool)
+.\scripts\vf.ps1 migrate       # alembic upgrade head
 ```
 
 | Endpoint            | Purpose                                                     |
@@ -259,6 +262,21 @@ this machine has 7.4 GB of RAM and containerising everything does not fit. See
 | `GET /api/projects/{id}/media/{id}/analysis` | Latest result per analyzer for one asset |
 | `GET /api/projects/{id}/media/{id}/similar` | Visually similar media (cosine over CLIP embeddings) |
 
+### Editing and rendering
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/projects/{id}/edit-plan` | Select media and plan an edit (deterministic) |
+| `GET /api/projects/{id}/edit-plan` | Plans in a project, newest first |
+| `GET /api/projects/{id}/edit-plan/{plan_id}` | One plan with the selection record behind it |
+| `POST /api/projects/{id}/renders` | Queue a render of a plan |
+| `GET /api/projects/{id}/renders` | Renders in a project |
+| `GET /api/projects/{id}/renders/{render_id}` | One render, with a presigned playback URL |
+
+A plan request carries intent, not geometry: a target duration, a clip budget, an
+aspect ratio and an ordering. Output dimensions come from a closed preset map on
+the server, so no request can ask for a 30 000-pixel canvas.
+
 Every media, job and analysis route resolves access through project ownership.
 There is no endpoint that reaches a row by id alone, and the similarity search is
 project-scoped in SQL so it cannot cross the ownership boundary.
@@ -296,6 +314,37 @@ quality regression is visible instead of silent.
 
 Media types an analyzer does not apply to are recorded as `unsupported` with a
 reason — audio has no blur score, and that is a fact rather than a failure.
+
+### The edit lane
+
+```
+media_analysis
+     |
+  SELECT      score = 0.40 sharpness + 0.25 exposure + 0.20 contrast
+              + 0.10 resolution + 0.05 duration; unusable clips rejected
+              with a reason; pHash near-duplicates collapsed to one
+     |
+  PLAN        RulesEnginePlanner -> EditPlan   (closed vocabulary: media ids,
+              millisecond offsets, one enum per transition -- no paths,
+              no commands, no free text)
+     |
+  VALIDATE    every segment re-checked against the project's own media
+     |
+  TIMELINE    butt-joined clips on tracks         (knows nothing about FFmpeg)
+     |
+  RENDERSPEC  codec, CRF, preset, pixel format    (knows nothing about editing)
+     |
+  ARGV        compiler -> argv list -> subprocess (never a shell string)
+     |
+  MP4
+```
+
+The plan is the boundary, and it is structural rather than advisory: no field in
+an `EditPlan` is wide enough to hold a filesystem path or an FFmpeg argument, so
+a planner cannot emit one — whether it is today's rules engine or tomorrow's
+language model ([ADR-0009](docs/adr/0009-edit-plan-boundary.md)). The plan is
+validated again inside the render worker against the live database, because the
+world can change between planning and rendering.
 
 Use `python -m visionforge`, not `uvicorn` directly: on Windows the event-loop
 policy must be set before uvicorn creates its loop
@@ -379,7 +428,9 @@ VisionForge/
 ├─ docs/adr/                    architecture decision records
 ├─ infrastructure/docker/       production Dockerfiles (Phase 2)
 ├─ scripts/vf.ps1               developer commands (Windows)
-├─ scripts/e2e_acceptance.py    end-to-end acceptance test
+├─ scripts/e2e_acceptance.py    Phase 2 acceptance test (ingest and jobs)
+├─ scripts/e2e_analysis.py      Phase 3 acceptance test (analysis lanes)
+├─ scripts/e2e_edit.py          Phase 4 acceptance test (plan and render)
 ├─ .github/workflows/ci.yml
 ├─ docker-compose.yml           postgres · redis · minio
 ├─ Makefile                     same targets for Linux/WSL/CI
@@ -394,7 +445,33 @@ queue they consume. They ship as the same image with a different command.
 
 ## Current phase
 
-**Phase 3 — Media intelligence and the GPU lane.**
+**Phase 4 — Deterministic selection, `EditPlan`, timeline and render.**
+
+- [x] Heuristic selection: a weighted score plus usability gates that reject with
+      a reason, and pHash near-duplicate collapsing
+- [x] `EditPlan` as a closed, frozen vocabulary — no field can carry a path or a command
+- [x] Plan validation against the project's own media; an invalid plan is a
+      permanent failure, never a retry
+- [x] `RulesEnginePlanner` behind a `Planner` protocol, so an LLM planner is a
+      swap rather than a rewrite
+- [x] `Timeline` (no FFmpeg knowledge) → `RenderSpec` (no editing knowledge) → argv
+- [x] Pure-argv FFmpeg compiler: one filter graph, `concat`, never a shell string
+- [x] Render worker on the existing `render` queue, streaming `-progress` for
+      measured progress and honouring cancellation at step boundaries
+- [x] Edit and render API, all of it behind `require_project`
+- [x] Workstation edit panel: settings strip, proportional timeline, rejection
+      list with reasons, and an output column with the player and its real numbers
+- [x] 323 unit + 88 integration tests, 40 Phase 4 acceptance checks
+- [x] Verified end to end: 6 clips in → 2 rejected → 4 selected → 24.0 s
+      1280×720 / 30 fps H.264 MP4, confirmed by an independent `ffprobe` and a
+      full decode pass
+
+Deliberately **not** in Phase 4: the LLM planner, music and beat sync, subtitles,
+transitions beyond a cut, manual timeline editing, GPU enhancement
+(super-resolution, frame interpolation), and authentication.
+
+<details>
+<summary>Phase 3 — Media intelligence and the GPU lane</summary>
 
 - [x] `media_analysis` keyed `(media_id, analyzer, analyzer_version)`; versions coexist
 - [x] pgvector `vector(512)` column with an HNSW cosine index
@@ -408,10 +485,9 @@ queue they consume. They ship as the same image with a different command.
 - [x] Analysis jobs on the existing job system, CPU and GPU queues
 - [x] Per-job GPU metrics: model, device, VRAM peak, duration
 - [x] Analysis API and a media-workstation inspector UI
-- [x] 182 unit + 74 integration tests, 42 Phase 3 acceptance checks
+- [x] 182 unit + 74 integration tests, 52 Phase 3 acceptance checks
 
-Deliberately **not** in Phase 3: the LLM planner, `EditPlan`, timeline
-generation, editing, music, subtitles, rendering, asset search, authentication.
+</details>
 
 ---
 
@@ -421,8 +497,8 @@ generation, editing, music, subtitles, rendering, asset search, authentication.
 |-------|-------|-------|
 | 1     | 1     | Foundation — infrastructure, skeleton, CI |
 | 2     | 2–3   | Media ingest and the job system |
-| **3** | 4–6   | Media intelligence — quality, dedupe, scenes, CLIP, faces *(current)* |
-| 4     | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI |
+| 3     | 4–6   | Media intelligence — quality, dedupe, scenes, CLIP, faces |
+| **4** | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI *(current)* |
 | 5     | 9–10  | Music, beat synchronisation, manual and hybrid timeline editing |
 | 6     | 11–12 | Subtitles, authentication, super-resolution, frame interpolation |
 | 7     | 13–14 | AI copilot, evaluation loop, Asset Studio with license tracking |

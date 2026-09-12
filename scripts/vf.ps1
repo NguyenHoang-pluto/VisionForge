@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     VisionForge developer commands (Windows).
 .DESCRIPTION
@@ -11,7 +11,8 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('setup', 'infra-up', 'infra-down', 'infra-reset', 'infra-status',
-                 'migrate', 'api', 'web', 'worker-cpu', 'worker-gpu', 'e2e', 'e2e-analysis',
+                 'migrate', 'api', 'web', 'worker-cpu', 'worker-gpu', 'worker-render',
+                 'e2e', 'e2e-analysis', 'e2e-edit',
                  'test', 'test-integration', 'lint', 'format', 'typecheck',
                  'contracts', 'web-lint', 'web-build', 'compose-check', 'check', 'help')]
     [string]$Command = 'help'
@@ -132,8 +133,10 @@ switch ($Command) {
         Write-Host "    web                Start the web app on http://localhost:3000"
         Write-Host "    worker-cpu         Start a Celery worker on the cpu queue"
         Write-Host "    worker-gpu         Start a Celery worker on the gpu queue (solo pool)"
+        Write-Host "    worker-render      Start a Celery worker on the render queue (solo pool)"
         Write-Host "    e2e                Phase 2 acceptance test (needs api + cpu worker)"
         Write-Host "    e2e-analysis       Phase 3 acceptance test (needs api + both workers)"
+        Write-Host "    e2e-edit           Phase 4 acceptance test (needs api + cpu and render workers)"
         Write-Host ""
         Write-Host "  Quality"
         Write-Host "    check              Run everything CI runs"

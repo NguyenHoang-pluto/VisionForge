@@ -6,12 +6,14 @@ API_DIR := apps/api
 WEB_DIR := apps/web
 
 .PHONY: help setup infra-up infra-down infra-reset infra-status migrate \
-        api web worker-cpu test test-integration lint format typecheck \
+        api web worker-cpu worker-gpu worker-render e2e e2e-analysis e2e-edit \
+        test test-integration lint format typecheck \
         contracts web-lint web-build compose-check check
 
 help:
 	@echo "setup infra-up infra-down infra-reset infra-status migrate"
-	@echo "api web worker-cpu"
+	@echo "api web worker-cpu worker-gpu worker-render"
+	@echo "e2e e2e-analysis e2e-edit"
 	@echo "check test test-integration lint format typecheck contracts"
 	@echo "web-lint web-build compose-check"
 
@@ -45,6 +47,28 @@ web:
 worker-cpu:
 	cd $(API_DIR) && PYTHONPATH=src $(PYTHON) -m celery \
 	  -A visionforge.workers.cpu worker -n cpu@%%h --pool=prefork --concurrency=2 -Q cpu -l info
+
+# --pool=solo is the process-level GPU mutex: one slot, one model, one
+# inference at a time on a small card (ADR-0003, ADR-0008).
+worker-gpu:
+	cd $(API_DIR) && PYTHONPATH=src $(PYTHON) -m celery \
+	  -A visionforge.workers.gpu worker -n gpu@%%h --pool=solo -Q gpu -l info
+
+# Rendering is one long FFmpeg process per job, so one encode at a time gets
+# the cores it can use and two renders never contend for the same scratch disk.
+worker-render:
+	cd $(API_DIR) && PYTHONPATH=src $(PYTHON) -m celery \
+	  -A visionforge.workers.render worker -n render@%%h --pool=solo -Q render -l info
+
+# The acceptance scripts drive a running stack, so they are not part of `check`.
+e2e:            # Phase 2: needs the API and a cpu worker
+	$(PYTHON) scripts/e2e_acceptance.py
+
+e2e-analysis:   # Phase 3: needs the API and both cpu and gpu workers
+	$(PYTHON) scripts/e2e_analysis.py
+
+e2e-edit:       # Phase 4: needs the API and both cpu and render workers
+	$(PYTHON) scripts/e2e_edit.py
 
 test:
 	cd $(API_DIR) && $(PYTHON) -m pytest -m "not integration and not gpu"
