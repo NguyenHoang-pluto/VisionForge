@@ -18,6 +18,10 @@ Run it with the API and a worker already up::
     python scripts/e2e_acceptance.py
 
 Exits non-zero on the first failed assertion.
+
+**This script stops and restarts Celery workers** -- that is the point of
+scenario 2 -- and leaves none running when it exits. Restart your workers before
+running anything else that needs them, including ``e2e_analysis.py``.
 """
 
 from __future__ import annotations
@@ -187,8 +191,12 @@ def scenario_worker_restart() -> None:
     print(f"{INFO} stopping worker")
     subprocess.run(  # noqa: S603
         ["powershell", "-NoProfile", "-Command",
-         "Get-Process python -EA SilentlyContinue | Where-Object {$_.CommandLine -like '*celery*'} "
-         "| Stop-Process -Force -EA SilentlyContinue"],
+         # Get-Process does not expose CommandLine on Windows PowerShell 5.1, so
+         # the filter silently matched nothing and the worker was never stopped.
+         # Get-CimInstance does expose it.
+         "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+         "Where-Object { $_.CommandLine -match 'celery' } | "
+         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }"],
         capture_output=True,
         timeout=60,
     )
@@ -238,8 +246,12 @@ def scenario_cancel() -> None:
 
     subprocess.run(  # noqa: S603 - pause the worker so the job stays queued
         ["powershell", "-NoProfile", "-Command",
-         "Get-Process python -EA SilentlyContinue | Where-Object {$_.CommandLine -like '*celery*'} "
-         "| Stop-Process -Force -EA SilentlyContinue"],
+         # Get-Process does not expose CommandLine on Windows PowerShell 5.1, so
+         # the filter silently matched nothing and the worker was never stopped.
+         # Get-CimInstance does expose it.
+         "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+         "Where-Object { $_.CommandLine -match 'celery' } | "
+         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }"],
         capture_output=True,
         timeout=60,
     )

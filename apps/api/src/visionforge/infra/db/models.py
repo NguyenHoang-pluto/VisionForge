@@ -195,6 +195,16 @@ class MediaAnalysis(Base, TimestampMixin):
         ),
         Index("ix_analysis_media_analyzer", "media_id", "analyzer"),
         Index("ix_analysis_project_analyzer", "project_id", "analyzer"),
+        # Declared on the model, not only in the migration, so `alembic check`
+        # compares like with like. Hand-written SQL in a migration that the
+        # metadata does not know about reads as drift on every subsequent check.
+        Index(
+            "ix_analysis_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_with={"m": "16", "ef_construction": "64"},
+        ),
     )
 
     id: Mapped[UUID] = _uuid_pk()

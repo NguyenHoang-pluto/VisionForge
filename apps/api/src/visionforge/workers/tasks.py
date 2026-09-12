@@ -25,7 +25,7 @@ from visionforge.domain.jobs import JobStatus, StepStatus
 from visionforge.domain.media import MediaStatus
 from visionforge.infra.db.models import Job, MediaAsset
 from visionforge.infra.db.sync_session import get_sync_sessionmaker
-from visionforge.infra.ffmpeg import assert_ffmpeg_available
+from visionforge.infra.ffmpeg import FFmpegNotAvailableError, assert_ffmpeg_available
 from visionforge.infra.queue.celery_app import QUEUE_CPU, QUEUE_GPU, celery_app
 from visionforge.infra.redis.events import publish_sync
 from visionforge.workers import media_analysis, media_ingest
@@ -49,8 +49,6 @@ def media_ingest_task(self: Task, job_id: str) -> str:
     The return value is informational. Nothing reads it to determine status,
     because PostgreSQL is the source of truth (ADR-0003).
     """
-    assert_ffmpeg_available()
-
     with get_sync_sessionmaker()() as session:
         job = session.get(Job, UUID(job_id))
         if job is None:
@@ -66,6 +64,20 @@ def media_ingest_task(self: Task, job_id: str) -> str:
         if job.cancel_requested:
             _finish(session, job, JobStatus.CANCELLED)
             return str(JobStatus.CANCELLED)
+
+        # Checked here, after the job row is in hand, rather than at the top of
+        # the task. Asserting before loading the job meant a worker without
+        # FFmpeg raised, Celery recorded a task failure, and the job was left
+        # QUEUED with attempts=0 and nothing on it saying why -- invisible from
+        # the API and from the UI. Now the misconfiguration is written to the
+        # job it broke.
+        try:
+            assert_ffmpeg_available()
+        except FFmpegNotAvailableError as exc:
+            _fail_job(session, job, code="ffmpeg_unavailable", message=str(exc))
+            _mark_media_failed(session, job)
+            logger.error("worker cannot run media jobs", extra={"error": str(exc)})
+            return str(JobStatus.FAILED)
 
         ctx = JobContext(session, job)
         try:
@@ -137,6 +149,34 @@ def _resolve_duplicate(session: Session, job: Job, exc: DuplicateMediaError) -> 
             "status": str(JobStatus.SUCCEEDED),
             "progress": 1.0,
             "duplicate_of": str(exc.duplicate_of),
+            "ts": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
+def _fail_job(session: Session, job: Job, *, code: str, message: str) -> None:
+    """Record a failure that happened before the runner could start.
+
+    Marked non-retryable: a worker missing FFmpeg will still be missing it on
+    the next attempt, so burning the retry budget only delays the report.
+    """
+    job.status = JobStatus.FAILED
+    job.finished_at = datetime.now(UTC)
+    job.error = {
+        "code": code,
+        "message": message,
+        "hint": "Install FFmpeg and put its bin directory on the worker's PATH.",
+        "retryable": False,
+    }
+    session.commit()
+    publish_sync(
+        job.id,
+        {
+            "event": "job.failed",
+            "job_id": str(job.id),
+            "status": str(JobStatus.FAILED),
+            "progress": 0.0,
+            "error": job.error,
             "ts": datetime.now(UTC).isoformat(),
         },
     )

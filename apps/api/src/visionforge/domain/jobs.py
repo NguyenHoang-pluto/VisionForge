@@ -44,7 +44,20 @@ TERMINAL_STATUSES: frozenset[JobStatus] = frozenset(
 #: The legal state machine. Any transition not listed here is a bug, and
 #: ``assert_transition`` turns it into a loud one.
 ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
-    JobStatus.PENDING: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}),
+    # PENDING -> RUNNING is legal, and deliberately so. The dispatcher commits
+    # the job row, publishes to the broker, and only then writes QUEUED. A fast
+    # worker can therefore claim a job that is still PENDING. That is benign:
+    # the row it sees is committed and valid, and QUEUED is bookkeeping applied
+    # after the fact.
+    #
+    # The alternative -- writing QUEUED before publishing -- would be worse: a
+    # publish that then failed would leave a job marked QUEUED that no message
+    # exists for, and `find_undispatched` (which looks for PENDING) could never
+    # recover it. Keeping PENDING as "committed but not confirmed dispatched" is
+    # what makes that recovery path work.
+    JobStatus.PENDING: frozenset(
+        {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELLED, JobStatus.FAILED}
+    ),
     JobStatus.QUEUED: frozenset(
         {JobStatus.RUNNING, JobStatus.CANCEL_REQUESTED, JobStatus.CANCELLED, JobStatus.FAILED}
     ),

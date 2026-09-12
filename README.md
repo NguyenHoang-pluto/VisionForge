@@ -7,10 +7,10 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 2 — Media ingest and the job system.**
-> Upload a folder, and each file is probed, hashed, thumbnailed and proxied by an
-> asynchronous worker with live progress. No AI, editing or rendering yet.
-> See [Roadmap](#roadmap).
+> **Current phase: Phase 3 — Media intelligence and the GPU lane.**
+> Media is analysed into structured signals: quality, scene boundaries,
+> perceptual hashes, CLIP embeddings and face counts. No editing, planning or
+> rendering yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -105,8 +105,23 @@ Design decisions are recorded in [`docs/adr/`](docs/adr).
 | Docker Desktop | with Compose v2    | For Postgres, Redis and MinIO               |
 | Git            | 2.40+              |                                             |
 | **FFmpeg**     | **6.0+**           | `ffmpeg` and `ffprobe` on PATH              |
+| NVIDIA driver  | 525+ (developed on 616.92) | Optional — GPU analysis falls back to CPU |
 
-A CUDA-capable GPU is **not** needed until Phase 3 (model inference).
+A CUDA-capable GPU is optional. Without one, `select_device()` returns `cpu`, the
+GPU lane still runs (slowly), and every GPU test is skipped.
+
+### Model weights
+
+Weights live **outside the repository** and are downloaded on first use:
+
+```powershell
+$env:VF_MODEL_CACHE = "E:\ml-cache"   # YuNet face detector (232 KB)
+$env:HF_HOME        = "E:\ml-cache\huggingface"   # OpenCLIP ViT-B/32 (~600 MB)
+$env:TORCH_HOME     = "E:\ml-cache	orch"
+```
+
+Nothing is committed, nothing enters a Docker build context, and the cache is
+shared between projects on the machine.
 
 ### Installing FFmpeg
 
@@ -235,8 +250,18 @@ this machine has 7.4 GB of RAM and containerising everything does not fit. See
 | `POST /api/jobs/{id}/cancel` | Request cooperative cancellation |
 | `GET /api/jobs/{id}/events` | **SSE** progress stream |
 
-Every media and job route resolves access through project ownership. There is no
-endpoint that reaches a media row by id alone.
+### Analysis
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/projects/{id}/analysis` | Queue analysis for one asset or the whole project |
+| `GET /api/projects/{id}/analysis` | All analysis results in a project |
+| `GET /api/projects/{id}/media/{id}/analysis` | Latest result per analyzer for one asset |
+| `GET /api/projects/{id}/media/{id}/similar` | Visually similar media (cosine over CLIP embeddings) |
+
+Every media, job and analysis route resolves access through project ownership.
+There is no endpoint that reaches a row by id alone, and the similarity search is
+project-scoped in SQL so it cannot cross the ownership boundary.
 
 ### The ingest pipeline
 
@@ -249,6 +274,28 @@ upload  ->  VALIDATE  ->  METADATA  ->  HASH  ->  THUMBNAIL  ->  PROXY  ->  FINA
 
 Each step is a row in `job_steps` with its own status, attempt count and timing,
 so reported progress is measured rather than estimated.
+
+### The analysis lanes
+
+```
+                      RESOLVE  (720p proxy preferred over the original)
+                         |
+        cpu queue -------+------- gpu queue  (solo pool = the GPU mutex)
+            |                         |
+        QUALITY   blur, exposure,  EMBED   OpenCLIP ViT-B/32 -> vector(512)
+                  contrast
+        SCENES    PySceneDetect    FACES   YuNet, CPU, detection only
+        PHASH     DCT + aHash
+            |                         |
+            +---------- FINALIZE -----+
+```
+
+Results land in `media_analysis`, keyed `(media_id, analyzer, analyzer_version)`.
+A model upgrade writes a new row rather than overwriting the old one, so a
+quality regression is visible instead of silent.
+
+Media types an analyzer does not apply to are recorded as `unsupported` with a
+reason — audio has no blur score, and that is a fact rather than a failure.
 
 Use `python -m visionforge`, not `uvicorn` directly: on Windows the event-loop
 policy must be set before uvicorn creates its loop
@@ -347,25 +394,24 @@ queue they consume. They ship as the same image with a different command.
 
 ## Current phase
 
-**Phase 2 — Media ingest and the job system.**
+**Phase 3 — Media intelligence and the GPU lane.**
 
-- [x] Seven MVP tables: users, projects, media_assets, media_derivatives, jobs,
-      job_steps, events
-- [x] Presigned direct-to-storage upload; no media byte transits the API
-- [x] Three-layer validation: extension allow-list, magic bytes, ffprobe
-- [x] ffprobe metadata for image, video and audio
-- [x] SHA-256 deduplication scoped to `(project_id, sha256)`
-- [x] Thumbnails for images and video; 720p proxies for video above 720p
-- [x] Job state machine in PostgreSQL with steps, retry, `RETRY_WAIT` and
-      cooperative cancellation
-- [x] Commit-then-publish dispatch with recovery for undispatched jobs
-- [x] Idempotency keys on job creation
-- [x] SSE progress that replays last known state on reconnect
-- [x] Media library UI: projects, folder upload, grid, live job progress
-- [x] 141 tests (83 unit, 58 integration) plus a 35-check end-to-end script
+- [x] `media_analysis` keyed `(media_id, analyzer, analyzer_version)`; versions coexist
+- [x] pgvector `vector(512)` column with an HNSW cosine index
+- [x] CPU lane: quality (blur, exposure, contrast), scene boundaries, pHash + aHash
+- [x] Perceptual near-duplicate clustering (reports only; deletes nothing)
+- [x] GPU lane: OpenCLIP ViT-B/32 embeddings, YuNet face detection
+- [x] `GpuLeaseManager` with a 3000 MiB budget, LRU eviction and a lease mutex
+- [x] `ModelRegistry` with lazy loading and warm caching (5140 ms cold → 138 ms warm)
+- [x] Proxy-first analysis; the original is never opened by the analysis lane
+- [x] Deterministic frame sampling at 5/25/50/75/95% of duration
+- [x] Analysis jobs on the existing job system, CPU and GPU queues
+- [x] Per-job GPU metrics: model, device, VRAM peak, duration
+- [x] Analysis API and a media-workstation inspector UI
+- [x] 182 unit + 74 integration tests, 42 Phase 3 acceptance checks
 
-Deliberately **not** in Phase 2: authentication, AI analysis, editing,
-rendering, asset search.
+Deliberately **not** in Phase 3: the LLM planner, `EditPlan`, timeline
+generation, editing, music, subtitles, rendering, asset search, authentication.
 
 ---
 
@@ -374,8 +420,8 @@ rendering, asset search.
 | Phase | Weeks | Scope |
 |-------|-------|-------|
 | 1     | 1     | Foundation — infrastructure, skeleton, CI |
-| **2** | 2–3   | Media ingest and the job system *(current)* |
-| 3     | 4–6   | Analysis lanes — quality, dedupe, scenes, CLIP embeddings, faces |
+| 2     | 2–3   | Media ingest and the job system |
+| **3** | 4–6   | Media intelligence — quality, dedupe, scenes, CLIP, faces *(current)* |
 | 4     | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI |
 | 5     | 9–10  | Music, beat synchronisation, manual and hybrid timeline editing |
 | 6     | 11–12 | Subtitles, authentication, super-resolution, frame interpolation |

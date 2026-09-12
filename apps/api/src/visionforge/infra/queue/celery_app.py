@@ -8,6 +8,14 @@ Three queues, as decided in Phase 0:
 
 Results are disabled deliberately. Job state lives in PostgreSQL; reading status
 from a Celery result backend is what makes these systems undebuggable.
+
+**Every worker must be started with a unique ``-n`` node name** (``-n cpu@%h``,
+``-n gpu@%h``, ``-n render@%h``). Celery derives a node name from the hostname by
+default, so two workers on one machine register as the same node and then share
+the broker-side bookkeeping that tracks which messages each has reserved. The
+result is silently lost tasks: a message is consumed, the job row stays QUEUED
+with ``attempts=0``, and nothing is logged. This was latent through Phase 2,
+which ran a single worker, and surfaced the moment Phase 3 added a second queue.
 """
 
 from __future__ import annotations

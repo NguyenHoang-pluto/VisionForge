@@ -29,6 +29,16 @@ class TestTransitions:
         ]:
             assert can_transition(current, target)
 
+    def test_pending_may_go_straight_to_running(self) -> None:
+        """A worker can win the race against the dispatcher's QUEUED write.
+
+        create_and_dispatch commits the job, publishes to the broker, then marks
+        it QUEUED. A fast worker can claim the job in that window, and the row it
+        sees is committed and valid. Rejecting the transition turned a benign
+        race into a hard task failure that stranded the job.
+        """
+        assert can_transition(JobStatus.PENDING, JobStatus.RUNNING)
+
     def test_retry_loop(self) -> None:
         assert can_transition(JobStatus.RUNNING, JobStatus.RETRY_WAIT)
         assert can_transition(JobStatus.RETRY_WAIT, JobStatus.QUEUED)
@@ -43,7 +53,6 @@ class TestTransitions:
             (JobStatus.SUCCEEDED, JobStatus.RUNNING),
             (JobStatus.FAILED, JobStatus.QUEUED),
             (JobStatus.CANCELLED, JobStatus.RUNNING),
-            (JobStatus.PENDING, JobStatus.RUNNING),  # must be queued first
             (JobStatus.PENDING, JobStatus.SUCCEEDED),
         ],
     )

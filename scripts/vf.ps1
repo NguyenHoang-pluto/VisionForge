@@ -11,7 +11,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('setup', 'infra-up', 'infra-down', 'infra-reset', 'infra-status',
-                 'migrate', 'api', 'web', 'worker-cpu', 'e2e',
+                 'migrate', 'api', 'web', 'worker-cpu', 'worker-gpu', 'e2e', 'e2e-analysis',
                  'test', 'test-integration', 'lint', 'format', 'typecheck',
                  'contracts', 'web-lint', 'web-build', 'compose-check', 'check', 'help')]
     [string]$Command = 'help'
@@ -65,12 +65,24 @@ switch ($Command) {
         # and one job at a time keeps memory and disk predictable.
         Invoke-Api {
             & $Python -m celery -A visionforge.workers.cpu worker `
-                --pool=solo -Q cpu -l info
+                -n cpu@%h --pool=solo -Q cpu -l info
+        }
+    }
+    'worker-gpu' {
+        # --pool=solo is the process-level GPU mutex: one slot, one model, one
+        # inference at a time on a 4 GiB card (ADR-0003, ADR-0008).
+        Invoke-Api {
+            & $Python -m celery -A visionforge.workers.gpu worker `
+                -n gpu@%h --pool=solo -Q gpu -l info
         }
     }
     'e2e' {
         # Needs infra-up, the API and a cpu worker already running.
         & $Python (Join-Path $Root 'scripts\e2e_acceptance.py')
+    }
+    'e2e-analysis' {
+        # Needs infra-up, the API, and both cpu and gpu workers running.
+        & $Python (Join-Path $Root 'scripts\e2e_analysis.py')
     }
 
     'test'             { Invoke-Api { & $Python -m pytest -m 'not integration and not gpu' } }
@@ -119,7 +131,9 @@ switch ($Command) {
         Write-Host "    api                Start the API (host/port from .env; default 127.0.0.1:8000)"
         Write-Host "    web                Start the web app on http://localhost:3000"
         Write-Host "    worker-cpu         Start a Celery worker on the cpu queue"
-        Write-Host "    e2e                End-to-end acceptance test (needs api + worker)"
+        Write-Host "    worker-gpu         Start a Celery worker on the gpu queue (solo pool)"
+        Write-Host "    e2e                Phase 2 acceptance test (needs api + cpu worker)"
+        Write-Host "    e2e-analysis       Phase 3 acceptance test (needs api + both workers)"
         Write-Host ""
         Write-Host "  Quality"
         Write-Host "    check              Run everything CI runs"

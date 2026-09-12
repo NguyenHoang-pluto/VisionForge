@@ -44,7 +44,7 @@ web:
 
 worker-cpu:
 	cd $(API_DIR) && PYTHONPATH=src $(PYTHON) -m celery \
-	  -A visionforge.workers.cpu worker --pool=prefork --concurrency=2 -Q cpu -l info
+	  -A visionforge.workers.cpu worker -n cpu@%%h --pool=prefork --concurrency=2 -Q cpu -l info
 
 test:
 	cd $(API_DIR) && $(PYTHON) -m pytest -m "not integration and not gpu"

@@ -113,7 +113,10 @@ jobs:
           PYTHONPATH: src
 
       - name: Integration tests
-        run: pytest -m integration
+        # Excludes `gpu`: CI runners have no CUDA device, and Phase 3's GPU
+        # tests skip themselves anyway. Being explicit keeps that intentional
+        # rather than accidental.
+        run: pytest -m "integration and not gpu"
 
   frontend:
     name: Frontend (lint, build)
