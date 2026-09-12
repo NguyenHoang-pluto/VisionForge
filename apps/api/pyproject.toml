@@ -25,13 +25,17 @@ dependencies = [
     "celery==5.4.0",
     # --- Object storage (S3-compatible: MinIO locally, S3 later) ---
     "boto3==1.35.92",
+    # --- LLM providers (Phase 5) ---
+    # Plain HTTP rather than a vendor SDK: the port is text in, text out, and
+    # an SDK would add a dependency tree plus streaming and tool-calling surface
+    # that this codebase deliberately never uses.
+    "httpx==0.28.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==8.3.4",
     "pytest-asyncio==0.25.1",
-    "httpx==0.28.1",
     "ruff==0.8.6",
     "mypy==1.14.1",
     "import-linter==2.1",

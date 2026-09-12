@@ -27,6 +27,7 @@ from visionforge.infra.db.models import (
     Event,
     Job,
     JobStep,
+    LlmRunRow,
     MediaAnalysis,
     MediaAsset,
     MediaDerivative,
@@ -170,6 +171,10 @@ class MediaRepository:
                 width=row.width,
                 height=row.height,
                 created_order=index,
+                # ffprobe records the audio stream's channel count at ingest, so
+                # a non-null value is the cheapest reliable "this file has
+                # audio" -- no second probe, no analyzer needed.
+                channels=row.channels,
                 analysis=by_media.get(row.id, {}),
             )
             for index, row in enumerate(media_rows)
@@ -526,6 +531,70 @@ class EditPlanRepository:
         await self._session.execute(
             update(RenderRow).where(RenderRow.id == render_id).values(job_id=job_id)
         )
+
+
+class LlmRunRepository:
+    """Planning calls to a language model, successful or not."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self,
+        *,
+        project_id: UUID,
+        edit_plan_id: UUID | None,
+        run: dict[str, Any],
+    ) -> LlmRunRow:
+        """Persist one run.
+
+        Takes a plain dict rather than the domain record so this repository does
+        not import the planner, keeping the dependency pointing the right way.
+        The caller builds the dict from ``LlmRunRecord.as_payload()``.
+        """
+        row = LlmRunRow(
+            project_id=project_id,
+            edit_plan_id=edit_plan_id,
+            provider=str(run.get("provider") or "unknown")[:32],
+            model=str(run.get("model") or "unknown")[:128],
+            prompt_version=str(run.get("prompt_version") or "0")[:16],
+            status=str(run.get("status") or "ok")[:24],
+            attempts=int(run.get("attempts") or 0),
+            latency_ms=run.get("latency_ms"),
+            input_tokens=run.get("input_tokens"),
+            output_tokens=run.get("output_tokens"),
+            request_id=(str(run["request_id"])[:128] if run.get("request_id") else None),
+            request_digest=(str(run["request_digest"])[:32] if run.get("request_digest") else None),
+            request_chars=int(run.get("request_chars") or 0),
+            fallback_reason=(
+                str(run["fallback_reason"])[:48] if run.get("fallback_reason") else None
+            ),
+            fallback_detail=(
+                str(run["fallback_detail"])[:2000] if run.get("fallback_detail") else None
+            ),
+            violations={"items": run["violations"]} if run.get("violations") else None,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def latest_for_plan(self, edit_plan_id: UUID) -> LlmRunRow | None:
+        result = await self._session.execute(
+            select(LlmRunRow)
+            .where(LlmRunRow.edit_plan_id == edit_plan_id)
+            .order_by(LlmRunRow.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_for_project(self, project_id: UUID, *, limit: int = 50) -> Sequence[LlmRunRow]:
+        result = await self._session.execute(
+            select(LlmRunRow)
+            .where(LlmRunRow.project_id == project_id)
+            .order_by(LlmRunRow.created_at.desc())
+            .limit(limit)
+        )
+        return result.scalars().all()
 
 
 class EventRepository:

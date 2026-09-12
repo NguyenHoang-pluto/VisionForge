@@ -57,9 +57,42 @@ class Settings(BaseSettings):
     # --- Readiness ---
     readiness_timeout_s: float = 2.0
 
+    # --- LLM planning (Phase 5) ---
+    #: Off by default. Every deployment without a key plans deterministically
+    #: and works completely; AI is an addition, never a dependency.
+    llm_enabled: bool = False
+    #: One of: anthropic, openai, stub. The stub is a deterministic local
+    #: provider for tests and is refused in production.
+    llm_provider: str = "anthropic"
+    llm_model: str = ""
+    #: Overridable so a compatible gateway or a locally-hosted model can be
+    #: pointed at without new code. Empty means the provider's own default.
+    llm_base_url: str = ""
+    #: **Server-side only.** Read here, used by the provider adapters, and never
+    #: serialised into a response, a log line, a plan or a database row.
+    llm_api_key: SecretStr | None = None
+    #: Hard ceiling on one planning call. Chosen to be shorter than a user will
+    #: wait: past this the rules engine is a better answer than a slower one.
+    llm_timeout_s: float = 30.0
+    llm_max_output_tokens: int = 2_000
+
     @property
     def is_local(self) -> bool:
         return self.environment == "local"
+
+    @property
+    def llm_configured(self) -> bool:
+        """Whether AI planning could run. Not whether it will succeed.
+
+        The stub needs no key; every real provider does. This answers the
+        question the UI asks -- "should the AI option be offered?" -- without
+        touching the key itself.
+        """
+        if not self.llm_enabled:
+            return False
+        if self.llm_provider.strip().lower() == "stub":
+            return self.environment != "production"
+        return bool(self.llm_api_key and self.llm_api_key.get_secret_value().strip())
 
     @property
     def buckets(self) -> tuple[str, str, str]:

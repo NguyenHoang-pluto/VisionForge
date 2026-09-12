@@ -314,6 +314,66 @@ class RenderRow(Base, TimestampMixin):
     edit_plan: Mapped[EditPlanRow] = relationship(back_populates="renders")
 
 
+# --------------------------------------------------------------------- llm runs
+class LlmRunRow(Base, TimestampMixin):
+    """One planning call to a language model, successful or not.
+
+    Separate from ``edit_plans`` because the interesting rows are the ones with
+    no plan attached: a provider timeout, a rejected directive, a fallback. If
+    this were a column on the plan table, every failure would be invisible --
+    and the failures are what tells you whether the feature is working.
+
+    **What is deliberately absent: the prompt, the completion, and the user's
+    request text.** Only ``request_digest`` (a truncated SHA-256) and a length
+    are kept. That is enough to tell two runs apart, correlate a repeat, or
+    match a support report to a row; it is not enough to reconstruct what
+    somebody typed. Retaining user content to debug a token count is not a
+    trade worth making.
+    """
+
+    __tablename__ = "llm_runs"
+    __table_args__ = (
+        Index("ix_llm_runs_project_created", "project_id", "created_at"),
+        Index("ix_llm_runs_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[UUID] = _uuid_pk()
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: Null when the run failed before a plan existed, which is the case this
+    #: table exists to make visible.
+    edit_plan_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("edit_plans.id", ondelete="SET NULL"), nullable=True
+    )
+
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: The prompt version, not the model version. A prompt edit changes output
+    #: as surely as a model change does, and has to be as attributable.
+    prompt_version: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    #: ok | fallback | error
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: The provider's own id for the call. The only handle a vendor support
+    #: conversation can refer to.
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    #: Fingerprint of the user's request, not the request.
+    request_digest: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_chars: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    fallback_reason: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    fallback_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Why the output was rejected, when it was. Closed-vocabulary codes and
+    #: generated messages -- no model prose.
+    violations: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
 # ------------------------------------------------------------------------- jobs
 class Job(Base, TimestampMixin):
     __tablename__ = "jobs"
