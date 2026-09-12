@@ -4,14 +4,14 @@ import type { Job, JobStatus } from "@/lib/api";
 import type { JobEvent } from "@/lib/use-job-events";
 
 const STATUS_STYLES: Record<JobStatus, string> = {
-  pending: "bg-slate-500/10 text-slate-400",
-  queued: "bg-sky-500/10 text-sky-400",
-  running: "bg-amber-500/10 text-amber-400",
-  retry_wait: "bg-orange-500/10 text-orange-400",
-  succeeded: "bg-emerald-500/10 text-emerald-400",
-  failed: "bg-rose-500/10 text-rose-400",
-  cancel_requested: "bg-orange-500/10 text-orange-400",
-  cancelled: "bg-slate-500/10 text-slate-400",
+  pending: "text-slate-500",
+  queued: "text-sky-400",
+  running: "text-amber-400",
+  retry_wait: "text-orange-400",
+  succeeded: "text-emerald-400",
+  failed: "text-rose-400",
+  cancel_requested: "text-orange-400",
+  cancelled: "text-slate-500",
 };
 
 const TERMINAL: ReadonlySet<JobStatus> = new Set([
@@ -45,11 +45,13 @@ export function JobList({
   if (jobs.length === 0) return null;
 
   return (
-    <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
-      <h2 className="text-sm font-semibold text-slate-200">Processing jobs</h2>
+    <section className="border-t border-slate-800">
+      <h2 className="border-b border-slate-800 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
+        Jobs
+      </h2>
 
-      <ul className="mt-4 flex flex-col divide-y divide-slate-800">
-        {jobs.slice(0, 8).map((job) => {
+      <ul className="flex max-h-56 flex-col divide-y divide-slate-800/60 overflow-y-auto">
+        {jobs.slice(0, 12).map((job) => {
           // When both exist, the SSE frame is fresher than the last list fetch.
           const event = live[job.id];
           const status = event?.status ?? job.status;
@@ -63,16 +65,17 @@ export function JobList({
           const maxAttempts = event?.max_attempts ?? job.max_attempts;
 
           return (
-            <li key={job.id} className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0">
+            <li key={job.id} className="flex flex-col gap-1 px-3 py-1.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`rounded px-1.5 py-0.5 font-mono text-[10px] uppercase ${STATUS_STYLES[status]}`}
-                  >
+                  <span className={`font-mono text-[10px] uppercase ${STATUS_STYLES[status]}`}>
                     {status.replace("_", " ")}
                   </span>
-                  <span className="font-mono text-xs text-slate-500">
+                  <span className="font-mono text-[10px] text-slate-600">
                     {job.id.slice(0, 8)}
+                  </span>
+                  <span className="font-mono text-[10px] text-slate-600">
+                    {job.type.replace("media_", "")}
                   </span>
                   {attempt > 1 && (
                     <span className="font-mono text-[10px] text-orange-400">
@@ -85,7 +88,7 @@ export function JobList({
                   <button
                     type="button"
                     onClick={() => onCancel(job.id)}
-                    className="rounded border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400 transition hover:border-rose-800 hover:text-rose-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                    className="rounded-sm border border-slate-800 px-1.5 py-px text-[10px] text-slate-500 transition hover:border-rose-800 hover:text-rose-400 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-600"
                   >
                     Cancel
                   </button>
@@ -93,7 +96,7 @@ export function JobList({
               </div>
 
               <div
-                className="h-1 overflow-hidden rounded bg-slate-800"
+                className="h-0.5 overflow-hidden bg-slate-800"
                 role="progressbar"
                 aria-valuenow={Math.round(progress * 100)}
                 aria-valuemin={0}

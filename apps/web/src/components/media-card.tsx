@@ -5,19 +5,19 @@ import { useQuery } from "@tanstack/react-query";
 import { api, type MediaAsset, type MediaStatus } from "@/lib/api";
 
 const STATUS_STYLES: Record<MediaStatus, string> = {
-  pending_upload: "bg-slate-500/10 text-slate-400",
-  uploaded: "bg-sky-500/10 text-sky-400",
-  processing: "bg-amber-500/10 text-amber-400",
-  ready: "bg-emerald-500/10 text-emerald-400",
-  failed: "bg-rose-500/10 text-rose-400",
+  pending_upload: "text-slate-500",
+  uploaded: "text-sky-400",
+  processing: "text-amber-400",
+  ready: "text-emerald-400",
+  failed: "text-rose-400",
 };
 
 const STATUS_LABELS: Record<MediaStatus, string> = {
-  pending_upload: "Waiting for upload",
-  uploaded: "Queued",
-  processing: "Processing",
-  ready: "Ready",
-  failed: "Failed",
+  pending_upload: "PENDING",
+  uploaded: "QUEUED",
+  processing: "PROCESSING",
+  ready: "READY",
+  failed: "FAILED",
 };
 
 const KIND_GLYPH: Record<MediaAsset["kind"], string> = {
@@ -47,9 +47,15 @@ function formatBytes(bytes: number | null): string | null {
 export function MediaCard({
   asset,
   projectId,
+  selected,
+  onSelect,
+  analyzed,
 }: {
   asset: MediaAsset;
   projectId: string;
+  selected: boolean;
+  onSelect: () => void;
+  analyzed: boolean;
 }) {
   // Thumbnail URLs are presigned and short-lived, so they are fetched per asset
   // rather than embedded in the listing response.
@@ -68,7 +74,17 @@ export function MediaCard({
   ].filter(Boolean);
 
   return (
-    <li className="overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
+    <li>
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-pressed={selected}
+        className={`w-full overflow-hidden rounded-sm border text-left transition focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-600 ${
+          selected
+            ? "border-sky-600 bg-slate-900"
+            : "border-slate-800 bg-slate-950 hover:border-slate-700"
+        }`}
+      >
       <div className="relative flex aspect-video items-center justify-center bg-slate-900">
         {thumbnail.data?.url ? (
           /* eslint-disable-next-line @next/next/no-img-element --
@@ -85,42 +101,51 @@ export function MediaCard({
           </span>
         )}
 
-        {asset.has_proxy && (
-          <span className="absolute bottom-1.5 right-1.5 rounded bg-slate-950/80 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
-            720p
-          </span>
-        )}
+        <div className="absolute bottom-1 right-1 flex gap-1">
+          {asset.has_proxy && (
+            <span className="bg-slate-950/85 px-1 py-px font-mono text-[9px] text-slate-400">
+              720p
+            </span>
+          )}
+          {analyzed && (
+            <span
+              className="bg-slate-950/85 px-1 py-px font-mono text-[9px] text-emerald-400"
+              title="Analysis recorded"
+            >
+              ANL
+            </span>
+          )}
+        </div>
       </div>
 
-      <div className="flex flex-col gap-1.5 p-3">
+      <div className="flex flex-col gap-1 border-t border-slate-800 px-2 py-1.5">
         <p
-          className="truncate text-xs font-medium text-slate-200"
+          className="truncate text-[11px] text-slate-200"
           title={asset.original_filename}
         >
           {asset.original_filename}
         </p>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span
-            className={`rounded px-1.5 py-0.5 font-mono text-[10px] uppercase ${STATUS_STYLES[asset.status]}`}
-          >
+        <div className="flex items-center justify-between gap-2 font-mono text-[9px]">
+          <span className="text-slate-600 uppercase">{asset.kind}</span>
+          <span className={STATUS_STYLES[asset.status]}>
             {STATUS_LABELS[asset.status]}
           </span>
-          <span className="font-mono text-[10px] text-slate-500">{asset.kind}</span>
         </div>
 
         {meta.length > 0 && (
-          <p className="font-mono text-[10px] text-slate-500 tabular-nums">
+          <p className="truncate font-mono text-[9px] text-slate-600 tabular-nums">
             {meta.join(" · ")}
           </p>
         )}
 
         {asset.status === "failed" && asset.error?.message && (
-          <p className="text-[10px] leading-snug text-rose-400">
+          <p className="text-[9px] leading-snug text-rose-400">
             {asset.error.message}
           </p>
         )}
       </div>
+      </button>
     </li>
   );
 }

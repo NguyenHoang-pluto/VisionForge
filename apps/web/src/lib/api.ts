@@ -105,6 +105,45 @@ export interface Job {
   steps: JobStep[];
 }
 
+export type AnalyzerName = "quality" | "scenes" | "phash" | "clip" | "faces";
+export type AnalysisStatus = "ok" | "unsupported" | "failed";
+
+/** Analyzer-specific. Deliberately loose: each analyzer reports a different shape. */
+export interface AnalysisRecord {
+  id: string;
+  media_id: string;
+  analyzer: AnalyzerName;
+  analyzer_version: string;
+  status: AnalysisStatus;
+  payload: Record<string, unknown>;
+  metrics: Record<string, unknown> | null;
+  has_embedding: boolean;
+  created_at: string;
+}
+
+export interface AnalysisListResponse {
+  items: AnalysisRecord[];
+  total: number;
+}
+
+export interface AnalyzeResponse {
+  queued: number;
+  media_count: number;
+  lanes: string[];
+  jobs: Job[];
+}
+
+export interface SimilarityHit {
+  media_id: string;
+  distance: number;
+  similarity: number;
+}
+
+export interface SimilarMediaResponse {
+  query_media_id: string;
+  results: SimilarityHit[];
+}
+
 export interface UploadTicket {
   media_id: string;
   object_key: string;
@@ -210,6 +249,26 @@ export const api = {
     request<Job>(`/api/jobs/${jobId}/cancel`, { method: "POST" }),
 
   jobEventsUrl: (jobId: string) => `${API_BASE_URL}/api/jobs/${jobId}/events`,
+
+  // --- analysis ---
+  requestAnalysis: (projectId: string, mediaId?: string, lanes?: string[]) =>
+    request<AnalyzeResponse>(`/api/projects/${projectId}/analysis`, {
+      method: "POST",
+      body: JSON.stringify({ media_id: mediaId ?? null, lanes: lanes ?? null }),
+    }),
+
+  mediaAnalysis: (projectId: string, mediaId: string) =>
+    request<AnalysisListResponse>(
+      `/api/projects/${projectId}/media/${mediaId}/analysis`,
+    ),
+
+  projectAnalysis: (projectId: string) =>
+    request<AnalysisListResponse>(`/api/projects/${projectId}/analysis`),
+
+  similarMedia: (projectId: string, mediaId: string) =>
+    request<SimilarMediaResponse>(
+      `/api/projects/${projectId}/media/${mediaId}/similar`,
+    ),
 };
 
 /**

@@ -11,15 +11,44 @@ import {
   type MediaAsset,
 } from "@/lib/api";
 import { useJobEvents } from "@/lib/use-job-events";
+import { AnalysisInspector } from "@/components/analysis-inspector";
 import { MediaCard } from "@/components/media-card";
 import { JobList } from "@/components/job-list";
 
-const POLL_WHILE_PROCESSING_MS = 3000;
+const POLL_WHILE_WORKING_MS = 3000;
 
 interface UploadFailure {
   filename: string;
   message: string;
   hint: string | null;
+}
+
+/** Toolbar button. One visual weight, used consistently. */
+function ToolButton({
+  children,
+  onClick,
+  disabled,
+  primary,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-sm border px-2.5 py-1 text-[11px] transition focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-600 disabled:cursor-not-allowed disabled:opacity-40 ${
+        primary
+          ? "border-sky-700 bg-sky-900/40 text-sky-200 hover:bg-sky-900/70"
+          : "border-slate-700 text-slate-300 hover:border-slate-600 hover:text-slate-100"
+      }`}
+    >
+      {children}
+    </button>
+  );
 }
 
 export function MediaLibrary() {
@@ -28,27 +57,24 @@ export function MediaLibrary() {
   const folderInput = useRef<HTMLInputElement>(null);
 
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [uploading, setUploading] = useState<{ done: number; total: number } | null>(
     null,
   );
   const [failures, setFailures] = useState<UploadFailure[]>([]);
 
-  const projects = useQuery({
-    queryKey: ["projects"],
-    queryFn: api.listProjects,
-  });
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
 
   const media = useQuery({
     queryKey: ["media", projectId],
     queryFn: () => api.listMedia(projectId!),
     enabled: Boolean(projectId),
-    // Poll only while something is still being processed.
     refetchInterval: (query) =>
       query.state.data?.items.some(
         (m: MediaAsset) => m.status === "processing" || m.status === "uploaded",
       )
-        ? POLL_WHILE_PROCESSING_MS
+        ? POLL_WHILE_WORKING_MS
         : false,
   });
 
@@ -56,12 +82,27 @@ export function MediaLibrary() {
     queryKey: ["jobs", projectId],
     queryFn: () => api.listProjectJobs(projectId!),
     enabled: Boolean(projectId),
+    refetchInterval: (query) =>
+      query.state.data?.some(
+        (j: Job) => !["succeeded", "failed", "cancelled"].includes(j.status),
+      )
+        ? POLL_WHILE_WORKING_MS
+        : false,
   });
+
+  /** Which assets already have analysis, for the grid badge. */
+  const analysis = useQuery({
+    queryKey: ["project-analysis", projectId],
+    queryFn: () => api.projectAnalysis(projectId!),
+    enabled: Boolean(projectId),
+  });
+  const analyzedIds = new Set(
+    (analysis.data?.items ?? []).filter((a) => a.status === "ok").map((a) => a.media_id),
+  );
 
   const activeJobIds = (jobs.data ?? [])
     .filter((job: Job) => !["succeeded", "failed", "cancelled"].includes(job.status))
     .map((job: Job) => job.id);
-
   const liveEvents = useJobEvents(activeJobIds);
 
   const createProject = useMutation({
@@ -69,23 +110,35 @@ export function MediaLibrary() {
     onSuccess: (project) => {
       setNewTitle("");
       setProjectId(project.id);
+      setSelectedId(null);
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 
   const cancelJob = useMutation({
     mutationFn: (jobId: string) => api.cancelJob(jobId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["media", projectId] });
-    },
+    onSuccess: () => invalidateProject(),
   });
 
+  const analyze = useMutation({
+    mutationFn: ({ mediaId, lanes }: { mediaId?: string; lanes?: string[] }) =>
+      api.requestAnalysis(projectId!, mediaId, lanes),
+    onSuccess: () => invalidateProject(),
+  });
+
+  function invalidateProject() {
+    for (const key of ["media", "jobs", "project-analysis"]) {
+      void queryClient.invalidateQueries({ queryKey: [key, projectId] });
+    }
+    if (selectedId) {
+      void queryClient.invalidateQueries({ queryKey: ["analysis", selectedId] });
+    }
+  }
+
   /**
-   * Upload each file: ask the API for a presigned URL, PUT the bytes straight to
-   * storage, then tell the API it landed. Files are sent one at a time — this
-   * machine has limited memory and bandwidth, and a stampede of parallel PUTs
-   * makes progress reporting meaningless.
+   * Upload each file: presign, PUT straight to storage, then tell the API it
+   * landed. One at a time — this machine has limited memory and bandwidth, and a
+   * stampede of parallel PUTs makes the progress count meaningless.
    */
   const handleFiles = useCallback(
     async (files: FileList | null) => {
@@ -104,8 +157,7 @@ export function MediaLibrary() {
         } catch (error) {
           problems.push({
             filename: file.name,
-            message:
-              error instanceof ApiError ? error.message : "Upload failed",
+            message: error instanceof ApiError ? error.message : "Upload failed",
             hint: error instanceof ApiError ? error.hint : null,
           });
         }
@@ -114,21 +166,48 @@ export function MediaLibrary() {
 
       setFailures(problems);
       setUploading(null);
-      void queryClient.invalidateQueries({ queryKey: ["media", projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
+      invalidateProject();
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [projectId, queryClient],
   );
 
+  const items = media.data?.items ?? [];
+  const selected = items.find((m) => m.id === selectedId) ?? null;
+  const readyCount = items.filter((m) => m.status === "ready").length;
+
   return (
-    <div className="flex flex-col gap-8">
-      {/* ---- projects ---- */}
-      <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
-        <h2 className="text-sm font-semibold text-slate-200">Projects</h2>
+    <div className="flex flex-col border border-slate-800 bg-slate-950">
+      {/* ---------------- project bar ---------------- */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-3 py-2">
+        <span className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
+          Project
+        </span>
+
+        {projects.data?.map((project) => (
+          <button
+            key={project.id}
+            type="button"
+            onClick={() => {
+              setProjectId(project.id);
+              setSelectedId(null);
+            }}
+            className={`rounded-sm border px-2 py-0.5 text-[11px] transition focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-600 ${
+              project.id === projectId
+                ? "border-sky-700 bg-sky-900/40 text-sky-200"
+                : "border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+            }`}
+          >
+            {project.title}
+            <span className="ml-1.5 font-mono text-[9px] text-slate-600 tabular-nums">
+              {project.media_count}
+            </span>
+          </button>
+        ))}
 
         <form
-          className="mt-4 flex flex-wrap gap-2"
+          className="ml-auto flex gap-1.5"
           onSubmit={(event) => {
             event.preventDefault();
             if (newTitle.trim()) createProject.mutate(newTitle.trim());
@@ -138,164 +217,160 @@ export function MediaLibrary() {
             id="project-title"
             value={newTitle}
             onChange={(event) => setNewTitle(event.target.value)}
-            placeholder="New project name"
-            className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-600 focus:outline-none"
+            placeholder="New project"
+            className="w-36 rounded-sm border border-slate-800 bg-slate-950 px-2 py-0.5 text-[11px] text-slate-200 placeholder:text-slate-700 focus:border-sky-700 focus:outline-none"
           />
-          <button
-            type="submit"
+          <ToolButton
+            onClick={() => newTitle.trim() && createProject.mutate(newTitle.trim())}
             disabled={!newTitle.trim() || createProject.isPending}
-            className="rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {createProject.isPending ? "Creating…" : "Create project"}
-          </button>
+            Create
+          </ToolButton>
         </form>
+      </div>
 
-        {projects.data && projects.data.length > 0 && (
-          <ul className="mt-4 flex flex-wrap gap-2">
-            {projects.data.map((project) => (
-              <li key={project.id}>
-                <button
-                  type="button"
-                  onClick={() => setProjectId(project.id)}
-                  className={`rounded border px-3 py-1.5 text-xs transition ${
-                    project.id === projectId
-                      ? "border-sky-600 bg-sky-950/60 text-sky-300"
-                      : "border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200"
-                  }`}
-                >
-                  {project.title}
-                  <span className="ml-2 font-mono text-slate-500 tabular-nums">
-                    {project.media_count}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {projects.data?.length === 0 && (
-          <p className="mt-4 text-xs text-slate-500">
-            No projects yet. Create one to start uploading media.
-          </p>
-        )}
-      </section>
-
-      {projectId && (
+      {!projectId ? (
+        <p className="px-3 py-8 text-center text-[11px] text-slate-600">
+          Select or create a project to begin.
+        </p>
+      ) : (
         <>
-          {/* ---- upload ---- */}
-          <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
-            <h2 className="text-sm font-semibold text-slate-200">Upload media</h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Files are uploaded directly to object storage with a presigned URL —
-              they never pass through the API.
-            </p>
+          {/* ---------------- toolbar ---------------- */}
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-3 py-2">
+            <ToolButton
+              onClick={() => fileInput.current?.click()}
+              disabled={Boolean(uploading)}
+            >
+              Add files
+            </ToolButton>
+            <ToolButton
+              onClick={() => folderInput.current?.click()}
+              disabled={Boolean(uploading)}
+            >
+              Add folder
+            </ToolButton>
 
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => fileInput.current?.click()}
-                disabled={Boolean(uploading)}
-                className="rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 transition hover:border-slate-600 disabled:opacity-40"
-              >
-                Select files
-              </button>
-              <button
-                type="button"
-                onClick={() => folderInput.current?.click()}
-                disabled={Boolean(uploading)}
-                className="rounded border border-slate-700 px-4 py-2 text-sm text-slate-200 transition hover:border-slate-600 disabled:opacity-40"
-              >
-                Select folder
-              </button>
+            <span className="mx-1 h-4 w-px bg-slate-800" aria-hidden />
 
-              <input
-                ref={fileInput}
-                id="file-input"
-                type="file"
-                multiple
-                hidden
-                accept="image/*,video/*,audio/*"
-                onChange={(event) => void handleFiles(event.target.files)}
-              />
-              <input
-                ref={folderInput}
-                id="folder-input"
-                type="file"
-                multiple
-                hidden
-                // Non-standard but supported in Chromium and Safari.
-                {...{ webkitdirectory: "", directory: "" }}
-                onChange={(event) => void handleFiles(event.target.files)}
-              />
+            <ToolButton
+              primary
+              onClick={() => analyze.mutate({})}
+              disabled={readyCount === 0 || analyze.isPending}
+            >
+              Analyze all ({readyCount})
+            </ToolButton>
+            <ToolButton
+              onClick={() => selected && analyze.mutate({ mediaId: selected.id })}
+              disabled={!selected || selected.status !== "ready" || analyze.isPending}
+            >
+              Analyze selection
+            </ToolButton>
+            <ToolButton
+              onClick={() =>
+                selected && analyze.mutate({ mediaId: selected.id, lanes: ["cpu"] })
+              }
+              disabled={!selected || selected.status !== "ready" || analyze.isPending}
+            >
+              CPU only
+            </ToolButton>
+
+            <span className="ml-auto font-mono text-[10px] text-slate-600 tabular-nums">
+              {items.length} assets · {analyzedIds.size} analyzed
+            </span>
+
+            <input
+              ref={fileInput}
+              id="file-input"
+              type="file"
+              multiple
+              hidden
+              accept="image/*,video/*,audio/*"
+              onChange={(event) => void handleFiles(event.target.files)}
+            />
+            <input
+              ref={folderInput}
+              id="folder-input"
+              type="file"
+              multiple
+              hidden
+              {...{ webkitdirectory: "", directory: "" }}
+              onChange={(event) => void handleFiles(event.target.files)}
+            />
+          </div>
+
+          {uploading && (
+            <div className="border-b border-slate-800 px-3 py-1.5">
+              <div className="flex justify-between font-mono text-[10px] text-slate-500 tabular-nums">
+                <span>Uploading</span>
+                <span>
+                  {uploading.done} / {uploading.total}
+                </span>
+              </div>
+              <div className="mt-1 h-0.5 bg-slate-800">
+                <div
+                  className="h-full bg-sky-500 transition-all"
+                  style={{ width: `${(uploading.done / uploading.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {failures.length > 0 && (
+            <ul className="border-b border-slate-800">
+              {failures.map((failure) => (
+                <li
+                  key={failure.filename}
+                  className="border-l-2 border-rose-800 px-3 py-1 text-[10px]"
+                >
+                  <span className="font-mono text-rose-300">{failure.filename}</span>
+                  <span className="text-rose-400"> — {failure.message}</span>
+                  {failure.hint && (
+                    <span className="block text-rose-500/70">{failure.hint}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* ---------------- grid + inspector ---------------- */}
+          <div className="grid lg:grid-cols-[1fr_320px]">
+            <div className="min-h-[240px] p-3">
+              {items.length > 0 ? (
+                <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+                  {items.map((asset) => (
+                    <MediaCard
+                      key={asset.id}
+                      asset={asset}
+                      projectId={projectId}
+                      selected={asset.id === selectedId}
+                      analyzed={analyzedIds.has(asset.id)}
+                      onSelect={() =>
+                        setSelectedId(asset.id === selectedId ? null : asset.id)
+                      }
+                    />
+                  ))}
+                </ul>
+              ) : (
+                <p className="py-8 text-center text-[11px] text-slate-600">
+                  {media.isLoading ? "Loading…" : "No media. Add files to begin."}
+                </p>
+              )}
             </div>
 
-            {uploading && (
-              <div className="mt-4">
-                <div className="flex justify-between text-xs text-slate-400">
-                  <span>Uploading</span>
-                  <span className="font-mono tabular-nums">
-                    {uploading.done} / {uploading.total}
-                  </span>
-                </div>
-                <div className="mt-1.5 h-1 overflow-hidden rounded bg-slate-800">
-                  <div
-                    className="h-full bg-sky-500 transition-all"
-                    style={{
-                      width: `${(uploading.done / uploading.total) * 100}%`,
-                    }}
-                  />
-                </div>
-              </div>
+            {selected && (
+              <AnalysisInspector
+                projectId={projectId}
+                asset={selected}
+                onClose={() => setSelectedId(null)}
+              />
             )}
+          </div>
 
-            {failures.length > 0 && (
-              <ul className="mt-4 flex flex-col gap-2">
-                {failures.map((failure) => (
-                  <li
-                    key={failure.filename}
-                    className="rounded border border-rose-900/60 bg-rose-950/30 px-3 py-2 text-xs"
-                  >
-                    <span className="font-medium text-rose-300">
-                      {failure.filename}
-                    </span>
-                    <span className="text-rose-400"> — {failure.message}</span>
-                    {failure.hint && (
-                      <span className="block text-rose-500/80">{failure.hint}</span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {/* ---- jobs ---- */}
           <JobList
             jobs={jobs.data ?? []}
             live={liveEvents}
             onCancel={(jobId) => cancelJob.mutate(jobId)}
           />
-
-          {/* ---- media grid ---- */}
-          <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
-            <div className="flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold text-slate-200">Media library</h2>
-              <span className="font-mono text-xs text-slate-500 tabular-nums">
-                {media.data?.total ?? 0} assets
-              </span>
-            </div>
-
-            {media.data?.items.length ? (
-              <ul className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                {media.data.items.map((asset) => (
-                  <MediaCard key={asset.id} asset={asset} projectId={projectId} />
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-4 text-xs text-slate-500">
-                {media.isLoading ? "Loading…" : "No media yet."}
-              </p>
-            )}
-          </section>
         </>
       )}
     </div>
