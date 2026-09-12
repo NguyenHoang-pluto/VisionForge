@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
@@ -31,6 +32,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from visionforge.domain.analysis import (
+    CLIP_EMBEDDING_DIM,
+    AnalysisStatus,
+    AnalyzerName,
+)
 from visionforge.domain.jobs import JobStatus, JobType, StepStatus
 from visionforge.domain.media import DerivativeKind, MediaKind, MediaStatus
 from visionforge.infra.db.base import Base
@@ -147,6 +153,9 @@ class MediaAsset(Base, TimestampMixin):
     derivatives: Mapped[list[MediaDerivative]] = relationship(
         back_populates="media", cascade="all, delete-orphan"
     )
+    analyses: Mapped[list[MediaAnalysis]] = relationship(
+        back_populates="media", cascade="all, delete-orphan"
+    )
 
 
 class MediaDerivative(Base, TimestampMixin):
@@ -169,6 +178,53 @@ class MediaDerivative(Base, TimestampMixin):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     media: Mapped[MediaAsset] = relationship(back_populates="derivatives")
+
+
+class MediaAnalysis(Base, TimestampMixin):
+    """One analyzer's output for one media asset.
+
+    Keyed on ``(media_id, analyzer, analyzer_version)``. Re-running the same
+    version replaces the row; a new version writes a new one, so upgrading a
+    model never silently discards what the previous one produced.
+    """
+
+    __tablename__ = "media_analysis"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_id", "analyzer", "analyzer_version", name="uq_analysis_media_analyzer_version"
+        ),
+        Index("ix_analysis_media_analyzer", "media_id", "analyzer"),
+        Index("ix_analysis_project_analyzer", "project_id", "analyzer"),
+    )
+
+    id: Mapped[UUID] = _uuid_pk()
+    media_id: Mapped[UUID] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Denormalised from media_assets so that project-scoped queries and the
+    # pgvector similarity search do not need a join. The FK cascade keeps it
+    # consistent; media never moves between projects.
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    analyzer: Mapped[AnalyzerName] = mapped_column(_enum(AnalyzerName, 32), nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[AnalysisStatus] = mapped_column(_enum(AnalysisStatus, 16), nullable=False)
+
+    #: Analyzer-specific output. JSONB because each analyzer reports a different
+    #: shape and those shapes will keep changing through Phase 4.
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    #: Timing, device and VRAM. Kept apart from payload so operational data never
+    #: gets mistaken for analysis output.
+    metrics: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    #: Only the CLIP analyzer populates this. A typed pgvector column rather than
+    #: a JSON array, because an ANN index cannot be built over JSONB.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(CLIP_EMBEDDING_DIM), nullable=True)
+
+    media: Mapped[MediaAsset] = relationship(back_populates="analyses")
 
 
 # ------------------------------------------------------------------------- jobs

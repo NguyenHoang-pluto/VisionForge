@@ -16,12 +16,14 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from visionforge.domain.analysis import AnalysisOutcome, AnalyzerName
 from visionforge.domain.jobs import JobStatus, JobType, StepStatus
 from visionforge.domain.media import DerivativeKind, MediaStatus
 from visionforge.infra.db.models import (
     Event,
     Job,
     JobStep,
+    MediaAnalysis,
     MediaAsset,
     MediaDerivative,
     Project,
@@ -299,6 +301,109 @@ class JobRepository:
         return result.scalars().all()
 
 
+class AnalysisRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def upsert(self, *, media_id: UUID, project_id: UUID, outcome: AnalysisOutcome) -> Any:
+        """Write one analyzer result.
+
+        Keyed on ``(media_id, analyzer, analyzer_version)``: re-running the same
+        version overwrites its row, a new version adds one. Upgrading a model
+        therefore never destroys what the previous version reported, which is
+        what makes a quality regression attributable instead of invisible.
+        """
+        result = await self._session.execute(
+            select(MediaAnalysis).where(
+                MediaAnalysis.media_id == media_id,
+                MediaAnalysis.analyzer == outcome.analyzer,
+                MediaAnalysis.analyzer_version == outcome.version,
+            )
+        )
+        row = result.scalar_one_or_none()
+        embedding = list(outcome.embedding) if outcome.embedding is not None else None
+
+        if row is not None:
+            row.status = outcome.status
+            row.payload = dict(outcome.payload)
+            row.metrics = dict(outcome.metrics) or None
+            row.embedding = embedding
+            await self._session.flush()
+            return row
+
+        row = MediaAnalysis(
+            media_id=media_id,
+            project_id=project_id,
+            analyzer=outcome.analyzer,
+            analyzer_version=outcome.version,
+            status=outcome.status,
+            payload=dict(outcome.payload),
+            metrics=dict(outcome.metrics) or None,
+            embedding=embedding,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get(
+        self, *, media_id: UUID, analyzer: AnalyzerName, version: str
+    ) -> MediaAnalysis | None:
+        result = await self._session.execute(
+            select(MediaAnalysis).where(
+                MediaAnalysis.media_id == media_id,
+                MediaAnalysis.analyzer == analyzer,
+                MediaAnalysis.analyzer_version == version,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def latest_for_media(self, media_id: UUID) -> Sequence[MediaAnalysis]:
+        """Every analyzer's newest version for one asset.
+
+        ``DISTINCT ON`` keeps one row per analyzer -- the highest version -- so a
+        caller sees current results without also seeing superseded ones.
+        """
+        result = await self._session.execute(
+            select(MediaAnalysis)
+            .where(MediaAnalysis.media_id == media_id)
+            .distinct(MediaAnalysis.analyzer)
+            .order_by(MediaAnalysis.analyzer, MediaAnalysis.analyzer_version.desc())
+        )
+        return result.scalars().all()
+
+    async def list_for_project(
+        self, project_id: UUID, *, analyzer: AnalyzerName | None = None, limit: int = 500
+    ) -> Sequence[MediaAnalysis]:
+        stmt = select(MediaAnalysis).where(MediaAnalysis.project_id == project_id)
+        if analyzer is not None:
+            stmt = stmt.where(MediaAnalysis.analyzer == analyzer)
+        result = await self._session.execute(
+            stmt.order_by(MediaAnalysis.created_at.desc()).limit(limit)
+        )
+        return result.scalars().all()
+
+    async def find_similar(
+        self, *, project_id: UUID, embedding: Sequence[float], limit: int = 10
+    ) -> Sequence[tuple[MediaAnalysis, float]]:
+        """Nearest CLIP embeddings within one project, by cosine distance.
+
+        Project-scoped in the WHERE clause so similarity search can never leak
+        media across the authorization boundary.
+        """
+        distance = MediaAnalysis.embedding.cosine_distance(list(embedding))
+        result = await self._session.execute(
+            select(MediaAnalysis, distance.label("distance"))
+            .where(
+                MediaAnalysis.project_id == project_id,
+                MediaAnalysis.analyzer == AnalyzerName.CLIP,
+                MediaAnalysis.embedding.isnot(None),
+            )
+            .order_by(distance)
+            .limit(limit)
+        )
+        return [(row, float(dist)) for row, dist in result.all()]
+
+
 class EventRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -310,6 +415,7 @@ class EventRepository:
 
 
 __all__ = [
+    "AnalysisRepository",
     "EventRepository",
     "JobRepository",
     "MediaRepository",

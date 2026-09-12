@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
+from visionforge.domain.analysis import AnalysisOutcome, AnalyzerName
 from visionforge.domain.jobs import JobType
 from visionforge.domain.media import DerivativeKind, MediaStatus
 
@@ -86,6 +87,29 @@ class JobRepositoryPort(Protocol):
 
     async def find_undispatched(
         self, older_than: datetime, *, limit: int = ...
+    ) -> Sequence[Any]: ...
+
+
+class AnalysisRepositoryPort(Protocol):
+    """Persistence for analyzer output.
+
+    ``upsert`` is keyed on ``(media_id, analyzer, analyzer_version)``: re-running
+    the *same* analyzer version replaces its row, while a new version writes a new
+    one. That is what keeps history intact across a model upgrade.
+    """
+
+    async def upsert(self, *, media_id: UUID, outcome: AnalysisOutcome) -> Any: ...
+
+    async def get(self, *, media_id: UUID, analyzer: AnalyzerName, version: str) -> Any | None: ...
+
+    async def latest_for_media(self, media_id: UUID) -> Sequence[Any]: ...
+
+    async def list_for_project(
+        self, project_id: UUID, *, analyzer: AnalyzerName | None = ..., limit: int = ...
+    ) -> Sequence[Any]: ...
+
+    async def find_similar(
+        self, *, project_id: UUID, embedding: Sequence[float], limit: int = ...
     ) -> Sequence[Any]: ...
 
 

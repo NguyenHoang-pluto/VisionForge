@@ -14,6 +14,8 @@ from enum import StrEnum
 
 class JobType(StrEnum):
     MEDIA_INGEST = "media_ingest"
+    MEDIA_ANALYZE_CPU = "media_analyze_cpu"
+    MEDIA_ANALYZE_GPU = "media_analyze_gpu"
 
 
 class JobStatus(StrEnum):
@@ -120,6 +122,27 @@ MEDIA_INGEST_STEPS: tuple[str, ...] = (
     "FINALIZE",
 )
 
+#: CPU analysis: deterministic signals, no model weights, no GPU.
+MEDIA_ANALYZE_CPU_STEPS: tuple[str, ...] = (
+    "RESOLVE",
+    "QUALITY",
+    "SCENES",
+    "PHASH",
+    "FINALIZE",
+)
+
+#: GPU analysis: model inference. RESOLVE is repeated rather than shared with the
+#: CPU job because the two run on different queues and must not depend on each
+#: other's scratch state.
+MEDIA_ANALYZE_GPU_STEPS: tuple[str, ...] = (
+    "RESOLVE",
+    "EMBED",
+    "FACES",
+    "FINALIZE",
+)
+
 JOB_STEP_PLANS: dict[JobType, tuple[str, ...]] = {
     JobType.MEDIA_INGEST: MEDIA_INGEST_STEPS,
+    JobType.MEDIA_ANALYZE_CPU: MEDIA_ANALYZE_CPU_STEPS,
+    JobType.MEDIA_ANALYZE_GPU: MEDIA_ANALYZE_GPU_STEPS,
 }
