@@ -218,6 +218,28 @@ def _reset_sse_exit_event() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_redis_client() -> None:
+    """Drop the process-global Redis client between tests.
+
+    Same shape of problem as ``_reset_sse_exit_event`` above: the client is a
+    module-level singleton whose connections are bound to the event loop that
+    created them. Each ``TestClient`` runs on a fresh loop, so an app shutting
+    down would try to close a connection belonging to a loop that has already
+    gone -- "Event loop is closed", raised from teardown, after the test itself
+    passed.
+
+    Cleared rather than closed, because closing is the operation that fails. The
+    orphaned client is collected with the loop it belonged to.
+
+    A test-harness concern only: production has one loop for the life of the
+    process, creates the client once and closes it once.
+    """
+    from visionforge.infra.redis import client as redis_client
+
+    redis_client._client = None
+
+
+@pytest.fixture(autouse=True)
 def _settings_are_local() -> None:
     """Fail loudly rather than run destructive tests against a real environment."""
     settings = get_settings()

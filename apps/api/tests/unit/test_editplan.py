@@ -22,6 +22,7 @@ from visionforge.domain.editplan import (
     MediaFact,
     OutputSpec,
     PlanInvalidError,
+    QualityPreset,
     Segment,
     TransitionKind,
     assert_valid,
@@ -349,7 +350,13 @@ class TestHostilePlans:
             )
 
     def test_the_plan_schema_has_no_field_for_a_path_or_a_command(self) -> None:
-        """The structural guarantee, asserted rather than assumed."""
+        """The structural guarantee, asserted rather than assumed.
+
+        The field sets are pinned exactly, so *adding* a field to the plan is a
+        deliberate act that fails this test until someone confirms the new field
+        cannot carry a path or a command. Phase 5 added ``quality``, which is an
+        enum of three values.
+        """
         plan, _ = simple_plan(1)
         payload = plan.as_payload()
 
@@ -368,7 +375,31 @@ class TestHostilePlans:
             "fps",
             "fit",
             "audio",
+            "quality",
         }
+
+    def test_every_plan_field_is_a_number_or_a_closed_enum(self) -> None:
+        """The property behind the field list, checked rather than assumed.
+
+        Pinning names catches a new field; this catches a new field of the wrong
+        *kind*. Every string in a plan's output must be a member of its enum, so
+        there is nowhere for ``/etc/passwd`` or ``-i /dev/zero`` to live even if
+        a future field slips past review.
+        """
+        plan, _ = simple_plan(2)
+        output = plan.as_payload()["output"]
+
+        allowed = {
+            "aspect_ratio": {r.value for r in AspectRatio},
+            "fit": {f.value for f in FitMode},
+            "audio": {a.value for a in AudioMode},
+            "quality": {q.value for q in QualityPreset},
+        }
+        for key, value in output.items():
+            if isinstance(value, str):
+                assert value in allowed[key], f"{key} is a free string, not a closed enum"
+            else:
+                assert isinstance(value, int), f"{key} is neither an int nor a closed enum"
 
 
 # ------------------------------------------------------------------ round trip
