@@ -16,12 +16,16 @@ from visionforge.application.edit_service import EditService
 from visionforge.application.health_service import HealthService
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import MediaService
+from visionforge.application.planner_factory import PlannerSelection, build_planner
 from visionforge.core.config import get_settings
 from visionforge.domain.errors import NotFoundError
 from visionforge.domain.health import HealthProbe
 from visionforge.domain.ids import ProjectId, UserId
+from visionforge.domain.llm import LlmProvider
+from visionforge.domain.llm_planner import PlannerMode
 from visionforge.domain.planner import Planner, RulesEnginePlanner
 from visionforge.domain.storage import ObjectStore
+from visionforge.domain.style import EditStyle
 from visionforge.infra.db import DatabaseProbe, get_sessionmaker
 from visionforge.infra.db.models import Project
 from visionforge.infra.db.repositories import (
@@ -29,10 +33,12 @@ from visionforge.infra.db.repositories import (
     EditPlanRepository,
     EventRepository,
     JobRepository,
+    LlmRunRepository,
     MediaRepository,
     ProjectRepository,
     UserRepository,
 )
+from visionforge.infra.llm import build_provider
 from visionforge.infra.queue.publisher import CeleryTaskPublisher
 from visionforge.infra.redis import RedisProbe
 from visionforge.infra.storage import S3ObjectStore, StorageProbe
@@ -87,6 +93,10 @@ def get_edit_plan_repo(session: AsyncSession = Depends(get_session)) -> EditPlan
     return EditPlanRepository(session)
 
 
+def get_llm_run_repo(session: AsyncSession = Depends(get_session)) -> LlmRunRepository:
+    return LlmRunRepository(session)
+
+
 def get_event_repo(session: AsyncSession = Depends(get_session)) -> EventRepository:
     return EventRepository(session)
 
@@ -106,23 +116,99 @@ def get_media_service(
 
 
 def get_planner() -> Planner:
-    """The active planner.
+    """The deterministic planner.
 
-    A single override point. Phase 5 swaps ``RulesEnginePlanner`` for an LLM
-    implementation here and nothing else changes -- the service, the validation
-    gate, the timeline compiler and the renderer all sit behind the port.
+    Still here, still the default, and still what every route falls back to. The
+    Phase 5 note that used to sit on this function said an LLM would be swapped
+    in here; what actually happened is better -- the LLM planner is *added*
+    beside it through :class:`EditServiceFactory`, and this one remains the
+    implementation that always works.
     """
     return RulesEnginePlanner()
 
 
-def get_edit_service(
+def get_llm_provider() -> LlmProvider | None:
+    """The configured provider, or ``None`` when AI planning is off.
+
+    ``None`` is the normal state for a developer with no API key, and every
+    caller treats it as "plan deterministically" rather than as an error. The
+    key is read inside the factory from server settings and never leaves it.
+    """
+    return build_provider()
+
+
+class EditServiceFactory:
+    """Builds an ``EditService`` once the request body has been read.
+
+    A plain ``Depends`` cannot do this: which planner runs depends on the mode,
+    the style and whether the caller wrote anything, and none of that is known
+    until the body is parsed. So the dependency supplies the collaborators and
+    the route asks for a service configured for the request it actually got.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        media: MediaRepository,
+        plans: EditPlanRepository,
+        events: EventRepository,
+        llm_runs: LlmRunRepository,
+        provider: LlmProvider | None,
+    ) -> None:
+        self._session = session
+        self._media = media
+        self._plans = plans
+        self._events = events
+        self._llm_runs = llm_runs
+        self._provider = provider
+
+    def for_request(
+        self,
+        *,
+        mode: PlannerMode,
+        style: EditStyle | None,
+        request_text: str | None,
+    ) -> tuple[EditService, PlannerSelection]:
+        selection = build_planner(
+            mode=mode,
+            style=style,
+            request_text=request_text,
+            provider=self._provider,
+        )
+        service = EditService(
+            self._session,
+            self._media,
+            self._plans,
+            self._events,
+            selection.planner,
+            llm_runs=self._llm_runs,
+            mode_decision=selection.decision,
+        )
+        return service, selection
+
+    def plain(self) -> EditService:
+        """A service with the rules engine, for routes that never plan."""
+        return EditService(
+            self._session, self._media, self._plans, self._events, RulesEnginePlanner()
+        )
+
+
+def get_edit_service_factory(
     session: AsyncSession = Depends(get_session),
     media: MediaRepository = Depends(get_media_repo),
     plans: EditPlanRepository = Depends(get_edit_plan_repo),
     events: EventRepository = Depends(get_event_repo),
-    planner: Planner = Depends(get_planner),
+    llm_runs: LlmRunRepository = Depends(get_llm_run_repo),
+    provider: LlmProvider | None = Depends(get_llm_provider),
+) -> EditServiceFactory:
+    return EditServiceFactory(session, media, plans, events, llm_runs, provider)
+
+
+def get_edit_service(
+    factory: EditServiceFactory = Depends(get_edit_service_factory),
 ) -> EditService:
-    return EditService(session, media, plans, events, planner)
+    """The rules-engine service, for routes that dispatch rather than plan."""
+    return factory.plain()
 
 
 def get_job_dispatcher(

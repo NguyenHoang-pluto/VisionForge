@@ -131,6 +131,12 @@ def serialize_edit_plan(row: EditPlanRow, *, include_plan: bool = False) -> Edit
     does not need twenty embedded segment arrays, and the selection can run to
     every rejected clip with its reason.
     """
+    # Provenance travels with the summary, not just the detail. A listing that
+    # shows twenty plans without saying which were AI-planned or which fell back
+    # would make the one fact worth scanning for the one fact you have to open
+    # each row to find.
+    metadata = row.plan.get("metadata", {}) if isinstance(row.plan, dict) else {}
+
     return EditPlanDetail(
         id=row.id,
         project_id=row.project_id,
@@ -141,6 +147,8 @@ def serialize_edit_plan(row: EditPlanRow, *, include_plan: bool = False) -> Edit
         created_at=row.created_at,
         plan=row.plan if include_plan else {},
         selection=row.selection if include_plan else {},
+        mode=metadata.get("mode"),
+        llm=metadata.get("llm"),
     )
 
 

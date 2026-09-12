@@ -4,9 +4,14 @@ Builds selection candidates from stored analysis, runs a planner, validates what
 it produced, persists the plan, and dispatches renders.
 
 The planner is injected as a ``Planner``, never constructed here. That is what
-makes swapping the rules engine for an LLM in Phase 5 a wiring change: this
-service already cannot tell the difference, because all it ever receives back is
-an ``EditPlan``.
+made adding the LLM planner in Phase 5 a wiring change: this service still
+cannot tell the difference, because all it ever receives back is an
+``EditPlan``, and the validation below runs identically either way.
+
+The one concession Phase 5 required is that planning now runs on a worker
+thread. A rules plan is microseconds of arithmetic, but an LLM plan is a network
+round trip, and blocking the event loop for twenty seconds would stall every
+other request in the process.
 """
 
 from __future__ import annotations
@@ -16,10 +21,13 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+import anyio.to_thread
+
 from visionforge.domain.analysis import AnalysisStatus, AnalyzerName
 from visionforge.domain.editplan import MediaFact, PlanInvalidError, validate_plan
 from visionforge.domain.errors import ConflictError, NotFoundError, ValidationError
 from visionforge.domain.ids import MediaId, ProjectId
+from visionforge.domain.llm_planner import FallbackPlanner, LlmRunRecord
 from visionforge.domain.media import MediaKind, MediaStatus
 from visionforge.domain.planner import (
     NoUsableMediaError,
@@ -48,6 +56,10 @@ class MediaRecord:
     height: int | None
     created_order: int
     analysis: dict[AnalyzerName, dict[str, Any]]
+    #: Audio channel count from ffprobe at ingest. ``None`` means no audio
+    #: stream, which is what decides whether asking for source audio in the
+    #: output means anything.
+    channels: int | None = None
 
 
 def build_candidate(record: MediaRecord) -> Candidate:
@@ -60,6 +72,7 @@ def build_candidate(record: MediaRecord) -> Candidate:
     quality = record.analysis.get(AnalyzerName.QUALITY, {})
     phash = record.analysis.get(AnalyzerName.PHASH, {})
     scenes = record.analysis.get(AnalyzerName.SCENES, {})
+    faces = record.analysis.get(AnalyzerName.FACES, {})
 
     clipped: float | None = None
     under = quality.get("frames", [{}])[0].get("underexposed_ratio") if quality else None
@@ -80,6 +93,13 @@ def build_candidate(record: MediaRecord) -> Candidate:
         clipped_ratio=clipped,
         phash=phash.get("phash") if phash else None,
         scene_count=scenes.get("scene_count") if scenes else None,
+        # A boolean, from a count, and no further. Which faces, or whose, is
+        # never computed and never stored (Phase 3, ADR-0008); "someone is on
+        # screen" is the strongest claim available and all a planner needs.
+        # ``None`` when detection has not run, so "not analysed" stays
+        # distinguishable from "analysed, nobody there".
+        has_faces=(bool(faces.get("face_count", 0)) if faces else None),
+        has_audio=bool(record.channels),
         sequence=record.created_order,
     )
 
@@ -133,12 +153,16 @@ class EditService:
         plan_repo: Any,
         events: Any,
         planner: Planner,
+        llm_runs: Any = None,
+        mode_decision: Any = None,
     ) -> None:
         self._session = session
         self._media = media_repo
         self._plans = plan_repo
         self._events = events
         self._planner = planner
+        self._llm_runs = llm_runs
+        self._mode_decision = mode_decision
 
     # ------------------------------------------------------------------ plan
     async def create_plan(
@@ -160,7 +184,10 @@ class EditService:
         candidates = [build_candidate(record) for record in records]
 
         try:
-            outcome = self._planner.plan(request, candidates)
+            # On a worker thread: the rules engine does not need it, but an LLM
+            # planner performs a network round trip, and one slow plan must not
+            # stall every other request sharing this event loop.
+            outcome = await anyio.to_thread.run_sync(self._planner.plan, request, candidates)
         except NoUsableMediaError as exc:
             raise ConflictError(
                 str(exc),
@@ -196,11 +223,29 @@ class EditService:
             )
             raise PlanInvalidError(violations)
 
+        # Stamp how the plan was chosen before it is stored, so a plan is
+        # self-describing: which mode ran, why that mode, and whether it was
+        # what the caller asked for.
+        if self._mode_decision is not None:
+            outcome.plan.metadata["mode"] = self._mode_decision.as_payload()
+
+        run = _run_record(self._planner)
+        if run is not None:
+            outcome.plan.metadata["llm"] = run.as_payload()
+
         row = await self._plans.create(
             project_id=project_id,
             plan=outcome.plan,
             selection=selection_payload(outcome.selection),
         )
+
+        # Recorded even when the model succeeded, and especially when it did
+        # not: a table that only holds successes cannot answer "how often does
+        # this fall back?", which is the question worth asking of the feature.
+        if run is not None and self._llm_runs is not None:
+            await self._llm_runs.record(
+                project_id=project_id, edit_plan_id=row.id, run=run.as_payload()
+            )
         await self._events.record(
             kind="editplan.created",
             actor="dev-user",
@@ -210,6 +255,7 @@ class EditService:
                 "planner": self._planner.name,
                 "segments": len(outcome.plan.segments),
                 "duration_ms": outcome.plan.total_duration_ms,
+                "fallback": bool(run and run.fallback_reason),
             },
         )
         await self._session.commit()
@@ -230,6 +276,17 @@ class EditService:
         render = await self._plans.create_render(project_id=project_id, edit_plan_id=edit_plan_id)
         await self._session.commit()
         return render
+
+
+def _run_record(planner: Planner) -> LlmRunRecord | None:
+    """The LLM run behind a plan, when there was one.
+
+    ``isinstance`` rather than duck typing on a ``last_run`` attribute: the
+    record's shape is what gets persisted, and accepting anything that happens
+    to have that attribute name would let a future planner write a differently
+    shaped row into the same table.
+    """
+    return planner.last_run if isinstance(planner, FallbackPlanner) else None
 
 
 __all__ = [

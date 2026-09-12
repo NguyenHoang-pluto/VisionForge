@@ -11,16 +11,20 @@ Every route resolves access through ``require_project``.
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from visionforge.api.dependencies import (
+    EditServiceFactory,
     get_edit_plan_repo,
     get_edit_service,
+    get_edit_service_factory,
     get_job_dispatcher,
+    get_llm_provider,
+    get_llm_run_repo,
     get_media_service,
     get_session,
     require_project,
@@ -30,6 +34,7 @@ from visionforge.api.schemas.edit import (
     EditPlanListResponse,
     EditPlanSummary,
     PlanCreateRequest,
+    PlannerCapabilities,
     RenderCreateRequest,
     RenderListResponse,
     RenderResponse,
@@ -38,14 +43,20 @@ from visionforge.api.serializers import serialize_edit_plan, serialize_render
 from visionforge.application.edit_service import EditService
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import DOWNLOAD_URL_TTL_S, MediaService
+from visionforge.domain.editbrief import MAX_REQUEST_CHARS
 from visionforge.domain.editplan import AspectRatio, AudioMode, FitMode, PlanInvalidError
 from visionforge.domain.errors import NotFoundError, ValidationError
 from visionforge.domain.ids import ProjectId
 from visionforge.domain.jobs import JobType
+from visionforge.domain.llm import LlmProvider
+from visionforge.domain.llm_planner import PlannerMode
 from visionforge.domain.planner import ClipOrder, PlanRequest
+from visionforge.domain.prompts import PROMPT_VERSION
 from visionforge.domain.render import RenderStatus
+from visionforge.domain.style import FPS_PRESETS, STYLE_PROFILES, QualityPreset, profile_for
 from visionforge.infra.db.models import Project
-from visionforge.infra.db.repositories import EditPlanRepository
+from visionforge.infra.db.repositories import EditPlanRepository, LlmRunRepository
+from visionforge.infra.llm import describe_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +73,48 @@ PRESET_DIMENSIONS: dict[AspectRatio, tuple[int, int]] = {
 }
 
 
+@router.get("/planner/capabilities", response_model=PlannerCapabilities)
+async def planner_capabilities(
+    provider: LlmProvider | None = Depends(get_llm_provider),
+) -> PlannerCapabilities:
+    """What this server can plan with, so the UI can be honest about it.
+
+    Not project-scoped, and deliberately so: it describes the server, not any
+    user's data, and it contains nothing a caller could not infer by attempting
+    a plan. **It never contains an API key.** The factory reports whether one is
+    configured; the key itself has no path out of the process.
+    """
+    capabilities = describe_capabilities(provider)
+    return PlannerCapabilities(
+        ai_available=bool(capabilities["ai_available"]),
+        provider=_as_str(capabilities["provider"]),
+        model=_as_str(capabilities["model"]),
+        is_stub=bool(capabilities.get("is_stub")),
+        error=_as_str(capabilities["error"]),
+        modes=[mode.value for mode in PlannerMode],
+        styles=[
+            {
+                "value": profile.style.value,
+                "label": profile.label,
+                "description": profile.description,
+                "default_duration_ms": profile.default_duration_ms,
+                "default_aspect": profile.default_aspect.value,
+                "min_clip_ms": profile.min_clip_ms,
+                "max_clip_ms": profile.max_clip_ms,
+            }
+            for profile in STYLE_PROFILES.values()
+        ],
+        aspect_ratios=[
+            {"value": ratio.value, "width": size[0], "height": size[1]}
+            for ratio, size in PRESET_DIMENSIONS.items()
+        ],
+        fps_presets=list(FPS_PRESETS),
+        quality_presets=[preset.value for preset in QualityPreset],
+        prompt_version=PROMPT_VERSION,
+        max_request_chars=MAX_REQUEST_CHARS,
+    )
+
+
 @router.post(
     "/projects/{project_id}/edit-plan",
     response_model=EditPlanDetail,
@@ -70,27 +123,51 @@ PRESET_DIMENSIONS: dict[AspectRatio, tuple[int, int]] = {
 async def create_edit_plan(
     body: PlanCreateRequest,
     project: Project = Depends(require_project),
-    service: EditService = Depends(get_edit_service),
+    factory: EditServiceFactory = Depends(get_edit_service_factory),
 ) -> EditPlanDetail:
     """Generate and persist an edit plan from the project's analysed media.
 
-    Synchronous: planning is pure arithmetic over rows already in the database
-    and takes milliseconds. Making it a job would add a queue round-trip and a
-    progress bar to something that finishes before the response is written.
+    Still synchronous, and still 201, even though an AI plan takes seconds
+    rather than milliseconds. The alternative -- making planning a job -- would
+    add a queue round trip, a progress bar and a polling client to something the
+    user is already waiting on, and would break a contract Phase 4 clients
+    depend on. The service runs the planner on a worker thread instead, so a
+    slow plan costs one thread rather than the event loop.
+
+    Which planner runs is decided here from the mode, the style and whether the
+    caller wrote anything -- and the decision is stored on the plan rather than
+    left to be inferred later from which planner's name it carries.
     """
-    width, height = PRESET_DIMENSIONS[body.aspect_ratio]
+    profile = profile_for(body.style)
+
+    # A style supplies defaults only where the caller stated nothing. An
+    # explicit value always wins, including one that happens to equal the
+    # style's own default -- which is why those fields default to None.
+    aspect = body.aspect_ratio or profile.default_aspect
+    width, height = PRESET_DIMENSIONS[aspect]
+    order = body.order or (
+        ClipOrder.SEQUENCE if profile.prefer_sequence_order else ClipOrder.SCORE_DESC
+    )
+
     request = PlanRequest(
         project_id=ProjectId(project.id),
-        target_duration_ms=body.target_duration_ms,
+        target_duration_ms=body.target_duration_ms or profile.default_duration_ms,
         max_clips=body.max_clips,
         min_clips=body.min_clips,
-        aspect_ratio=body.aspect_ratio,
+        aspect_ratio=aspect,
         width=width,
         height=height,
         fps=body.fps,
         fit=body.fit,
-        audio=body.audio,
-        order=body.order,
+        audio=body.audio or profile.default_audio,
+        order=order,
+        quality=body.quality,
+        style=body.style,
+        request_text=body.request_text,
+    )
+
+    service, _selection = factory.for_request(
+        mode=body.mode, style=body.style, request_text=body.request_text
     )
 
     try:
@@ -99,6 +176,10 @@ async def create_edit_plan(
         # A planner that emits an invalid plan is a bug, not user error. 422
         # with the full violation list, so it is diagnosable rather than a
         # generic failure.
+        #
+        # The LLM path does not normally arrive here: an invalid model plan is
+        # caught inside the planner while the rules engine is still available.
+        # Reaching this from an AI request means the fallback failed too.
         raise ValidationError(
             "the planner produced an invalid plan",
             hint="; ".join(v.message for v in exc.violations),
@@ -204,6 +285,50 @@ async def get_render(
         response.playback_url = media_service.presign_download(row.storage_key)
         response.playback_expires_in_s = DOWNLOAD_URL_TTL_S
     return response
+
+
+@router.get("/projects/{project_id}/llm-runs")
+async def list_llm_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    project: Project = Depends(require_project),
+    repo: LlmRunRepository = Depends(get_llm_run_repo),
+) -> dict[str, Any]:
+    """Planning calls made for this project, successful or not.
+
+    The failures are the point. A feature that falls back silently is a feature
+    nobody can tell is broken, so every run is listed -- including the ones that
+    produced no plan -- with its provider, latency, token usage and the reason
+    it fell back.
+
+    No prompt, no completion and no request text: the row holds a digest of what
+    was asked, and that is all the table ever stored.
+    """
+    rows = await repo.list_for_project(project.id, limit=limit)
+    return {
+        "items": [
+            {
+                "id": str(row.id),
+                "edit_plan_id": str(row.edit_plan_id) if row.edit_plan_id else None,
+                "provider": row.provider,
+                "model": row.model,
+                "prompt_version": row.prompt_version,
+                "status": row.status,
+                "attempts": row.attempts,
+                "latency_ms": row.latency_ms,
+                "input_tokens": row.input_tokens,
+                "output_tokens": row.output_tokens,
+                "fallback_reason": row.fallback_reason,
+                "fallback_detail": row.fallback_detail,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+        "total": len(rows),
+    }
+
+
+def _as_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 __all__ = ["PRESET_DIMENSIONS", "AudioMode", "ClipOrder", "FitMode", "router"]
