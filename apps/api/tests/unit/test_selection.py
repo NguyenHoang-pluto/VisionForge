@@ -220,6 +220,38 @@ class TestUsability:
         """A still has no duration; that is not a defect."""
         assert usability_rejection(candidate(kind=MediaKind.IMAGE, duration_ms=None), W) is None
 
+    def test_a_black_frame_is_reported_as_exposure_not_focus(self) -> None:
+        """The reason shown must be the one that explains the problem.
+
+        A frame crushed to black has almost no edge energy, so its Laplacian
+        variance is near zero and a naive check order reports "out of focus" for
+        a frame whose actual fault is that it is black. Exposure and contrast
+        are evaluated first, because sharpness is only meaningful on a frame
+        that has detail to measure.
+        """
+        black = candidate(blur_score=0.0, contrast=0.5, mean_luminance=0.0, clipped_ratio=1.0)
+        rejection = usability_rejection(black, W)
+
+        assert rejection is not None
+        assert rejection.reason is RejectionReason.BADLY_EXPOSED
+        assert rejection.reason is not RejectionReason.TOO_BLURRY
+
+    def test_a_flat_grey_frame_is_reported_as_contrast_not_focus(self) -> None:
+        """Same reasoning: a featureless frame is flat, not out of focus."""
+        flat = candidate(blur_score=0.2, contrast=1.0, mean_luminance=128.0, clipped_ratio=0.0)
+        rejection = usability_rejection(flat, W)
+
+        assert rejection is not None
+        assert rejection.reason is RejectionReason.LOW_CONTRAST
+
+    def test_a_genuinely_soft_frame_is_still_reported_as_focus(self) -> None:
+        """Reordering must not stop the blur check from firing when it applies."""
+        soft = candidate(blur_score=5.0, contrast=60.0, mean_luminance=128.0, clipped_ratio=0.01)
+        rejection = usability_rejection(soft, W)
+
+        assert rejection is not None
+        assert rejection.reason is RejectionReason.TOO_BLURRY
+
     def test_every_rejection_explains_itself(self) -> None:
         rejection = usability_rejection(candidate(blur_score=5.0), W)
         assert rejection is not None and rejection.detail

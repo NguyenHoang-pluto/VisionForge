@@ -256,12 +256,12 @@ def usability_rejection(
 
     assert candidate.blur_score is not None and candidate.contrast is not None
 
-    if candidate.blur_score < weights.min_blur_score:
-        return Rejection(
-            candidate.media_id,
-            RejectionReason.TOO_BLURRY,
-            f"sharpness {candidate.blur_score:.1f} below {weights.min_blur_score}",
-        )
+    # Exposure and contrast are checked *before* sharpness, and the order is the
+    # point. A frame crushed to black or blown to white has almost no edge
+    # energy, so its Laplacian variance is near zero and the blur test fires
+    # first -- reporting "out of focus" for a frame whose real problem is that
+    # it is black. Sharpness is only a meaningful measurement on a frame that
+    # has detail to measure, so the checks that establish that run first.
     if (candidate.clipped_ratio or 0.0) > weights.max_clipped_ratio:
         return Rejection(
             candidate.media_id,
@@ -273,6 +273,12 @@ def usability_rejection(
             candidate.media_id,
             RejectionReason.LOW_CONTRAST,
             f"contrast {candidate.contrast:.1f} below {weights.min_contrast}",
+        )
+    if candidate.blur_score < weights.min_blur_score:
+        return Rejection(
+            candidate.media_id,
+            RejectionReason.TOO_BLURRY,
+            f"sharpness {candidate.blur_score:.1f} below {weights.min_blur_score}",
         )
     # Images have no duration and are exempt; a video too short to trim is not
     # worth a cut.
