@@ -80,7 +80,7 @@ mypy_path = "src"
 packages = ["visionforge"]
 
 [[tool.mypy.overrides]]
-module = ["celery.*", "pgvector.*", "sse_starlette.*"]
+module = ["celery.*", "pgvector.*", "sse_starlette.*", "scenedetect.*", "open_clip.*"]
 ignore_missing_imports = true
 
 # Celery's @task decorator is untyped, which under --strict makes every task it
