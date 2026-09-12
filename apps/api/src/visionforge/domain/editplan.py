@@ -28,6 +28,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from visionforge.domain.errors import PermanentError
 from visionforge.domain.ids import MediaId, ProjectId
 
 # --------------------------------------------------------------------- limits
@@ -190,14 +191,28 @@ class PlanViolation:
         }
 
 
-class PlanInvalidError(ValueError):
-    """A plan failed validation. Carries every violation, not just the first."""
+class PlanInvalidError(PermanentError):
+    """A plan failed validation. Carries every violation, not just the first.
+
+    **Permanent, not transient.** A plan that references deleted media, or reaches
+    into another project, will fail identically on every retry: the plan is fixed
+    and so is the world it disagrees with. Classifying it as transient would burn
+    the retry budget and delay the report by minutes for no chance of success --
+    the same reasoning as a worker without FFmpeg.
+
+    Fixing it means re-planning, which produces a *new* plan; this one never
+    becomes valid.
+    """
+
+    code = "plan_invalid"
+    http_status = 422
 
     def __init__(self, violations: list[PlanViolation]) -> None:
         self.violations = violations
         super().__init__(
             f"edit plan rejected ({len(violations)} violation(s)): "
-            + "; ".join(v.message for v in violations)
+            + "; ".join(v.message for v in violations),
+            hint="Re-generate the plan; the media it references has changed.",
         )
 
 
