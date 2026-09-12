@@ -15,6 +15,23 @@ discovered after it:
 The process-level mutex is the Celery ``--pool=solo`` GPU worker (ADR-0003).
 This lock is the second line: it also protects against a task that internally
 tries to parallelise, and it is what makes the budget arithmetic meaningful.
+
+**Known limitation: the lease is per-process, not per-device.**
+
+``threading.RLock`` and the residency table live in one process. Two processes
+that both touch the GPU -- a running worker plus a pytest session, or two GPU
+workers started by mistake -- each believe they own the whole card, and nothing
+here can stop them overcommitting it.
+
+The design relies on there being exactly one GPU process: the solo-pool worker
+on the ``gpu`` queue. That holds in production and in normal development; it is
+violated whenever GPU tests run while a worker is live, which is why those tests
+are marked ``gpu`` and excluded from every default run.
+
+Making this robust needs a cross-process primitive -- a filesystem lock, or a
+Redis lease keyed on the device UUID. That is deliberately not built yet: it
+would be real machinery in service of a configuration the deployment does not
+create. Revisit it when more than one process is ever meant to share a card.
 """
 
 from __future__ import annotations

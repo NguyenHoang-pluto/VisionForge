@@ -119,10 +119,52 @@ def media_fixtures() -> dict[str, Path]:
     return paths
 
 
+#: Domain tables, ordered so that FK cascades never block a truncate.
+#: ``users`` last, because everything hangs off it.
+_DOMAIN_TABLES = (
+    "media_analysis",
+    "media_derivatives",
+    "job_steps",
+    "jobs",
+    "media_assets",
+    "events",
+    "projects",
+    "users",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clean_database() -> None:
+    """Truncate domain tables once, before any integration test runs.
+
+    These tests share a database with the acceptance scripts and with manual
+    dev use. A run against a database carrying data from several previous
+    acceptance runs failed 11 of 74 tests once, and passed on a fresh schema --
+    the kind of failure that is worse than a bug because it looks like
+    flakiness. Starting from a known-empty state removes the variable.
+
+    Session-scoped rather than per-test: the fixtures below already clean up
+    after themselves, and truncating between every test would triple the
+    suite's runtime for no additional isolation.
+    """
+    with get_sync_sessionmaker()() as session:
+        session.execute(
+            text(f"TRUNCATE TABLE {', '.join(_DOMAIN_TABLES)} RESTART IDENTITY CASCADE")
+        )
+        session.commit()
+
+
 @pytest.fixture
 def db() -> Iterator[Session]:
     with get_sync_sessionmaker()() as session:
-        yield session
+        try:
+            yield session
+        finally:
+            # A test that failed mid-transaction leaves the session in an
+            # aborted state, and every later statement on it -- including the
+            # fixture teardowns below -- fails with InFailedSqlTransaction.
+            # Rolling back here contains the damage to the test that caused it.
+            session.rollback()
 
 
 @pytest.fixture
@@ -142,7 +184,10 @@ def project(db: Session) -> Iterator[Project]:
 
     yield row
 
-    # Cascades remove media, derivatives, jobs, steps and events.
+    # Roll back first: if the test failed mid-transaction, this DELETE would
+    # otherwise fail too and leak the project into the next test.
+    db.rollback()
+    # Cascades remove media, derivatives, analyses, jobs, steps and events.
     db.execute(text("DELETE FROM users WHERE id = :id"), {"id": user.id})
     db.commit()
 

@@ -23,7 +23,11 @@ from visionforge.infra.ml.lease import (
     LeaseReceipt,
     VramSnapshot,
 )
-from visionforge.infra.ml.registry import ModelRegistry
+from visionforge.infra.ml.registry import (
+    VRAM_ESTIMATE_TOLERANCE_MB,
+    ModelRegistry,
+    VramEstimateError,
+)
 
 
 class FakeModel:
@@ -321,6 +325,40 @@ class TestModelRegistry:
     def test_leasing_an_unknown_model_fails_before_acquiring(self) -> None:
         with pytest.raises(KeyError):
             ModelRegistry(GpuLeaseManager()).lease("nope")
+
+
+class TestVramEstimateVerification:
+    """A declared footprint that undershoots reality must not pass silently.
+
+    The budget is arithmetic over these declarations, so an under-declaration
+    turns the whole check into false reassurance and the failure resurfaces as a
+    CUDA OOM mid-inference instead of a refusal at the boundary.
+    """
+
+    def test_accurate_estimate_is_accepted(self) -> None:
+        ModelRegistry._verify_estimate(FakeSpec("a", 900), actual_mb=850.0)
+
+    def test_generous_estimate_is_accepted(self) -> None:
+        """Estimates must cover activation peaks, not just weights."""
+        ModelRegistry._verify_estimate(FakeSpec("clip", 900), actual_mb=352.0)
+
+    def test_small_overshoot_warns_but_proceeds(self) -> None:
+        """Allocator rounding is not a mis-declaration."""
+        ModelRegistry._verify_estimate(
+            FakeSpec("a", 900), actual_mb=900 + VRAM_ESTIMATE_TOLERANCE_MB - 1
+        )
+
+    def test_material_under_declaration_is_refused(self) -> None:
+        with pytest.raises(VramEstimateError, match="declared 100 MiB"):
+            ModelRegistry._verify_estimate(FakeSpec("liar", 100), actual_mb=1200.0)
+
+    def test_the_error_names_the_model_and_both_numbers(self) -> None:
+        with pytest.raises(VramEstimateError) as exc_info:
+            ModelRegistry._verify_estimate(FakeSpec("liar", 100), actual_mb=1200.0)
+
+        message = str(exc_info.value)
+        assert "liar" in message
+        assert "100" in message and "1200" in message
 
 
 # ---------------------------------------------------------------- reporting

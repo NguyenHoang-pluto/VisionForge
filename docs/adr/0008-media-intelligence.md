@@ -95,6 +95,34 @@ inner product agree.
 `m=16, ef_construction=64` are pgvector's defaults, kept deliberately: a larger
 graph costs build memory for accuracy no one has yet measured a need for.
 
+## The GPU lease is per-process, and that is a known limit
+
+`GpuLeaseManager` holds a `threading.RLock` and a residency table inside one
+process. Two processes that both use the GPU each think they own the card.
+
+The design depends on there being exactly one: the solo-pool worker on the `gpu`
+queue. That holds in production and in ordinary development. It is violated when
+GPU tests run alongside a live worker, which is why those tests carry the `gpu`
+marker and are excluded from every default run.
+
+A cross-process lease (a file lock, or Redis keyed on the device UUID) is not
+built, deliberately: it is real machinery in service of a configuration the
+deployment does not produce. It becomes worth building the first time more than
+one process is genuinely meant to share a card.
+
+## Declared VRAM is verified against measured VRAM
+
+`estimated_vram_mb` is a constant an adapter author wrote down, and the entire
+budget is arithmetic over those constants. A declaration that drifts below
+reality silently converts the budget check into false reassurance: the manager
+admits a model that does not fit, and the failure arrives as a CUDA OOM
+mid-inference instead of a refusal at the boundary.
+
+The registry therefore compares the actual allocation delta against the estimate
+at load time. Over-declaring is fine and expected -- the estimate must cover
+activation peaks, not just weights. Under-declaring by more than 64 MiB raises
+`VramEstimateError` rather than proceeding on a budget that is now fiction.
+
 ## PENDING -> RUNNING is a legal transition
 
 Found by the Phase 3 acceptance run, which stranded a job with

@@ -28,6 +28,15 @@ from visionforge.infra.ml.lease import GpuLeaseManager, LeaseReceipt, get_lease_
 
 logger = logging.getLogger(__name__)
 
+#: How far a model may exceed its declared footprint before loading is refused.
+#: Small enough that a real mis-declaration is caught, loose enough to absorb
+#: allocator rounding and a few MiB of framework overhead.
+VRAM_ESTIMATE_TOLERANCE_MB = 64
+
+
+class VramEstimateError(RuntimeError):
+    """A model used materially more VRAM than its adapter declared."""
+
 
 class LoadedModel(Protocol):
     """Anything the registry can hold and later throw away."""
@@ -103,6 +112,9 @@ class ModelRegistry:
         synchronize()
         after = vram_snapshot()
 
+        actual_mb = after.allocated_mb - before.allocated_mb
+        self._verify_estimate(spec, actual_mb)
+
         self._models[key] = model
         self._lease.register(key, spec.estimated_vram_mb)
 
@@ -113,11 +125,37 @@ class ModelRegistry:
                 "version": spec.version,
                 "device": select_device(),
                 "load_ms": round((time.perf_counter() - started) * 1000, 1),
-                "vram_delta_mb": round(after.allocated_mb - before.allocated_mb, 1),
+                "vram_delta_mb": round(actual_mb, 1),
                 "estimated_mb": spec.estimated_vram_mb,
             },
         )
         return model
+
+    @staticmethod
+    def _verify_estimate(spec: ModelSpec, actual_mb: float) -> None:
+        """Check a model's declared footprint against what it actually took.
+
+        ``estimated_vram_mb`` is a constant an adapter author wrote down. The
+        whole budget is arithmetic over those constants, so a declaration that
+        drifts below reality lets the manager admit models that do not fit and
+        turns a budget check into false reassurance -- the failure then arrives
+        as a CUDA OOM mid-inference rather than as a refusal at the boundary.
+        The estimate is deliberately allowed to be *generous* (it must cover
+        activation peaks, not just weights); only under-declaration is a fault.
+        """
+        if actual_mb <= spec.estimated_vram_mb:
+            return
+
+        overshoot = actual_mb - spec.estimated_vram_mb
+        message = (
+            f"{spec.key} declared {spec.estimated_vram_mb} MiB but its weights "
+            f"alone took {actual_mb:.0f} MiB"
+        )
+        if overshoot > VRAM_ESTIMATE_TOLERANCE_MB:
+            raise VramEstimateError(
+                f"{message}; the lease budget cannot be trusted while that is true"
+            )
+        logger.warning("vram estimate too low", extra={"model": spec.key, "detail": message})
 
     def unload(self, key: str) -> None:
         model = self._models.pop(key, None)

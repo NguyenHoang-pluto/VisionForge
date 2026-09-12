@@ -12,7 +12,12 @@ from visionforge.infra.ml.lease import (
     GpuLeaseManager,
     get_lease_manager,
 )
-from visionforge.infra.ml.registry import ModelRegistry, get_registry, reset_registry
+from visionforge.infra.ml.registry import (
+    ModelRegistry,
+    VramEstimateError,
+    get_registry,
+    reset_registry,
+)
 
 __all__ = [
     "ClipEmbeddingAnalyzer",
@@ -21,6 +26,7 @@ __all__ = [
     "GpuBusyError",
     "GpuLeaseManager",
     "ModelRegistry",
+    "VramEstimateError",
     "describe",
     "embed_text",
     "get_lease_manager",
