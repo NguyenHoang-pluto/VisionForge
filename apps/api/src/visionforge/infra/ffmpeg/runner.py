@@ -38,17 +38,27 @@ class CommandResult:
     stderr: str
 
 
+def resolve_binary(binary: str = FFMPEG) -> str:
+    """Absolute path to an FFmpeg binary, or raise.
+
+    Exported so that callers needing streaming output (the render worker, which
+    reads ``-progress``) can spawn the process themselves while still resolving
+    the executable through the one place that knows how. They get the path; they
+    never get to choose it.
+    """
+    executable = shutil.which(binary)
+    if executable is None:
+        raise FFmpegNotAvailableError(f"{binary} not found on PATH")
+    return executable
+
+
 def run(args: list[str], *, timeout_s: float, binary: str = FFMPEG) -> CommandResult:
     """Run ffmpeg/ffprobe with an argv array and a hard timeout.
 
     Raises ``TransientError`` on timeout (the machine may simply be loaded) and
     ``PermanentError`` on a non-zero exit (the input is usually the problem).
     """
-    executable = shutil.which(binary)
-    if executable is None:
-        raise FFmpegNotAvailableError(f"{binary} not found on PATH")
-
-    argv = [executable, *args]
+    argv = [resolve_binary(binary), *args]
     logger.debug("running", extra={"binary": binary, "argc": len(argv)})
 
     try:

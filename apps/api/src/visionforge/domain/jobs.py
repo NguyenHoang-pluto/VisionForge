@@ -16,6 +16,7 @@ class JobType(StrEnum):
     MEDIA_INGEST = "media_ingest"
     MEDIA_ANALYZE_CPU = "media_analyze_cpu"
     MEDIA_ANALYZE_GPU = "media_analyze_gpu"
+    RENDER_VIDEO = "render_video"
 
 
 class JobStatus(StrEnum):
@@ -154,8 +155,18 @@ MEDIA_ANALYZE_GPU_STEPS: tuple[str, ...] = (
     "FINALIZE",
 )
 
+#: Rendering: resolve and validate, compile, encode, upload, record.
+RENDER_VIDEO_STEPS: tuple[str, ...] = (
+    "PREPARE",
+    "COMPILE",
+    "RENDER",
+    "PUBLISH",
+    "FINALIZE",
+)
+
 JOB_STEP_PLANS: dict[JobType, tuple[str, ...]] = {
     JobType.MEDIA_INGEST: MEDIA_INGEST_STEPS,
     JobType.MEDIA_ANALYZE_CPU: MEDIA_ANALYZE_CPU_STEPS,
     JobType.MEDIA_ANALYZE_GPU: MEDIA_ANALYZE_GPU_STEPS,
+    JobType.RENDER_VIDEO: RENDER_VIDEO_STEPS,
 }

@@ -39,6 +39,7 @@ from visionforge.domain.analysis import (
 )
 from visionforge.domain.jobs import JobStatus, JobType, StepStatus
 from visionforge.domain.media import DerivativeKind, MediaKind, MediaStatus
+from visionforge.domain.render import RenderStatus
 from visionforge.infra.db.base import Base
 
 
@@ -235,6 +236,82 @@ class MediaAnalysis(Base, TimestampMixin):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(CLIP_EMBEDDING_DIM), nullable=True)
 
     media: Mapped[MediaAsset] = relationship(back_populates="analyses")
+
+
+# ------------------------------------------------------------------- edit plans
+class EditPlanRow(Base, TimestampMixin):
+    """A generated edit plan, stored exactly as the planner produced it.
+
+    Append-only in practice: re-planning writes a new row rather than mutating
+    an old one, so a render can always be traced back to the plan it was built
+    from and two plans can be compared. The selection is stored alongside
+    because a plan that cannot explain what it dropped is not reviewable.
+    """
+
+    __tablename__ = "edit_plans"
+    __table_args__ = (Index("ix_edit_plans_project_created", "project_id", "created_at"),)
+
+    id: Mapped[UUID] = _uuid_pk()
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    planner: Mapped[str] = mapped_column(String(48), nullable=False)
+    planner_version: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    #: The EditPlan itself. JSONB because the schema will keep changing through
+    #: Phase 5 as the LLM planner needs richer operations, and a validated
+    #: document absorbs that churn without a migration each time.
+    plan: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    #: What was chosen and what was rejected, with reasons.
+    selection: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
+    total_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    segment_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    renders: Mapped[list[RenderRow]] = relationship(
+        back_populates="edit_plan", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------------- renders
+class RenderRow(Base, TimestampMixin):
+    """One rendered output, tied to the exact plan that produced it."""
+
+    __tablename__ = "renders"
+    __table_args__ = (Index("ix_renders_project_created", "project_id", "created_at"),)
+
+    id: Mapped[UUID] = _uuid_pk()
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    edit_plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("edit_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+
+    status: Mapped[RenderStatus] = mapped_column(
+        _enum(RenderStatus, 16), default=RenderStatus.PENDING, nullable=False, index=True
+    )
+    storage_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    bytes_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    #: Measured from the finished file with ffprobe, not copied from the plan.
+    #: A render that claims the duration it intended rather than the one it
+    #: produced hides exactly the discrepancies worth catching.
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fps: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    #: The compiled timeline and encoder settings, for reproducibility.
+    timeline: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    spec: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    metrics: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    edit_plan: Mapped[EditPlanRow] = relationship(back_populates="renders")
 
 
 # ------------------------------------------------------------------------- jobs

@@ -7,6 +7,7 @@ computed in exactly one place and cannot drift between endpoints.
 from __future__ import annotations
 
 from visionforge.api.schemas.analysis import AnalysisResponse
+from visionforge.api.schemas.edit import EditPlanDetail, RenderResponse
 from visionforge.api.schemas.media import (
     DerivativeResponse,
     JobResponse,
@@ -15,7 +16,13 @@ from visionforge.api.schemas.media import (
 )
 from visionforge.domain.jobs import StepStatus
 from visionforge.domain.media import DerivativeKind
-from visionforge.infra.db.models import Job, MediaAnalysis, MediaAsset
+from visionforge.infra.db.models import (
+    EditPlanRow,
+    Job,
+    MediaAnalysis,
+    MediaAsset,
+    RenderRow,
+)
 
 
 def serialize_media(media: MediaAsset) -> MediaResponse:
@@ -113,5 +120,49 @@ def serialize_analysis(row: MediaAnalysis) -> AnalysisResponse:
         payload=row.payload,
         metrics=row.metrics,
         has_embedding=row.embedding is not None,
+        created_at=row.created_at,
+    )
+
+
+def serialize_edit_plan(row: EditPlanRow, *, include_plan: bool = False) -> EditPlanDetail:
+    """Serialise a plan row.
+
+    The full document and the selection are opt-in: a listing of twenty plans
+    does not need twenty embedded segment arrays, and the selection can run to
+    every rejected clip with its reason.
+    """
+    return EditPlanDetail(
+        id=row.id,
+        project_id=row.project_id,
+        planner=row.planner,
+        planner_version=row.planner_version,
+        segment_count=row.segment_count,
+        total_duration_ms=row.total_duration_ms,
+        created_at=row.created_at,
+        plan=row.plan if include_plan else {},
+        selection=row.selection if include_plan else {},
+    )
+
+
+def serialize_render(row: RenderRow) -> RenderResponse:
+    """Serialise a render row.
+
+    ``storage_key`` is deliberately not exposed. It is an internal object
+    address; a client that needs the bytes gets a short-lived presigned URL.
+    """
+    return RenderResponse(
+        id=row.id,
+        project_id=row.project_id,
+        edit_plan_id=row.edit_plan_id,
+        job_id=row.job_id,
+        status=str(row.status),
+        bytes_size=row.bytes_size,
+        duration_ms=row.duration_ms,
+        width=row.width,
+        height=row.height,
+        fps=row.fps,
+        spec=row.spec,
+        metrics=row.metrics,
+        error=row.error,
         created_at=row.created_at,
     )

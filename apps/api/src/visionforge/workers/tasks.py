@@ -23,12 +23,18 @@ from sqlalchemy.orm import Session
 from visionforge.domain.errors import DuplicateMediaError
 from visionforge.domain.jobs import JobStatus, StepStatus
 from visionforge.domain.media import MediaStatus
-from visionforge.infra.db.models import Job, MediaAsset
+from visionforge.domain.render import RenderStatus
+from visionforge.infra.db.models import Job, MediaAsset, RenderRow
 from visionforge.infra.db.sync_session import get_sync_sessionmaker
 from visionforge.infra.ffmpeg import FFmpegNotAvailableError, assert_ffmpeg_available
-from visionforge.infra.queue.celery_app import QUEUE_CPU, QUEUE_GPU, celery_app
+from visionforge.infra.queue.celery_app import (
+    QUEUE_CPU,
+    QUEUE_GPU,
+    QUEUE_RENDER,
+    celery_app,
+)
 from visionforge.infra.redis.events import publish_sync
-from visionforge.workers import media_analysis, media_ingest
+from visionforge.workers import media_analysis, media_ingest, video_render
 from visionforge.workers.runtime import JobContext, JobRunner
 
 logger = logging.getLogger(__name__)
@@ -260,8 +266,90 @@ def _run_analysis(task: Task, job_id: str, steps: Mapping[str, Any]) -> str:
         return str(status)
 
 
+@celery_app.task(
+    bind=True,
+    name="visionforge.render_video",
+    queue=QUEUE_RENDER,
+    acks_late=True,
+    max_retries=None,
+)
+def render_video_task(self: Task, job_id: str) -> str:
+    """Render one edit plan to an MP4.
+
+    FFmpeg is asserted with the job in hand, for the same reason as ingest: a
+    worker without FFmpeg must fail the job it broke with a readable error
+    rather than strand it QUEUED with nothing recorded.
+    """
+    with get_sync_sessionmaker()() as session:
+        job = session.get(Job, UUID(job_id))
+        if job is None:
+            logger.warning("job not found; message discarded", extra={"job_id": job_id})
+            return "missing"
+
+        if JobStatus(job.status) in TERMINAL:
+            return str(job.status)
+
+        if job.cancel_requested:
+            _finish(session, job, JobStatus.CANCELLED)
+            _mark_render(session, job, RenderStatus.CANCELLED)
+            return str(JobStatus.CANCELLED)
+
+        try:
+            assert_ffmpeg_available()
+        except FFmpegNotAvailableError as exc:
+            _fail_job(session, job, code="ffmpeg_unavailable", message=str(exc))
+            _mark_render(session, job, RenderStatus.FAILED, error=job.error)
+            logger.error("worker cannot render", extra={"error": str(exc)})
+            return str(JobStatus.FAILED)
+
+        ctx = JobContext(session, job)
+        try:
+            JobRunner(session, job).run(video_render.STEPS)
+        finally:
+            video_render.cleanup(ctx)
+
+        session.refresh(job)
+        status = JobStatus(job.status)
+
+        if status is JobStatus.RETRY_WAIT:
+            return _schedule_retry(self, session, job)
+
+        if status is JobStatus.FAILED:
+            _mark_render(session, job, RenderStatus.FAILED, error=job.error)
+        elif status is JobStatus.CANCELLED:
+            _mark_render(session, job, RenderStatus.CANCELLED)
+
+        return str(status)
+
+
+def _mark_render(
+    session: Session,
+    job: Job,
+    status: RenderStatus,
+    *,
+    error: dict[str, Any] | None = None,
+) -> None:
+    """Mirror a terminal job outcome onto its render row.
+
+    The render row is what the UI reads. A job that failed while its render
+    still says "rendering" is the kind of inconsistency that makes a dashboard
+    untrustworthy.
+    """
+    render_id = job.params.get("render_id")
+    if not render_id:
+        return
+    render = session.get(RenderRow, UUID(str(render_id)))
+    if render is None:
+        return
+    render.status = status
+    if error is not None:
+        render.error = error
+    session.commit()
+
+
 __all__ = [
     "media_analyze_cpu_task",
     "media_analyze_gpu_task",
     "media_ingest_task",
+    "render_video_task",
 ]

@@ -12,6 +12,7 @@ from uuid import UUID
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from visionforge.application.edit_service import EditService
 from visionforge.application.health_service import HealthService
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import MediaService
@@ -19,11 +20,13 @@ from visionforge.core.config import get_settings
 from visionforge.domain.errors import NotFoundError
 from visionforge.domain.health import HealthProbe
 from visionforge.domain.ids import ProjectId, UserId
+from visionforge.domain.planner import Planner, RulesEnginePlanner
 from visionforge.domain.storage import ObjectStore
 from visionforge.infra.db import DatabaseProbe, get_sessionmaker
 from visionforge.infra.db.models import Project
 from visionforge.infra.db.repositories import (
     AnalysisRepository,
+    EditPlanRepository,
     EventRepository,
     JobRepository,
     MediaRepository,
@@ -80,6 +83,10 @@ def get_analysis_repo(session: AsyncSession = Depends(get_session)) -> AnalysisR
     return AnalysisRepository(session)
 
 
+def get_edit_plan_repo(session: AsyncSession = Depends(get_session)) -> EditPlanRepository:
+    return EditPlanRepository(session)
+
+
 def get_event_repo(session: AsyncSession = Depends(get_session)) -> EventRepository:
     return EventRepository(session)
 
@@ -96,6 +103,26 @@ def get_media_service(
     store: ObjectStore = Depends(get_object_store),
 ) -> MediaService:
     return MediaService(session, media, events, store)
+
+
+def get_planner() -> Planner:
+    """The active planner.
+
+    A single override point. Phase 5 swaps ``RulesEnginePlanner`` for an LLM
+    implementation here and nothing else changes -- the service, the validation
+    gate, the timeline compiler and the renderer all sit behind the port.
+    """
+    return RulesEnginePlanner()
+
+
+def get_edit_service(
+    session: AsyncSession = Depends(get_session),
+    media: MediaRepository = Depends(get_media_repo),
+    plans: EditPlanRepository = Depends(get_edit_plan_repo),
+    events: EventRepository = Depends(get_event_repo),
+    planner: Planner = Depends(get_planner),
+) -> EditService:
+    return EditService(session, media, plans, events, planner)
 
 
 def get_job_dispatcher(

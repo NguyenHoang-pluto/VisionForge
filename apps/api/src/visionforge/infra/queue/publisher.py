@@ -5,7 +5,12 @@ from __future__ import annotations
 from uuid import UUID
 
 from visionforge.domain.jobs import JobType
-from visionforge.infra.queue.celery_app import QUEUE_CPU, QUEUE_GPU, celery_app
+from visionforge.infra.queue.celery_app import (
+    QUEUE_CPU,
+    QUEUE_GPU,
+    QUEUE_RENDER,
+    celery_app,
+)
 
 #: Job type -> (task name, queue). Media ingest is CPU work: ffprobe, hashing
 #: and FFmpeg transcodes, no GPU.
@@ -15,6 +20,9 @@ TASK_ROUTES: dict[JobType, tuple[str, str]] = {
     # Model inference goes to the gpu queue, whose worker holds the single
     # concurrency slot that serialises access to the 4 GiB card.
     JobType.MEDIA_ANALYZE_GPU: ("visionforge.media_analyze_gpu", QUEUE_GPU),
+    # Encoding goes to its own queue so a multi-minute render never blocks a
+    # second-long analysis task, and vice versa.
+    JobType.RENDER_VIDEO: ("visionforge.render_video", QUEUE_RENDER),
 }
 
 

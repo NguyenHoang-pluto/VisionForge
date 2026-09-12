@@ -16,10 +16,14 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from visionforge.domain.analysis import AnalysisOutcome, AnalyzerName
+from visionforge.domain.analysis import AnalysisOutcome, AnalysisStatus, AnalyzerName
+from visionforge.domain.editplan import EditPlan
+from visionforge.domain.ids import MediaId
 from visionforge.domain.jobs import JobStatus, JobType, StepStatus
-from visionforge.domain.media import DerivativeKind, MediaStatus
+from visionforge.domain.media import DerivativeKind, MediaKind, MediaStatus
+from visionforge.domain.render import RenderStatus
 from visionforge.infra.db.models import (
+    EditPlanRow,
     Event,
     Job,
     JobStep,
@@ -27,6 +31,7 @@ from visionforge.infra.db.models import (
     MediaAsset,
     MediaDerivative,
     Project,
+    RenderRow,
     User,
 )
 
@@ -121,6 +126,54 @@ class MediaRepository:
             select(func.count()).select_from(MediaAsset).where(MediaAsset.project_id == project_id)
         )
         return int(result.scalar_one())
+
+    async def records_with_analysis(self, project_id: UUID) -> list[Any]:
+        """Every asset in a project, paired with its latest analysis per analyzer.
+
+        Two queries rather than a join with aggregation: the analysis payloads
+        are JSONB documents, and fanning them out in SQL would return the media
+        row once per analyzer. ``created_at`` ordering gives the stable
+        ``created_order`` the selector uses as its tie-break, so a project's
+        ranking never depends on row iteration order.
+        """
+        from visionforge.application.edit_service import MediaRecord
+
+        media_result = await self._session.execute(
+            select(MediaAsset)
+            .where(MediaAsset.project_id == project_id)
+            .order_by(MediaAsset.created_at, MediaAsset.id)
+        )
+        media_rows = list(media_result.scalars().all())
+        if not media_rows:
+            return []
+
+        analysis_result = await self._session.execute(
+            select(MediaAnalysis)
+            .where(
+                MediaAnalysis.project_id == project_id,
+                MediaAnalysis.status == AnalysisStatus.OK,
+            )
+            .order_by(MediaAnalysis.analyzer_version)
+        )
+        by_media: dict[UUID, dict[AnalyzerName, dict[str, Any]]] = {}
+        for row in analysis_result.scalars().all():
+            # Ordered by version ascending, so the last write wins and each
+            # analyzer ends up represented by its newest result.
+            by_media.setdefault(row.media_id, {})[AnalyzerName(row.analyzer)] = row.payload
+
+        return [
+            MediaRecord(
+                media_id=MediaId(row.id),
+                kind=MediaKind(row.kind),
+                status=MediaStatus(row.status),
+                duration_ms=row.duration_ms,
+                width=row.width,
+                height=row.height,
+                created_order=index,
+                analysis=by_media.get(row.id, {}),
+            )
+            for index, row in enumerate(media_rows)
+        ]
 
     async def set_status(
         self, media_id: UUID, status: MediaStatus, *, error: dict[str, Any] | None = None
@@ -404,6 +457,77 @@ class AnalysisRepository:
         return [(row, float(dist)) for row, dist in result.all()]
 
 
+class EditPlanRepository:
+    """Edit plans and the renders produced from them."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self, *, project_id: UUID, plan: EditPlan, selection: dict[str, Any]
+    ) -> EditPlanRow:
+        row = EditPlanRow(
+            project_id=project_id,
+            planner=plan.planner,
+            planner_version=plan.planner_version,
+            plan=plan.as_payload(),
+            selection=selection,
+            total_duration_ms=plan.total_duration_ms,
+            segment_count=len(plan.segments),
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_in_project(self, plan_id: UUID, project_id: UUID) -> EditPlanRow | None:
+        result = await self._session.execute(
+            select(EditPlanRow).where(
+                EditPlanRow.id == plan_id, EditPlanRow.project_id == project_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_for_project(self, project_id: UUID, *, limit: int = 50) -> Sequence[EditPlanRow]:
+        result = await self._session.execute(
+            select(EditPlanRow)
+            .where(EditPlanRow.project_id == project_id)
+            .order_by(EditPlanRow.created_at.desc())
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    # ------------------------------------------------------------------ renders
+    async def create_render(self, *, project_id: UUID, edit_plan_id: UUID) -> RenderRow:
+        row = RenderRow(
+            project_id=project_id,
+            edit_plan_id=edit_plan_id,
+            status=RenderStatus.PENDING,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_render_in_project(self, render_id: UUID, project_id: UUID) -> RenderRow | None:
+        result = await self._session.execute(
+            select(RenderRow).where(RenderRow.id == render_id, RenderRow.project_id == project_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_renders(self, project_id: UUID, *, limit: int = 50) -> Sequence[RenderRow]:
+        result = await self._session.execute(
+            select(RenderRow)
+            .where(RenderRow.project_id == project_id)
+            .order_by(RenderRow.created_at.desc())
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def attach_job(self, render_id: UUID, job_id: UUID) -> None:
+        await self._session.execute(
+            update(RenderRow).where(RenderRow.id == render_id).values(job_id=job_id)
+        )
+
+
 class EventRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -416,6 +540,7 @@ class EventRepository:
 
 __all__ = [
     "AnalysisRepository",
+    "EditPlanRepository",
     "EventRepository",
     "JobRepository",
     "MediaRepository",
