@@ -112,6 +112,21 @@ class Candidate:
     # --- from the scene analyzer ---
     scene_count: int | None = None
 
+    # --- from the face analyzer ---
+    #: Whether anyone appears on screen. A count, reduced to a boolean, and no
+    #: identity: who is in the frame is never computed and never stored, so the
+    #: strongest claim available is "someone".
+    #:
+    #: ``None`` means face detection has not run, which is different from having
+    #: run and found nobody -- a planner choosing between a portrait and a
+    #: landscape shot needs to know which of those it is looking at.
+    has_faces: bool | None = None
+
+    #: Whether the source carries an audio stream at all. Not an analyzer
+    #: result: it comes from ffprobe at ingest, and it decides whether asking
+    #: for source audio in the output is meaningful.
+    has_audio: bool = False
+
     #: Tie-break key. The upload order is stable and meaningful; a UUID is not.
     sequence: int = 0
 

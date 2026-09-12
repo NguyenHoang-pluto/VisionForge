@@ -33,6 +33,7 @@ from visionforge.domain.editplan import (
     EditPlan,
     FitMode,
     OutputSpec,
+    QualityPreset,
     Segment,
     TransitionKind,
 )
@@ -46,6 +47,7 @@ from visionforge.domain.selection import (
     select,
     weights_payload,
 )
+from visionforge.domain.style import EditStyle, StyleProfile, profile_for
 
 
 class ClipOrder(StrEnum):
@@ -78,6 +80,20 @@ class PlanRequest:
     fit: FitMode = FitMode.COVER
     audio: AudioMode = AudioMode.NONE
     order: ClipOrder = ClipOrder.SCORE_DESC
+
+    #: Encoder effort. Reaches the renderer through the plan's ``OutputSpec``;
+    #: no planner ever sees a CRF.
+    quality: QualityPreset = QualityPreset.BALANCED
+
+    #: The style asked for, if any. ``None`` means "no stylistic bias", which is
+    #: the Phase 4 behaviour and remains the default -- a style is something a
+    #: caller opts into, never something inferred behind their back.
+    style: EditStyle | None = None
+
+    #: What the user wrote, if they wrote anything. Only the LLM planner reads
+    #: it; the rules engine ignores it entirely rather than pattern-matching
+    #: prose, which it would do badly.
+    request_text: str | None = None
 
     def __post_init__(self) -> None:
         if self.max_clips < self.min_clips:
@@ -136,6 +152,12 @@ class RulesEnginePlanner:
     Even division rather than score-weighted division: a clip that scores 0.7
     is not obviously worth twice the screen time of one at 0.35, and pretending
     the scores carry that meaning would be dressing a heuristic up as judgement.
+
+    **Styles apply here too.** When a style is requested, its profile supplies
+    the ranking weights and the pacing bounds, so "Cinematic" produces long
+    takes ranked on exposure whether or not a model was involved. That is what
+    makes this a fallback rather than a downgrade: the user loses the
+    interpretation of their sentence, not the style they chose.
     """
 
     name = "rules-engine"
@@ -145,7 +167,12 @@ class RulesEnginePlanner:
         self._weights = weights
 
     def plan(self, request: PlanRequest, candidates: list[Candidate]) -> PlanOutcome:
-        selection = select(candidates, limit=request.max_clips, weights=self._weights)
+        profile = profile_for(request.style)
+        # A requested style overrides the injected weights; with no style the
+        # weights given at construction win, so Phase 4 behaviour is untouched
+        # and an explicitly-weighted planner still means what it says.
+        weights = profile.weights if request.style is not None else self._weights
+        selection = select(candidates, limit=request.max_clips, weights=weights)
 
         if len(selection.selected) < request.min_clips:
             raise NoUsableMediaError(
@@ -154,7 +181,7 @@ class RulesEnginePlanner:
             )
 
         chosen = self._order(list(selection.selected), request.order)
-        per_clip_ms = self._per_clip_duration(request, len(chosen))
+        per_clip_ms = self._per_clip_duration(request, len(chosen), profile)
 
         segments: list[Segment] = []
         for index, scored in enumerate(chosen):
@@ -200,11 +227,13 @@ class RulesEnginePlanner:
                 fps=request.fps,
                 fit=request.fit,
                 audio=request.audio,
+                quality=request.quality,
             ),
             planner=self.name,
             planner_version=self.version,
             metadata={
                 "strategy": "even-split centre trim",
+                "style": request.style.value if request.style else None,
                 "order": request.order.value,
                 "target_duration_ms": request.target_duration_ms,
                 "per_clip_ms": per_clip_ms,
@@ -226,15 +255,21 @@ class RulesEnginePlanner:
         return sorted(chosen, key=lambda s: (-s.score, s.candidate.sequence))
 
     @staticmethod
-    def _per_clip_duration(request: PlanRequest, clip_count: int) -> int:
-        """Target duration split evenly, clamped to the segment bounds.
+    def _per_clip_duration(request: PlanRequest, clip_count: int, profile: StyleProfile) -> int:
+        """Target duration split evenly, clamped to the style then the plan.
 
         Clamping can make the total miss the target -- with two clips and a
         60-second target, ``MAX_SEGMENT_MS`` binds first. Honouring the per-clip
         bounds matters more: they are what keep a single clip from becoming the
         entire edit.
+
+        Two clamps, in order. The style bounds express what the pacing should
+        be; the plan bounds express what is renderable at all, and they are
+        applied last so no style can widen them.
         """
         raw = request.target_duration_ms // max(clip_count, 1)
+        if request.style is not None:
+            raw = profile.clamp_clip_ms(raw)
         return max(MIN_SEGMENT_MS, min(MAX_SEGMENT_MS, raw))
 
     @staticmethod
@@ -266,6 +301,7 @@ class RulesEnginePlanner:
 
 __all__ = [
     "ClipOrder",
+    "EditStyle",
     "NoUsableMediaError",
     "PlanOutcome",
     "PlanRequest",

@@ -23,7 +23,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from visionforge.domain.editplan import AspectRatio, AudioMode, EditPlan, FitMode
+from visionforge.domain.editplan import (
+    AspectRatio,
+    AudioMode,
+    EditPlan,
+    FitMode,
+    QualityPreset,
+)
 from visionforge.domain.ids import MediaId, ProjectId
 
 
@@ -82,6 +88,10 @@ class Timeline:
     aspect_ratio: AspectRatio
     fit: FitMode
     audio: AudioMode
+    #: How good the output should be. Still not an encoder setting -- the level
+    #: is an editorial intention, and only ``build_render_spec`` knows what it
+    #: costs in CRF and preset. The timeline stays FFmpeg-free.
+    quality: QualityPreset = QualityPreset.BALANCED
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -168,6 +178,7 @@ def compile_timeline(plan: EditPlan) -> Timeline:
         aspect_ratio=plan.output.aspect_ratio,
         fit=plan.output.fit,
         audio=plan.output.audio,
+        quality=plan.output.quality,
         metadata={
             "planner": plan.planner,
             "planner_version": plan.planner_version,
@@ -313,6 +324,13 @@ def build_render_spec(
         for clip in clips
     )
 
+    # The only place a quality *level* becomes encoder *settings*. Imported
+    # here rather than at module scope because ``style`` imports ``editplan``,
+    # and a top-level import would make the domain's dependency graph circular.
+    from visionforge.domain.style import QUALITY_SETTINGS
+
+    crf, preset = QUALITY_SETTINGS[timeline.quality]
+
     return RenderSpec(
         inputs=tuple(inputs),
         segments=segments,
@@ -321,6 +339,8 @@ def build_render_spec(
         fps=timeline.fps,
         fit=timeline.fit,
         output_path=output_path,
+        crf=crf,
+        preset=preset,
         include_audio=timeline.audio is AudioMode.SOURCE,
     )
 

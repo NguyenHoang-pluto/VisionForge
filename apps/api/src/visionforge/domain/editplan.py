@@ -77,6 +77,20 @@ class TransitionKind(StrEnum):
     CUT = "cut"
 
 
+class QualityPreset(StrEnum):
+    """Encoder effort, named for the outcome rather than the setting.
+
+    Defined here rather than alongside the style profiles because ``OutputSpec``
+    needs it and ``style`` already imports this module; putting it there would
+    make the dependency circular. The CRF and preset each level maps to live in
+    ``domain.style``, which is where the numbers behind a name belong.
+    """
+
+    DRAFT = "draft"
+    BALANCED = "balanced"
+    HIGH = "high"
+
+
 class AudioMode(StrEnum):
     NONE = "none"
     #: Keep the audio of the source clips, concatenated with the video.
@@ -93,6 +107,12 @@ class OutputSpec:
     fps: int = 30
     fit: FitMode = FitMode.COVER
     audio: AudioMode = AudioMode.NONE
+
+    #: Encoder effort, as a name rather than a CRF. The plan says how good the
+    #: output should be; only the render spec knows what that costs in encoder
+    #: settings. ``BALANCED`` is the Phase 4 behaviour exactly, so a plan written
+    #: before this field existed re-renders to the same bytes.
+    quality: QualityPreset = QualityPreset.BALANCED
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +177,7 @@ class EditPlan:
                 "fps": self.output.fps,
                 "fit": self.output.fit.value,
                 "audio": self.output.audio.value,
+                "quality": self.output.quality.value,
             },
             "segments": [
                 {
@@ -420,6 +441,10 @@ def plan_from_payload(payload: dict[str, Any]) -> EditPlan:
             fps=int(output["fps"]),
             fit=FitMode(output["fit"]),
             audio=AudioMode(output["audio"]),
+            # Absent in plans written before Phase 5. Defaulting rather than
+            # failing is correct here: the default *is* what those plans were
+            # rendered with.
+            quality=QualityPreset(output.get("quality", QualityPreset.BALANCED.value)),
         ),
         planner=str(payload.get("planner", "unknown")),
         planner_version=str(payload.get("planner_version", "0")),
@@ -441,6 +466,7 @@ __all__ = [
     "OutputSpec",
     "PlanInvalidError",
     "PlanViolation",
+    "QualityPreset",
     "Segment",
     "TransitionKind",
     "assert_valid",
