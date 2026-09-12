@@ -6,14 +6,14 @@ API_DIR := apps/api
 WEB_DIR := apps/web
 
 .PHONY: help setup infra-up infra-down infra-reset infra-status migrate \
-        api web worker-cpu worker-gpu worker-render e2e e2e-analysis e2e-edit \
+        api web worker-cpu worker-gpu worker-render e2e e2e-analysis e2e-edit e2e-llm \
         test test-integration lint format typecheck \
         contracts web-lint web-build compose-check check
 
 help:
 	@echo "setup infra-up infra-down infra-reset infra-status migrate"
 	@echo "api web worker-cpu worker-gpu worker-render"
-	@echo "e2e e2e-analysis e2e-edit"
+	@echo "e2e e2e-analysis e2e-edit e2e-llm"
 	@echo "check test test-integration lint format typecheck contracts"
 	@echo "web-lint web-build compose-check"
 
@@ -69,6 +69,11 @@ e2e-analysis:   # Phase 3: needs the API and both cpu and gpu workers
 
 e2e-edit:       # Phase 4: needs the API and both cpu and render workers
 	$(PYTHON) scripts/e2e_edit.py
+
+# Run twice: LLM_ENABLED=false, then LLM_ENABLED=true. The feature has to be
+# correct with a provider and without one.
+e2e-llm:        # Phase 5: same stack as e2e-edit
+	$(PYTHON) scripts/e2e_llm.py
 
 test:
 	cd $(API_DIR) && $(PYTHON) -m pytest -m "not integration and not gpu"

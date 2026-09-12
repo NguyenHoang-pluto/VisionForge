@@ -12,7 +12,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('setup', 'infra-up', 'infra-down', 'infra-reset', 'infra-status',
                  'migrate', 'api', 'web', 'worker-cpu', 'worker-gpu', 'worker-render',
-                 'e2e', 'e2e-analysis', 'e2e-edit',
+                 'e2e', 'e2e-analysis', 'e2e-edit', 'e2e-llm',
                  'test', 'test-integration', 'lint', 'format', 'typecheck',
                  'contracts', 'web-lint', 'web-build', 'compose-check', 'check', 'help')]
     [string]$Command = 'help'
@@ -85,6 +85,17 @@ switch ($Command) {
         # Needs infra-up, the API, and both cpu and gpu workers running.
         & $Python (Join-Path $Root 'scripts\e2e_analysis.py')
     }
+    'e2e-edit' {
+        # Needs infra-up, the API, and both cpu and render workers running.
+        & $Python (Join-Path $Root 'scripts\e2e_edit.py')
+    }
+    'e2e-llm' {
+        # Same stack as e2e-edit. Run it twice -- once with LLM_ENABLED=false
+        # and once with LLM_ENABLED=true -- because the feature has to be
+        # correct both with a provider and without one. The script reads
+        # /api/planner/capabilities to discover which it is talking to.
+        & $Python (Join-Path $Root 'scripts\e2e_llm.py')
+    }
 
     'test'             { Invoke-Api { & $Python -m pytest -m 'not integration and not gpu' } }
     'test-integration' { Invoke-Api { & $Python -m pytest -m integration } }
@@ -137,6 +148,7 @@ switch ($Command) {
         Write-Host "    e2e                Phase 2 acceptance test (needs api + cpu worker)"
         Write-Host "    e2e-analysis       Phase 3 acceptance test (needs api + both workers)"
         Write-Host "    e2e-edit           Phase 4 acceptance test (needs api + cpu and render workers)"
+        Write-Host "    e2e-llm            Phase 5 acceptance test (run with LLM on and off)"
         Write-Host ""
         Write-Host "  Quality"
         Write-Host "    check              Run everything CI runs"

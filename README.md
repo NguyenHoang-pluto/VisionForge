@@ -7,11 +7,13 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 4 — the first vertical slice.**
-> A folder of clips goes in and a watchable MP4 comes out: analysis, then
-> deterministic selection, an `EditPlan`, a timeline, and an FFmpeg render.
-> The planner is a rules engine, not a language model — Phase 4 builds the
-> boundary an LLM will later sit behind. See [Roadmap](#roadmap).
+> **Current phase: Phase 5 — natural language in, a validated edit out.**
+> Describe the edit you want and a language model chooses the clips, the order
+> and the pacing. It never sees a filename or a media id, never emits a path or
+> a command, and its answer is clamped and validated before it reaches the
+> Phase 4 pipeline unchanged. With no API key configured, the deterministic
+> rules engine plans everything and the product works completely.
+> See [Roadmap](#roadmap).
 
 ---
 
@@ -29,8 +31,10 @@ Three rules shape everything else:
 2. **PostgreSQL owns job state.** Celery is transport. Redis is broker, cache and
    progress pub/sub — never a source of truth.
 3. **AI output is a validated document, never executable code.** The reasoning
-   layer emits declarative plans; deterministic compilers turn them into
-   timelines and FFmpeg commands.
+   layer emits declarative plans over a closed vocabulary; deterministic
+   compilers turn them into timelines and FFmpeg commands. A model refers to
+   clips by opaque handles — `c1`, `c2` — and never sees a media id, a filename
+   or a path.
 
 ---
 
@@ -272,6 +276,8 @@ this machine has 7.4 GB of RAM and containerising everything does not fit. See
 | `POST /api/projects/{id}/renders` | Queue a render of a plan |
 | `GET /api/projects/{id}/renders` | Renders in a project |
 | `GET /api/projects/{id}/renders/{render_id}` | One render, with a presigned playback URL |
+| `GET /api/planner/capabilities` | Which modes, styles and presets exist, and whether AI is configured |
+| `GET /api/projects/{id}/llm-runs` | Planning calls made for this project, successful or not |
 
 A plan request carries intent, not geometry: a target duration, a clip budget, an
 aspect ratio and an ordering. Output dimensions come from a closed preset map on
@@ -345,6 +351,92 @@ a planner cannot emit one — whether it is today's rules engine or tomorrow's
 language model ([ADR-0009](docs/adr/0009-edit-plan-boundary.md)). The plan is
 validated again inside the render worker against the live database, because the
 world can change between planning and rendering.
+
+### The planning lane
+
+Two planners implement one port. Which runs is decided per request, recorded on
+the plan, and shown in the UI.
+
+```
+                    Planner (Protocol)
+                     |              |
+        RulesEnginePlanner      LlmPlanner  ──  LlmProvider
+        deterministic           interprets      ├── anthropic
+        always available        prose           ├── openai
+                                                └── stub (local, no model)
+```
+
+An AI plan is always built as `FallbackPlanner(LlmPlanner, RulesEnginePlanner)`,
+never as a bare `LlmPlanner`. There is no configuration in which a provider
+failure becomes a failed request.
+
+```
+user request + analysed media
+     |
+  SELECT      the deterministic gates run FIRST -- a model is never offered a
+              black frame, a blurred frame, or a duplicate
+     |
+  BRIEF       clips become handles: c1, c2, c3 ... the model's entire
+              vocabulary for naming media. No ids. No filenames. No paths.
+     |
+  MODEL       -> EditDirective { style, pacing, clips:[{ref,duration_ms}], rationale }
+     |
+  RESOLVE     handles -> media ids, through a table the model never saw.
+              An invented handle resolves to nothing and is refused.
+     |
+  CLAMP       every duration: style bounds, then plan bounds, then the source's
+              own length. The total is capped by dropping whole clips.
+     |
+  EditPlan    -> the same Phase 4 validator -> Timeline -> RenderSpec -> argv
+```
+
+A model **cannot** reference another project's media, because that media has no
+handle — the namespace does not contain it. It cannot leak a filename, because
+it was never told one. Filenames are withheld for a second reason too: a file
+named `ignore-previous-instructions-….mp4` is a prompt injection a user can
+plant by naming a file ([ADR-0010](docs/adr/0010-llm-planner.md)).
+
+**Styles are numbers, not prompt text.** Each of the eight styles is a
+`StyleProfile` — pacing bounds, default duration and aspect, ordering, and
+selection weights. So choosing "Cinematic" with the AI disabled still produces a
+cinematic edit: the fallback costs you the interpretation of your sentence, not
+the style you picked.
+
+**Automatic mode does not always mean AI.** A written request goes to the model,
+because interpreting prose is the one thing the rules engine cannot do. A bare
+style does not: a style is already a complete, deterministic instruction, and
+paying a model to restate numbers we already wrote down would be slower and less
+predictable for no gain.
+
+### Configuring a provider
+
+```powershell
+# .env -- server-side only, never sent to the browser
+LLM_ENABLED=true
+LLM_PROVIDER=anthropic      # anthropic | openai | stub
+LLM_MODEL=claude-sonnet-5
+LLM_API_KEY=...             # NEVER COMMIT THIS
+```
+
+With `LLM_ENABLED=false` (the default) every mode still plans, the AI control is
+disabled in the UI, and nothing fails. `LLM_PROVIDER=stub` selects a
+deterministic local provider with no model and no network, used by the tests; it
+is refused outright when `ENVIRONMENT=production`, and the UI labels it
+"deterministic stub, not a model" wherever it appears.
+
+API keys are read in `infra/llm/factory.py` and nowhere else. They are never
+returned by an endpoint, logged, stored in a plan, or written to a database row.
+
+### What is recorded, and what is not
+
+Every planning call writes an `llm_runs` row — provider, model, prompt version,
+status, attempts, latency, token counts, and the fallback reason if it fell back.
+The rows worth having are the ones with no plan attached, which is why this is a
+table rather than a column on `edit_plans`.
+
+It stores a truncated SHA-256 **digest** of the user's request, never the request
+itself, and never the prompt or the completion. Enough to correlate a repeat or
+match a support report to a row; not enough to reconstruct what somebody typed.
 
 Use `python -m visionforge`, not `uvicorn` directly: on Windows the event-loop
 policy must be set before uvicorn creates its loop
@@ -431,6 +523,7 @@ VisionForge/
 ├─ scripts/e2e_acceptance.py    Phase 2 acceptance test (ingest and jobs)
 ├─ scripts/e2e_analysis.py      Phase 3 acceptance test (analysis lanes)
 ├─ scripts/e2e_edit.py          Phase 4 acceptance test (plan and render)
+├─ scripts/e2e_llm.py           Phase 5 acceptance test (LLM planning)
 ├─ .github/workflows/ci.yml
 ├─ docker-compose.yml           postgres · redis · minio
 ├─ Makefile                     same targets for Linux/WSL/CI
@@ -445,7 +538,35 @@ queue they consume. They ship as the same image with a different command.
 
 ## Current phase
 
-**Phase 4 — Deterministic selection, `EditPlan`, timeline and render.**
+**Phase 5 — LLM planning behind the existing boundary.**
+
+- [x] `LlmPlanner` implementing the Phase 4 `Planner` port; `RulesEnginePlanner`
+      unchanged and still the default
+- [x] `LlmProvider` port with two real adapters (Anthropic, OpenAI-compatible)
+      plus a deterministic local stub for tests
+- [x] `EditBrief` with opaque clip handles — the model never sees a media id, a
+      filename or a path
+- [x] `EditDirective`: a closed-vocabulary output schema, strictly parsed,
+      with one repair attempt on invalid output
+- [x] Three-stage clamping (style bounds → plan bounds → source length) before
+      the unchanged Phase 4 validator
+- [x] `FallbackPlanner` — every failure mode reaches the rules engine, and the
+      reason is recorded rather than swallowed
+- [x] Eight deterministic `StyleProfile`s that bind *both* planners
+- [x] `resolve_mode` — automatic mode's decision as a pure, testable function
+- [x] `llm_runs` table: provider, model, prompt version, latency, tokens,
+      attempts, fallback reason. Request text is digested, never stored
+- [x] Mode / style / target controls in the existing workstation UI, with
+      provenance shown as measured values rather than a badge
+- [x] 417 unit + 115 integration tests; Phase 5 acceptance passes with the
+      provider both **disabled** and **enabled**
+
+Deliberately **not** in Phase 5: music and beat sync, subtitles, transitions
+beyond a cut, manual timeline editing, model tool use, training or fine-tuning,
+template copying, internet downloads, and 8K/120 fps upscaling.
+
+<details>
+<summary>Phase 4 — Deterministic selection, <code>EditPlan</code>, timeline and render</summary>
 
 - [x] Heuristic selection: a weighted score plus usability gates that reject with
       a reason, and pHash near-duplicate collapsing
@@ -466,9 +587,7 @@ queue they consume. They ship as the same image with a different command.
       1280×720 / 30 fps H.264 MP4, confirmed by an independent `ffprobe` and a
       full decode pass
 
-Deliberately **not** in Phase 4: the LLM planner, music and beat sync, subtitles,
-transitions beyond a cut, manual timeline editing, GPU enhancement
-(super-resolution, frame interpolation), and authentication.
+</details>
 
 <details>
 <summary>Phase 3 — Media intelligence and the GPU lane</summary>
@@ -498,11 +617,17 @@ transitions beyond a cut, manual timeline editing, GPU enhancement
 | 1     | 1     | Foundation — infrastructure, skeleton, CI |
 | 2     | 2–3   | Media ingest and the job system |
 | 3     | 4–6   | Media intelligence — quality, dedupe, scenes, CLIP, faces |
-| **4** | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI *(current)* |
-| 5     | 9–10  | Music, beat synchronisation, manual and hybrid timeline editing |
-| 6     | 11–12 | Subtitles, authentication, super-resolution, frame interpolation |
-| 7     | 13–14 | AI copilot, evaluation loop, Asset Studio with license tracking |
-| 8     | 15    | AWS deployment, observability, usage metering |
+| 4     | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI |
+| **5** | 9–10  | LLM planning behind the `EditPlan` boundary, styles, provider abstraction *(current)* |
+| 6     | 11–12 | Music, beat synchronisation, manual and hybrid timeline editing |
+| 7     | 13–14 | Subtitles, authentication, super-resolution, frame interpolation |
+| 8     | 15    | Evaluation loop, Asset Studio with license tracking, AWS deployment |
+
+The reasoning layer moved forward. It was planned for Phase 7, and was brought
+into Phase 5 because Phase 4 had already built the boundary it has to sit behind
+— once `EditPlan` existed as a validated artefact, adding a second planner was a
+smaller job than the original ordering assumed. Music and manual editing took its
+former slot, and the evaluation loop merged into the final phase.
 
 Deliberately out of scope for these fifteen weeks: personal style learning, model
 training infrastructure, AI asset generation, multi-tenancy and billing.
