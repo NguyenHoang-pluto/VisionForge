@@ -11,11 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from visionforge.domain.editbrief import MAX_REQUEST_CHARS
 from visionforge.domain.editplan import (
     MAX_OUTPUT_MS,
+    MAX_SEGMENTS,
     MIN_OUTPUT_MS,
     AspectRatio,
     AudioMode,
     FitMode,
     QualityPreset,
+    TransitionKind,
 )
 from visionforge.domain.llm_planner import PlannerMode
 from visionforge.domain.planner import ClipOrder
@@ -73,6 +75,49 @@ class PlanCreateRequest(BaseModel):
         return value
 
 
+class ManualCutRequest(BaseModel):
+    """One clip on a hand-cut timeline.
+
+    Note what is absent, again: no ``order`` and no timeline position. The
+    sequence of this list is the sequence of the edit, which is the only way to
+    express it that cannot describe an overlap or a hole.
+    """
+
+    media_id: UUID
+    source_in_ms: int = Field(ge=0)
+    source_out_ms: int = Field(gt=0)
+    transition_in: TransitionKind = TransitionKind.CUT
+
+
+class ManualPlanCreateRequest(BaseModel):
+    """A timeline the user assembled, submitted for validation and storage.
+
+    Carries the same output *intent* as an automatic plan -- a shape, a frame
+    rate, a quality level -- and the same nothing-else. The editor sends which
+    clips and which trims; it has no field for geometry, an encoder setting or a
+    path, so a timeline cannot smuggle one through the route an automatic plan
+    is protected from.
+    """
+
+    segments: list[ManualCutRequest] = Field(min_length=1, max_length=MAX_SEGMENTS)
+
+    aspect_ratio: AspectRatio = AspectRatio.LANDSCAPE_16_9
+    fps: int = Field(default=30, ge=1, le=60)
+    fit: FitMode = FitMode.COVER
+    audio: AudioMode = AudioMode.NONE
+    quality: QualityPreset = QualityPreset.BALANCED
+
+    #: The automatic plan this timeline was cut from, when there was one.
+    derived_from_edit_plan_id: UUID | None = None
+
+    @field_validator("fps")
+    @classmethod
+    def _fps_must_be_a_preset(cls, value: int) -> int:
+        if value not in FPS_PRESETS:
+            raise ValueError(f"fps must be one of {', '.join(str(f) for f in FPS_PRESETS)}")
+        return value
+
+
 class EditPlanSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -122,6 +167,13 @@ class PlannerCapabilities(BaseModel):
     quality_presets: list[str]
     prompt_version: str
     max_request_chars: int
+
+    #: The bounds every plan is validated against, declared rather than left to
+    #: be rediscovered. An editor has to clamp a trim handle *while the pointer
+    #: is moving*, which means it needs these numbers client-side; getting them
+    #: from here is what stops a copy in the browser from silently drifting out
+    #: of agreement with the validator that actually enforces them.
+    segment_bounds: dict[str, int]
 
 
 class EditPlanListResponse(BaseModel):

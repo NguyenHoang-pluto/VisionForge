@@ -33,6 +33,7 @@ from visionforge.api.schemas.edit import (
     EditPlanDetail,
     EditPlanListResponse,
     EditPlanSummary,
+    ManualPlanCreateRequest,
     PlanCreateRequest,
     PlannerCapabilities,
     RenderCreateRequest,
@@ -44,7 +45,20 @@ from visionforge.application.edit_service import EditService
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import DOWNLOAD_URL_TTL_S, MediaService
 from visionforge.domain.editbrief import MAX_REQUEST_CHARS
-from visionforge.domain.editplan import AspectRatio, AudioMode, FitMode, PlanInvalidError
+from visionforge.domain.editplan import (
+    MAX_OUTPUT_MS,
+    MAX_SEGMENT_MS,
+    MAX_SEGMENTS,
+    MIN_OUTPUT_MS,
+    MIN_SEGMENT_MS,
+    AspectRatio,
+    AudioMode,
+    Cut,
+    FitMode,
+    OutputSpec,
+    PlanInvalidError,
+    media_id_from,
+)
 from visionforge.domain.errors import NotFoundError, ValidationError
 from visionforge.domain.ids import ProjectId
 from visionforge.domain.jobs import JobType
@@ -112,6 +126,13 @@ async def planner_capabilities(
         quality_presets=[preset.value for preset in QualityPreset],
         prompt_version=PROMPT_VERSION,
         max_request_chars=MAX_REQUEST_CHARS,
+        segment_bounds={
+            "min_clip_ms": MIN_SEGMENT_MS,
+            "max_clip_ms": MAX_SEGMENT_MS,
+            "max_clips": MAX_SEGMENTS,
+            "min_total_ms": MIN_OUTPUT_MS,
+            "max_total_ms": MAX_OUTPUT_MS,
+        },
     )
 
 
@@ -182,6 +203,70 @@ async def create_edit_plan(
         # Reaching this from an AI request means the fallback failed too.
         raise ValidationError(
             "the planner produced an invalid plan",
+            hint="; ".join(v.message for v in exc.violations),
+        ) from exc
+
+    return serialize_edit_plan(row, include_plan=True)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/manual",
+    response_model=EditPlanDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_manual_edit_plan(
+    body: ManualPlanCreateRequest,
+    project: Project = Depends(require_project),
+    service: EditService = Depends(get_edit_service),
+) -> EditPlanDetail:
+    """Store a timeline the user cut themselves.
+
+    The editor's timeline is client state while it is being dragged; this is
+    where it stops being a proposal. No planner runs, and nothing here is
+    trusted: the cuts go through the same validator as an automatic plan, are
+    checked against the same media rows, and produce the same kind of plan row
+    that the same render route consumes.
+
+    The route deliberately takes clips and trims rather than a rendering
+    description. The server still chooses the geometry from the aspect ratio the
+    caller asked for -- the client has no way to name a width, a height or an
+    encoder setting, which is the property Phase 4 established and a timeline
+    must not be the thing that erodes.
+    """
+    width, height = PRESET_DIMENSIONS[body.aspect_ratio]
+    output = OutputSpec(
+        aspect_ratio=body.aspect_ratio,
+        width=width,
+        height=height,
+        fps=body.fps,
+        fit=body.fit,
+        audio=body.audio,
+        quality=body.quality,
+    )
+    cuts = [
+        Cut(
+            media_id=media_id_from(segment.media_id),
+            source_in_ms=segment.source_in_ms,
+            source_out_ms=segment.source_out_ms,
+            transition_in=segment.transition_in,
+        )
+        for segment in body.segments
+    ]
+
+    try:
+        row = await service.create_manual_plan(
+            project_id=ProjectId(project.id),
+            cuts=cuts,
+            output=output,
+            derived_from=body.derived_from_edit_plan_id,
+        )
+    except PlanInvalidError as exc:
+        # A rejected hand-cut edit is a rejected *request*, not a planner bug:
+        # the user trimmed past the end of a source, or left a clip shorter than
+        # the renderer can produce. Every violation comes back, so the editor
+        # can point at the clip rather than saying the render failed.
+        raise ValidationError(
+            "this timeline cannot be rendered",
             hint="; ".join(v.message for v in exc.violations),
         ) from exc
 

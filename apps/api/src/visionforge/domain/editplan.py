@@ -23,6 +23,7 @@ an extension rather than a redesign.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -410,6 +411,61 @@ def media_id_from(value: str | UUID) -> MediaId:
     return MediaId(value if isinstance(value, UUID) else UUID(value))
 
 
+# ---------------------------------------------------------------- hand-cutting
+@dataclass(frozen=True, slots=True)
+class Cut:
+    """One clip as an editor placed it on the timeline.
+
+    Deliberately has no ``order`` field. A hand-cut edit arrives as a sequence,
+    and position on the timeline *is* the position in that sequence -- so the
+    one way to express an overlap or a hole (two segments claiming the same
+    order, or a gap between them) does not exist in the input. ``plan_from_cuts``
+    is what turns a sequence into ordered segments, and it is the only way a
+    manual plan gets built.
+    """
+
+    media_id: MediaId
+    source_in_ms: int
+    source_out_ms: int
+    transition_in: TransitionKind = TransitionKind.CUT
+
+
+def plan_from_cuts(
+    *,
+    project_id: ProjectId,
+    cuts: Sequence[Cut],
+    output: OutputSpec,
+    planner: str = "manual",
+    planner_version: str = "1",
+    metadata: dict[str, Any] | None = None,
+) -> EditPlan:
+    """Build a plan from an ordered sequence of cuts.
+
+    The result is an ordinary ``EditPlan`` and goes through ``validate_plan``
+    like any other. A timeline the user assembled by hand gets no weaker a gate
+    than one a model proposed: the bounds on segment length, total duration and
+    trim-past-end are the renderer's limits, and they do not care who chose the
+    numbers.
+    """
+    return EditPlan(
+        project_id=project_id,
+        segments=tuple(
+            Segment(
+                media_id=cut.media_id,
+                order=index,
+                source_in_ms=cut.source_in_ms,
+                source_out_ms=cut.source_out_ms,
+                transition_in=cut.transition_in,
+            )
+            for index, cut in enumerate(cuts)
+        ),
+        output=output,
+        planner=planner,
+        planner_version=planner_version,
+        metadata=dict(metadata or {}),
+    )
+
+
 def plan_from_payload(payload: dict[str, Any]) -> EditPlan:
     """Rebuild a typed plan from the JSON it was stored as.
 
@@ -460,6 +516,7 @@ __all__ = [
     "MIN_SEGMENT_MS",
     "AspectRatio",
     "AudioMode",
+    "Cut",
     "EditPlan",
     "FitMode",
     "MediaFact",
@@ -471,6 +528,7 @@ __all__ = [
     "TransitionKind",
     "assert_valid",
     "media_id_from",
+    "plan_from_cuts",
     "plan_from_payload",
     "validate_plan",
 ]

@@ -17,6 +17,7 @@ other request in the process.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -24,7 +25,14 @@ from uuid import UUID
 import anyio.to_thread
 
 from visionforge.domain.analysis import AnalysisStatus, AnalyzerName
-from visionforge.domain.editplan import MediaFact, PlanInvalidError, validate_plan
+from visionforge.domain.editplan import (
+    Cut,
+    MediaFact,
+    OutputSpec,
+    PlanInvalidError,
+    plan_from_cuts,
+    validate_plan,
+)
 from visionforge.domain.errors import ConflictError, NotFoundError, ValidationError
 from visionforge.domain.ids import MediaId, ProjectId
 from visionforge.domain.llm_planner import FallbackPlanner, LlmRunRecord
@@ -194,19 +202,7 @@ class EditService:
                 hint="Add more footage, or lower the clip requirement.",
             ) from exc
 
-        facts = {
-            record.media_id: MediaFact(
-                media_id=record.media_id,
-                project_id=project_id,
-                is_renderable=(
-                    record.status is MediaStatus.READY and record.kind is MediaKind.VIDEO
-                ),
-                duration_ms=record.duration_ms,
-                width=record.width,
-                height=record.height,
-            )
-            for record in records
-        }
+        facts = _media_facts(project_id, records)
 
         violations = validate_plan(outcome.plan, facts)
         if violations:
@@ -261,6 +257,79 @@ class EditService:
         await self._session.commit()
         return row, outcome
 
+    # ---------------------------------------------------------- manual plan
+    async def create_manual_plan(
+        self,
+        *,
+        project_id: ProjectId,
+        cuts: Sequence[Cut],
+        output: OutputSpec,
+        derived_from: UUID | None = None,
+    ) -> Any:
+        """Persist an edit the user assembled themselves.
+
+        No planner runs. The caller has already decided which clips, in which
+        order, trimmed where -- this method's job is to check that decision
+        against the media it names and store it as a plan like any other.
+
+        Everything downstream is unchanged: the same validator, the same plan
+        row, the same render route. That is the point of the boundary. The
+        timeline in the browser is a *proposal*; it becomes an edit only once
+        the server has agreed it is renderable, and the render worker never sees
+        anything but a stored, validated plan.
+        """
+        if not cuts:
+            raise ValidationError(
+                "the timeline is empty",
+                hint="Add at least one clip before saving the edit.",
+            )
+
+        records = await self._media.records_with_analysis(project_id)
+        facts = _media_facts(project_id, records)
+
+        plan = plan_from_cuts(
+            project_id=project_id,
+            cuts=cuts,
+            output=output,
+            metadata={
+                "source": "manual",
+                # Which automatic plan this was cut from, when it was cut from
+                # one. A hand-edited highlight reel stays traceable to the plan
+                # that proposed it rather than appearing out of nowhere.
+                "derived_from_edit_plan_id": str(derived_from) if derived_from else None,
+            },
+        )
+
+        violations = validate_plan(plan, facts)
+        if violations:
+            # Unlike a planner violation, this one is the user's: they trimmed
+            # past the end of a source, or left a clip too short to render. It
+            # is reported as a rejected request, not logged as a bug.
+            raise PlanInvalidError(violations)
+
+        row = await self._plans.create(
+            project_id=project_id,
+            plan=plan,
+            # A manual edit has no selection to explain -- the user is the
+            # selector. Stored with the same keys as an automatic plan so every
+            # reader of this column sees one shape.
+            selection={"selected": [], "rejected": [], "duplicate_groups": []},
+        )
+        await self._events.record(
+            kind="editplan.created",
+            actor="dev-user",
+            project_id=project_id,
+            payload={
+                "edit_plan_id": str(row.id),
+                "planner": "manual",
+                "segments": len(plan.segments),
+                "duration_ms": plan.total_duration_ms,
+                "fallback": False,
+            },
+        )
+        await self._session.commit()
+        return row
+
     # ---------------------------------------------------------------- render
     async def create_render(self, *, project_id: ProjectId, edit_plan_id: UUID) -> Any:
         """Create a pending render row for a plan.
@@ -276,6 +345,26 @@ class EditService:
         render = await self._plans.create_render(project_id=project_id, edit_plan_id=edit_plan_id)
         await self._session.commit()
         return render
+
+
+def _media_facts(project_id: ProjectId, records: Sequence[MediaRecord]) -> dict[MediaId, MediaFact]:
+    """What the plan validator is allowed to know about this project's media.
+
+    One definition, used by both the automatic and the manual path, so a plan
+    cut by hand is checked against exactly the same view of the world as one a
+    planner produced.
+    """
+    return {
+        record.media_id: MediaFact(
+            media_id=record.media_id,
+            project_id=project_id,
+            is_renderable=(record.status is MediaStatus.READY and record.kind is MediaKind.VIDEO),
+            duration_ms=record.duration_ms,
+            width=record.width,
+            height=record.height,
+        )
+        for record in records
+    }
 
 
 def _run_record(planner: Planner) -> LlmRunRecord | None:
