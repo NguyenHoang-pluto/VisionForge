@@ -7,12 +7,13 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 5 — natural language in, a validated edit out.**
-> Describe the edit you want and a language model chooses the clips, the order
-> and the pacing. It never sees a filename or a media id, never emits a path or
-> a command, and its answer is clamped and validated before it reaches the
-> Phase 4 pipeline unchanged. With no API key configured, the deterministic
-> rules engine plans everything and the product works completely.
+> **Current phase: Phase 6 — a real editing workstation.**
+> A media browser, a preview viewer that plays the timeline, a timeline you can
+> trim, reorder, split and delete on, an inspector, and an export panel. The
+> automatic edit is now one tab inside the editor rather than the whole
+> application. A hand-cut timeline is stored through the same validator and
+> rendered by the same worker as a planned one — the backend stays
+> authoritative, and the browser never gains a rendering model of its own.
 > See [Roadmap](#roadmap).
 
 ---
@@ -270,7 +271,8 @@ this machine has 7.4 GB of RAM and containerising everything does not fit. See
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/projects/{id}/edit-plan` | Select media and plan an edit (deterministic) |
+| `POST /api/projects/{id}/edit-plan` | Select media and plan an edit (deterministic or AI) |
+| `POST /api/projects/{id}/edit-plan/manual` | Store a timeline the user cut by hand |
 | `GET /api/projects/{id}/edit-plan` | Plans in a project, newest first |
 | `GET /api/projects/{id}/edit-plan/{plan_id}` | One plan with the selection record behind it |
 | `POST /api/projects/{id}/renders` | Queue a render of a plan |
@@ -282,6 +284,15 @@ this machine has 7.4 GB of RAM and containerising everything does not fit. See
 A plan request carries intent, not geometry: a target duration, a clip budget, an
 aspect ratio and an ordering. Output dimensions come from a closed preset map on
 the server, so no request can ask for a 30 000-pixel canvas.
+
+`edit-plan/manual` is the timeline's route into the system and carries exactly the
+same intent: a sequence of cuts (`media_id`, `source_in_ms`, `source_out_ms`) plus
+a shape, a frame rate and a quality *level*. It has no `order` field — position in
+the array **is** the edit order, which is the only encoding that cannot express an
+overlap or a gap. The cuts run through `validate_plan` against the project's own
+media rows before anything is stored, so a hand-cut edit gets no weaker a gate
+than a planned one: trimming past the end of a source is a 422 with the reason,
+not a render that fails four minutes later.
 
 Every media, job and analysis route resolves access through project ownership.
 There is no endpoint that reaches a row by id alone, and the similarity search is
@@ -450,8 +461,78 @@ policy must be set before uvicorn creates its loop
 .\scripts\vf.ps1 web          # http://localhost:3000
 ```
 
-The home page reports API connectivity, per-dependency infrastructure status with
-latency, and the version of both halves of the stack.
+The frontend is an editing workstation, not a page. It opens straight into a
+fixed viewport with independently scrolling panels:
+
+```
++----------------------------- top bar -----------------------------+
+| VisionForge | project | analyse |                   panel toggles  |
++----------+-------------------------------------+-----------------+
+| MEDIA    |                                     | INSPECTOR       |
+| BROWSER  |            PREVIEW                  | clip . analysis |
+|          |   source / program / render         | AI edit . export|
+| grid or  +-------------------------------------+                 |
+| list     |            TIMELINE                 |                 |
+|          |  V1 --[clip][clip][clip]--          |                 |
+|          |  A1 --[....][....][....]--          |                 |
++----------+-------------------------------------+-----------------+
+| jobs . progress . health                                          |
++-------------------------------------------------------------------+
+```
+
+**Media browser** -- grid or list over the same library, with thumbnails,
+duration, resolution, frame rate, size, ingest status and an analysis mark.
+Ctrl-click and Shift-click select ranges; the list view is windowed so a library
+of several hundred assets renders a screenful rather than all of it.
+
+**Preview** -- one `<video>` element and three sources. *Source* scrubs a library
+clip, *program* plays the timeline by sequencing each clip's 720p proxy and
+cutting at its out point, *render* plays the finished MP4. The playhead is shared
+with the timeline: one position, two views of it. The playhead is advanced from
+the media element's own clock once a frame, so it tracks what is actually
+playing rather than a wall-clock timer that would drift on a slow decode.
+
+**Timeline** -- a video track and an audio representation, a ruler, a draggable
+playhead, zoom (`Ctrl`+wheel zooms at the pointer) and horizontal scroll. Clips
+can be trimmed by their edges, reordered by dragging, split at the playhead and
+deleted. There are no gaps to drag into and no overlaps to create, because
+`EditPlan` cannot describe either -- a UI that let you build one would be
+offering an edit the renderer must reject.
+
+**Inspector** -- four tabs over one selection: clip properties and trim points,
+the analysis readout, the AI edit panel, and export.
+
+**AI edit** -- mode (automatic / rules / AI), style, a free-text request, and the
+target duration, aspect, frame rate and quality. What the panel offers is
+whatever `/api/planner/capabilities` reports, so on a server with no API key the
+AI mode is visibly disabled rather than silently falling back. A generated plan
+opens in a review dialog -- clips, order, trims, transitions, output preset, the
+planner that produced it, and the clips it rejected with reasons -- which can be
+accepted into the timeline, adjusted and regenerated, or discarded. The raw model
+output is not shown because it does not exist in the API: what the model "said"
+*is* the structured plan.
+
+**Export** -- resolution, aspect, frame rate, quality and audio, all as presets
+the server declared. Rendering stores the current timeline as a plan and then
+renders that plan, so what is encoded is always something the server has already
+validated.
+
+**Status bar** -- the job queue, live over the existing SSE stream. Collapsed it
+is one line ("idle", or *n* jobs running with overall progress); expanded it is
+every job with its step count, attempt, progress and failure reason.
+
+Keyboard: `Space` play/pause, `S` split, `Del` delete clip, arrows nudge the
+playhead (`Shift` for a second), `+`/`-` zoom, `B`/`I` toggle the side panels,
+`?` for the full list. Single-key shortcuts are ignored while a text field has
+focus.
+
+Desktop-first, as an editor should be: it targets 1280x720 and up, and collapses
+the media browser below 1180 px rather than squeezing four panels into a space
+that fits three.
+
+Infrastructure health is no longer its own page section -- it is the indicator at
+the right of the status bar, which is where a tool that is being used rather than
+inspected should put it.
 
 ---
 
@@ -538,7 +619,42 @@ queue they consume. They ship as the same image with a different command.
 
 ## Current phase
 
-**Phase 5 — LLM planning behind the existing boundary.**
+**Phase 6 — a professional editing workstation.**
+
+- [x] Workstation shell: top bar, media browser, preview, timeline, inspector
+      and a job status bar in one fixed viewport with resizable panels
+- [x] Design system rebuilt on semantic tokens (`bg-panel`, `border-line`,
+      `text-muted`) — four surface levels, one accent, 2 px radius, 11 px working
+      type. No component spells a colour
+- [x] Media browser: grid and list views, thumbnails, duration, resolution, FPS,
+      size, status and analysis marks; Ctrl/Shift multi-select; windowed list
+      rendering for large libraries
+- [x] Preview viewer: one `<video>` across source / program / render, play,
+      pause, seek, second-step navigation, volume, mute, speed, fullscreen,
+      aspect-aware framing, and the name of the source clip on screen
+- [x] **Program playback** — the timeline plays by sequencing 720p proxies and
+      cutting at each clip's out point, driven by the element's own clock
+- [x] Timeline: ruler, draggable playhead, zoom and scroll, trim handles, drag
+      reorder with a drop indicator, split at playhead, delete, and an audio
+      track that shows which sources actually carry audio
+- [x] `POST /edit-plan/manual` — the one new contract. Cuts plus output intent,
+      order implied by array position, validated by the unchanged Phase 4
+      validator against the project's own media rows
+- [x] AI edit as one inspector tab, driven entirely by
+      `/api/planner/capabilities`; plan review dialog with segments, rejections
+      and provenance, and accept / regenerate / render
+- [x] Export panel that sends intent only — a shape, a frame rate, a quality
+      level. No width, no CRF, no path, and no field that could carry one
+- [x] Keyboard throughout, visible focus ring defined once globally, ARIA roles
+      on the listbox, tablist, sliders and progress bars
+- [x] 447 unit tests (+30) and no change to any Phase 1–5 contract
+
+Deliberately **not** in Phase 6: music and beat synchronisation, audio mixing,
+subtitles, transitions beyond a cut, multi-track video, keyframes, effects,
+style learning, and collaboration.
+
+<details>
+<summary>Phase 5 — LLM planning behind the existing boundary</summary>
 
 - [x] `LlmPlanner` implementing the Phase 4 `Planner` port; `RulesEnginePlanner`
       unchanged and still the default
@@ -556,14 +672,10 @@ queue they consume. They ship as the same image with a different command.
 - [x] `resolve_mode` — automatic mode's decision as a pure, testable function
 - [x] `llm_runs` table: provider, model, prompt version, latency, tokens,
       attempts, fallback reason. Request text is digested, never stored
-- [x] Mode / style / target controls in the existing workstation UI, with
-      provenance shown as measured values rather than a badge
 - [x] 417 unit + 115 integration tests; Phase 5 acceptance passes with the
       provider both **disabled** and **enabled**
 
-Deliberately **not** in Phase 5: music and beat sync, subtitles, transitions
-beyond a cut, manual timeline editing, model tool use, training or fine-tuning,
-template copying, internet downloads, and 8K/120 fps upscaling.
+</details>
 
 <details>
 <summary>Phase 4 — Deterministic selection, <code>EditPlan</code>, timeline and render</summary>
@@ -618,16 +730,21 @@ template copying, internet downloads, and 8K/120 fps upscaling.
 | 2     | 2–3   | Media ingest and the job system |
 | 3     | 4–6   | Media intelligence — quality, dedupe, scenes, CLIP, faces |
 | 4     | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI |
-| **5** | 9–10  | LLM planning behind the `EditPlan` boundary, styles, provider abstraction *(current)* |
-| 6     | 11–12 | Music, beat synchronisation, manual and hybrid timeline editing |
+| 5     | 9–10  | LLM planning behind the `EditPlan` boundary, styles, provider abstraction |
+| **6** | 11–12 | Editing workstation — media browser, preview, timeline, manual editing *(current)* |
 | 7     | 13–14 | Subtitles, authentication, super-resolution, frame interpolation |
 | 8     | 15    | Evaluation loop, Asset Studio with license tracking, AWS deployment |
 
 The reasoning layer moved forward. It was planned for Phase 7, and was brought
 into Phase 5 because Phase 4 had already built the boundary it has to sit behind
 — once `EditPlan` existed as a validated artefact, adding a second planner was a
-smaller job than the original ordering assumed. Music and manual editing took its
-former slot, and the evaluation loop merged into the final phase.
+smaller job than the original ordering assumed.
+
+Phase 6 then took the manual-editing half of its former slot and left the music
+half behind. Two features in one phase would have meant a timeline good enough to
+demonstrate beat synchronisation and not much else; the editor was the half that
+everything after it has to be built inside, so it got the whole phase. Music and
+beat synchronisation move to Phase 7, which now has a timeline to hang them on.
 
 Deliberately out of scope for these fifteen weeks: personal style learning, model
 training infrastructure, AI asset generation, multi-tenancy and billing.

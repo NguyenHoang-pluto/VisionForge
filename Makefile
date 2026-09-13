@@ -6,14 +6,15 @@ API_DIR := apps/api
 WEB_DIR := apps/web
 
 .PHONY: help setup infra-up infra-down infra-reset infra-status migrate \
-        api web worker-cpu worker-gpu worker-render e2e e2e-analysis e2e-edit e2e-llm \
+        api web worker-cpu worker-gpu worker-render \
+        e2e e2e-analysis e2e-edit e2e-llm e2e-editor \
         test test-integration lint format typecheck \
         contracts web-lint web-build compose-check check
 
 help:
 	@echo "setup infra-up infra-down infra-reset infra-status migrate"
 	@echo "api web worker-cpu worker-gpu worker-render"
-	@echo "e2e e2e-analysis e2e-edit e2e-llm"
+	@echo "e2e e2e-analysis e2e-edit e2e-llm e2e-editor"
 	@echo "check test test-integration lint format typecheck contracts"
 	@echo "web-lint web-build compose-check"
 
@@ -74,6 +75,11 @@ e2e-edit:       # Phase 4: needs the API and both cpu and render workers
 # correct with a provider and without one.
 e2e-llm:        # Phase 5: same stack as e2e-edit
 	$(PYTHON) scripts/e2e_llm.py
+
+# Phase 6: the editor's own path -- plan, hand-edit the timeline, store it
+# through the manual route, render that.
+e2e-editor:     # Phase 6: same stack as e2e-edit
+	$(PYTHON) scripts/e2e_editor.py
 
 test:
 	cd $(API_DIR) && $(PYTHON) -m pytest -m "not integration and not gpu"
