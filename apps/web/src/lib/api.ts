@@ -54,11 +54,17 @@ export interface MediaAsset {
   bytes_size: number | null;
   mime_type: string | null;
   sha256: string | null;
+  container_format: string | null;
   duration_ms: number | null;
   width: number | null;
   height: number | null;
   fps: number | null;
   codec: string | null;
+  pix_fmt: string | null;
+  bit_rate: number | null;
+  sample_rate: number | null;
+  /** Audio channel count from ffprobe. `null` means the file has no audio. */
+  channels: number | null;
   error: { code?: string; message?: string; hint?: string } | null;
   created_at: string;
   has_thumbnail: boolean;
@@ -183,6 +189,21 @@ export interface PlannerCapabilities {
   quality_presets: QualityPreset[];
   prompt_version: string;
   max_request_chars: number;
+  /**
+   * The bounds the server's plan validator enforces.
+   *
+   * The timeline clamps a drag against these while the pointer is moving, so it
+   * needs them client-side. Taking them from here rather than hard-coding them
+   * is what keeps the browser's idea of a legal trim identical to the one that
+   * is actually enforced.
+   */
+  segment_bounds: {
+    min_clip_ms: number;
+    max_clip_ms: number;
+    max_clips: number;
+    min_total_ms: number;
+    max_total_ms: number;
+  };
 }
 
 /** Which planner ran, and why. Present on every plan. */
@@ -274,6 +295,29 @@ export interface Render {
   playback_expires_in_s: number | null;
 }
 
+/** One clip on a hand-cut timeline. Position in the array is the edit order. */
+export interface ManualCut {
+  media_id: string;
+  source_in_ms: number;
+  source_out_ms: number;
+}
+
+/**
+ * A timeline the user assembled, submitted for validation.
+ *
+ * Carries intent only. There is no width, height, CRF or path here for the
+ * same reason there is none on `PlanOptions` -- the server owns geometry and
+ * encoder settings, and the editor never learns them.
+ */
+export interface ManualPlanOptions {
+  segments: ManualCut[];
+  aspect_ratio?: AspectRatio;
+  fps?: number;
+  quality?: QualityPreset;
+  audio?: "none" | "source";
+  derived_from_edit_plan_id?: string | null;
+}
+
 export interface PlanOptions {
   mode?: PlannerMode;
   style?: EditStyle | null;
@@ -304,6 +348,14 @@ export interface LlmRun {
   fallback_detail: string | null;
   created_at: string;
 }
+
+export interface SignedUrl {
+  url: string;
+  expires_in_s: number;
+}
+
+/** What a plan listing returns: provenance without the document. */
+export type EditPlanSummary = Omit<EditPlan, "plan" | "selection">;
 
 export interface UploadTicket {
   media_id: string;
@@ -398,9 +450,17 @@ export const api = {
     ),
 
   thumbnailUrl: (projectId: string, mediaId: string) =>
-    request<{ url: string; expires_in_s: number }>(
-      `/api/projects/${projectId}/media/${mediaId}/thumbnail`,
-    ),
+    request<SignedUrl>(`/api/projects/${projectId}/media/${mediaId}/thumbnail`),
+
+  /**
+   * The 720p proxy, for scrubbing.
+   *
+   * Always the proxy, never the original: a 4K source would stall the preview
+   * and the network on every seek, and the proxy exists precisely so that the
+   * editor never touches the master file.
+   */
+  proxyUrl: (projectId: string, mediaId: string) =>
+    request<SignedUrl>(`/api/projects/${projectId}/media/${mediaId}/proxy`),
 
   // --- jobs ---
   listProjectJobs: (projectId: string) =>
@@ -438,10 +498,25 @@ export const api = {
       body: JSON.stringify(options),
     }),
 
+  /**
+   * Plan summaries. Note the type: the listing carries no `plan` document, by
+   * design -- twenty plans would mean twenty embedded segment arrays. Use
+   * `getEditPlan` for the one being looked at.
+   */
   listEditPlans: (projectId: string) =>
-    request<{ items: EditPlan[]; total: number }>(
+    request<{ items: EditPlanSummary[]; total: number }>(
       `/api/projects/${projectId}/edit-plan`,
     ),
+
+  getEditPlan: (projectId: string, editPlanId: string) =>
+    request<EditPlan>(`/api/projects/${projectId}/edit-plan/${editPlanId}`),
+
+  /** Store a timeline the user cut by hand. The server validates it. */
+  createManualEditPlan: (projectId: string, options: ManualPlanOptions) =>
+    request<EditPlan>(`/api/projects/${projectId}/edit-plan/manual`, {
+      method: "POST",
+      body: JSON.stringify(options),
+    }),
 
   createRender: (projectId: string, editPlanId: string) =>
     request<Render>(`/api/projects/${projectId}/render`, {
@@ -449,6 +524,11 @@ export const api = {
       body: JSON.stringify({ edit_plan_id: editPlanId }),
     }),
 
+  /**
+   * Render summaries. Like the plan listing, deliberately thinner than the
+   * detail: `playback_url` is presigned per call and is only issued by
+   * `getRender`.
+   */
   listRenders: (projectId: string) =>
     request<{ items: Render[]; total: number }>(
       `/api/projects/${projectId}/renders`,

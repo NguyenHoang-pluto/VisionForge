@@ -1,0 +1,95 @@
+"use client";
+
+import type { EditPlan, MediaAsset, Render } from "@/lib/api";
+import { useEditorStore, type InspectorTab } from "@/stores/editor-store";
+import { Panel, Tabs } from "@/components/ui";
+import { AiEditPanel } from "@/components/inspector/ai-edit-panel";
+import { AnalysisPanel } from "@/components/inspector/analysis-panel";
+import { ClipProperties } from "@/components/inspector/clip-properties";
+import { ExportPanel } from "@/components/inspector/export-panel";
+
+/**
+ * The inspector.
+ *
+ * Four tabs over one selection. AI lives here, as one tab among four, which is
+ * the honest weighting: it is a way of producing a first cut, not the point of
+ * the application.
+ */
+const TABS: { value: InspectorTab; label: string }[] = [
+  { value: "clip", label: "Clip" },
+  { value: "analysis", label: "Analysis" },
+  { value: "ai", label: "AI Edit" },
+  { value: "export", label: "Export" },
+];
+
+export function Inspector({
+  projectId,
+  media,
+  mediaList,
+  render,
+  onPlanned,
+}: {
+  projectId: string;
+  media: Map<string, MediaAsset>;
+  mediaList: MediaAsset[];
+  render: Render | null;
+  onPlanned: (plan: EditPlan) => void;
+}) {
+  const tab = useEditorStore((s) => s.inspectorTab);
+  const setTab = useEditorStore((s) => s.setInspectorTab);
+  const activeMediaId = useEditorStore((s) => s.activeMediaId);
+  const selectedClipId = useEditorStore((s) => s.selectedClipId);
+  const clips = useEditorStore((s) => s.clips);
+  const selectMedia = useEditorStore((s) => s.selectMedia);
+
+  // Analysis follows the timeline selection when there is one, so clicking a
+  // clip and switching to Analysis shows that clip's source rather than
+  // whatever was last touched in the browser.
+  const selectedClip = clips.find((clip) => clip.id === selectedClipId);
+  const analysisAsset = selectedClip
+    ? media.get(selectedClip.mediaId)
+    : activeMediaId
+      ? media.get(activeMediaId)
+      : undefined;
+
+  const readyCount = mediaList.filter((asset) => asset.status === "ready").length;
+
+  return (
+    <Panel className="h-full border-l border-line">
+      <Tabs value={tab} onChange={setTab} tabs={TABS} label="Inspector" />
+
+      <div
+        role="tabpanel"
+        aria-label={TABS.find((item) => item.value === tab)?.label}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
+        {tab === "clip" && <ClipProperties media={media} />}
+
+        {tab === "analysis" &&
+          (analysisAsset ? (
+            <AnalysisPanel
+              projectId={projectId}
+              asset={analysisAsset}
+              onSelectMedia={(mediaId) => selectMedia(mediaId)}
+            />
+          ) : (
+            <div className="p-2.5 text-xs text-dim">
+              Select a clip or a media item to see its analysis.
+            </div>
+          ))}
+
+        {tab === "ai" && (
+          <AiEditPanel
+            projectId={projectId}
+            readyCount={readyCount}
+            onPlanned={onPlanned}
+          />
+        )}
+
+        {tab === "export" && (
+          <ExportPanel projectId={projectId} media={media} render={render} />
+        )}
+      </div>
+    </Panel>
+  );
+}

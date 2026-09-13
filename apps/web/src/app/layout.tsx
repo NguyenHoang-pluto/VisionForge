@@ -1,11 +1,19 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 import { QueryProvider } from "@/lib/query-provider";
 
 export const metadata: Metadata = {
   title: "VisionForge",
-  description: "AI-assisted media creation platform",
+  description: "Video editing workstation with AI-assisted editing.",
+};
+
+export const viewport: Viewport = {
+  // The editor is a fixed viewport with independently scrolling panels, so the
+  // page itself must not zoom or bounce.
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
 };
 
 export default function RootLayout({
@@ -13,7 +21,7 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body className="bg-slate-950 text-slate-100 antialiased">
+      <body className="h-full bg-ground text-fg antialiased">
         <QueryProvider>{children}</QueryProvider>
       </body>
     </html>

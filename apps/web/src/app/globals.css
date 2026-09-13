@@ -2,11 +2,117 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Workstation tokens.
+ *
+ * One palette, four surface levels, one accent. The levels are close together
+ * on purpose: an editor is looked at for hours, and panel edges should be read
+ * as structure, not as contrast. Depth comes from hairlines, not shadows.
+ *
+ * Colours are defined once here and consumed through Tailwind's semantic names
+ * (bg-panel, border-line, text-muted) so that a component never spells a hex
+ * value and the whole application can be re-toned from this block.
+ */
 :root {
   color-scheme: dark;
+
+  /* Surfaces, deepest first. */
+  --surface-0: #0b0c0e; /* application ground, panel gutters */
+  --surface-1: #131519; /* panel body */
+  --surface-2: #1a1d22; /* panel header, raised row */
+  --surface-3: #22262c; /* control: input, button, tab */
+  --surface-4: #2c3138; /* control, hovered */
+
+  /* Structure. */
+  --line: #262a31;
+  --line-strong: #383e47;
+
+  /* Type. */
+  --text: #e3e6ea;
+  --text-muted: #99a0aa;
+  --text-dim: #656c76;
+
+  /* One accent, used for selection and the primary action only. */
+  --accent: #4b8ed4;
+  --accent-strong: #63a2e4;
+  --accent-soft: #1b3350;
+  --accent-fg: #eaf2fb;
+
+  /* Status. Desaturated enough to sit beside neutral greys all day. */
+  --ok: #58b37b;
+  --warn: #cf9b46;
+  --danger: #d4685f;
+  --info: #5b93c9;
+
+  /* Timeline. */
+  --track-video: #2d4358;
+  --track-video-selected: #3c6187;
+  --track-audio: #2f4440;
+  --playhead: #e0574b;
+  --ruler: #16181c;
 }
 
 html,
 body {
   height: 100%;
+}
+
+body {
+  background: var(--surface-0);
+  color: var(--text);
+  /* An editor is a fixed viewport with independently scrolling panels. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/*
+ * One focus ring for the entire application.
+ *
+ * Applied on :focus-visible only, so pointer users never see it and keyboard
+ * users always do. Defined here rather than per component so that no control
+ * can ship without it.
+ */
+:focus-visible {
+  outline: 1px solid var(--accent-strong);
+  outline-offset: 1px;
+}
+
+/* Compact scrollbars: a media browser has several, and the default chrome eats
+   real estate that the content needs. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+  background-clip: content-box;
+}
+
+/* Dragging a clip or a panel divider must not select the text underneath. */
+.vf-dragging,
+.vf-dragging * {
+  cursor: inherit !important;
+  user-select: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
