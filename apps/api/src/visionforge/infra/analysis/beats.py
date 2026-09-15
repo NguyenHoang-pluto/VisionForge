@@ -50,6 +50,7 @@ from visionforge.domain.analysis import (
 from visionforge.domain.beats import MAX_BEATS, MAX_BPM, MIN_BPM
 from visionforge.domain.errors import UnsupportedMediaError
 from visionforge.domain.media import MediaKind
+from visionforge.infra.ffmpeg.probe import probe_media
 from visionforge.infra.ffmpeg.runner import FFMPEG, resolve_binary
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,26 @@ TEMPO_PRIOR_OCTAVES = 0.7
 
 
 # ---------------------------------------------------------------------- decode
+def has_audio_stream(path: str) -> bool:
+    """Whether this file carries any audio at all.
+
+    Asked before decoding, because ``-map a:0`` against a file with no audio
+    stream is an FFmpeg error and not a meaningful one: it says the mapping
+    failed, which is indistinguishable at the exit code from a corrupt file.
+    Probing separates "nothing to measure" from "something that would not
+    decode", and only the second is a failure.
+
+    A probe that cannot read the file at all returns ``False``: whatever is
+    wrong with it, there is no tempo to find, and the decode path below would
+    have reported the same thing less clearly.
+    """
+    try:
+        return any(stream.kind == "audio" for stream in probe_media(path).streams)
+    except Exception:  # pragma: no cover - a file ffprobe cannot read has no tempo
+        logger.debug("audio probe failed", extra={"path": path})
+        return False
+
+
 def decode_pcm(path: str, *, max_ms: int = MAX_ANALYSIS_MS) -> NDArray[np.float32]:
     """Decode any audio FFmpeg understands to mono float32 at ``SAMPLE_RATE``.
 
@@ -398,6 +419,19 @@ class BeatAnalyzer:
                 version=self.version,
                 status=AnalysisStatus.UNSUPPORTED,
                 payload={"reason": f"beat detection does not apply to {source.kind.value}"},
+            )
+
+        # A video with no audio stream has no tempo, and that is a fact about
+        # the file rather than an error. Reported as an `unsupported` row, which
+        # is a stored answer that stops it being retried on every pass -- and,
+        # crucially, does not fail the analysis job that the quality, scene,
+        # phash and dynamics results share.
+        if not has_audio_stream(source.local_path):
+            return AnalysisOutcome(
+                analyzer=self.name,
+                version=self.version,
+                status=AnalysisStatus.UNSUPPORTED,
+                payload={"reason": "this file carries no audio stream"},
             )
 
         samples = decode_pcm(source.local_path)

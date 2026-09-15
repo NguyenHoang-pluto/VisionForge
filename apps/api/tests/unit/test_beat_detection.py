@@ -246,6 +246,59 @@ class TestAnalyzerContract:
         assert outcome.status is AnalysisStatus.UNSUPPORTED
         assert "reason" in outcome.payload
 
+    def test_a_video_with_no_audio_stream_is_unsupported(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The Phase 8 regression, pinned at the unit level.
+
+        Accepting video meant `-map a:0` could be asked to map a stream that
+        does not exist. FFmpeg exits non-zero, the analyzer raised, and the
+        whole CPU job failed -- taking quality, scenes, phash and dynamics with
+        it, for every silent video in the product. Nothing to measure is an
+        answer, not an error.
+        """
+        import shutil
+        import subprocess
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:  # pragma: no cover - environment guard
+            pytest.skip("ffmpeg not on PATH")
+
+        silent = tmp_path / "silent.mp4"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=10:duration=1",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                str(silent),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+
+        outcome = BeatAnalyzer().analyze(
+            AnalysisSource(
+                media_id=MediaId(uuid.uuid4()),
+                kind=MediaKind.VIDEO,
+                local_path=str(silent),
+                used_proxy=False,
+                duration_ms=1_000,
+            )
+        )
+        assert outcome.status is AnalysisStatus.UNSUPPORTED
+        assert "no audio stream" in outcome.payload["reason"]
+
     def test_the_version_is_pinned(self) -> None:
         """A retuning has to be a new row, not a silent edit to an old one."""
         assert BeatAnalyzer().version == "1"

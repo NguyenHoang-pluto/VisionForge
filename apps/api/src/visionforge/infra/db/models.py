@@ -115,7 +115,15 @@ class Project(Base, TimestampMixin):
 
     owner: Mapped[User] = relationship(back_populates="projects")
     media: Mapped[list[MediaAsset]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
+        back_populates="project",
+        cascade="all, delete-orphan",
+        # Spelled out because there are now *two* foreign keys between these
+        # tables: a media asset belongs to a project, and a project points at
+        # one of its media as its style reference. SQLAlchemy cannot guess which
+        # path "the project's media" means, and without this it refuses to
+        # configure the mapper at all -- which is a 500 on every route, not a
+        # subtle bug.
+        foreign_keys="MediaAsset.project_id",
     )
 
 
@@ -162,7 +170,9 @@ class MediaAsset(Base, TimestampMixin):
     channels: Mapped[int | None] = mapped_column(Integer, nullable=True)
     probe: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
-    project: Mapped[Project] = relationship(back_populates="media")
+    project: Mapped[Project] = relationship(
+        back_populates="media", foreign_keys=lambda: MediaAsset.project_id
+    )
     derivatives: Mapped[list[MediaDerivative]] = relationship(
         back_populates="media", cascade="all, delete-orphan"
     )
