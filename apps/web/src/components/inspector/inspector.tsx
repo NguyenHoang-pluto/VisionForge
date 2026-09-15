@@ -61,7 +61,7 @@ export function Inspector({
   const readyCount = mediaList.filter((asset) => asset.status === "ready").length;
 
   return (
-    <Panel className="h-full border-l border-line">
+    <Panel className="h-full border-l border-subtle">
       <Tabs
         value={tab}
         onChange={setTab}

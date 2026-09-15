@@ -154,7 +154,7 @@ function Thumb({
           className="h-full w-full object-cover"
         />
       ) : (
-        <span className="text-dim/70">
+        <span className="text-faint/70">
           <Glyph name={KIND_GLYPH[asset.kind]} size={glyphSize} />
         </span>
       )}
@@ -166,7 +166,7 @@ function Thumb({
 function AnalysedMark({ analysed, label }: { analysed: boolean; label: string }) {
   if (!analysed) return null;
   return (
-    <span className="text-ok" title={label} aria-label={label}>
+    <span className="text-success" title={label} aria-label={label}>
       <Glyph name="check" size={9} />
     </span>
   );
@@ -206,27 +206,31 @@ function Tile({
             onSelect(event as unknown as React.MouseEvent);
           }
         }}
-        className={`group flex cursor-default flex-col overflow-hidden rounded border transition-colors ${
+        className={`group flex cursor-default flex-col overflow-hidden rounded-lg p-1 transition-[background-color,box-shadow,transform] duration-base hover:-translate-y-px ${
           active
-            ? "border-accent bg-accent-soft"
+            ? "bg-accent-soft ring-2 ring-accent"
             : selected
-              ? "border-accent/50 bg-raised"
-              : "border-line bg-panel hover:border-line-strong hover:bg-raised"
+              ? "bg-elevated ring-1 ring-accent/60"
+              : "bg-elevated/50 hover:bg-elevated hover:shadow-raised"
         }`}
       >
-        <div className="relative">
-          <Thumb asset={asset} projectId={projectId} className="aspect-video" />
+        <div className="relative overflow-hidden rounded">
+          <Thumb
+            asset={asset}
+            projectId={projectId}
+            className="aspect-video transition-transform duration-base group-hover:scale-[1.04]"
+          />
 
           {/* Duration on the frame, as every media browser in this category
               puts it: it is the one number you read before the name. */}
           {asset.duration_ms != null && (
-            <span className="pointer-events-none absolute bottom-1 right-1 rounded-sm bg-black/75 px-1 font-mono text-2xs tabular-nums text-white">
+            <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/70 px-1.5 font-mono text-2xs tabular-nums text-white">
               {shortDuration(asset.duration_ms)}
             </span>
           )}
 
           <span
-            className="pointer-events-none absolute left-1 top-1 flex items-center gap-1 rounded-sm bg-black/65 px-1 py-px text-white"
+            className="pointer-events-none absolute left-1 top-1 flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-white"
             title={t(KIND_LABEL[asset.kind])}
           >
             <Glyph name={KIND_GLYPH[asset.kind]} size={9} />
@@ -239,10 +243,10 @@ function Tile({
               distinction the tint alone was being asked to carry. */}
           {(selected || active) && (
             <span
-              className={`pointer-events-none absolute right-1 top-1 flex h-[14px] w-[14px] items-center justify-center rounded-sm border ${
+              className={`pointer-events-none absolute right-1 top-1 flex h-[16px] w-[16px] items-center justify-center rounded-full shadow-raised ${
                 active
-                  ? "border-accent-strong bg-accent-strong text-accent-fg"
-                  : "border-accent bg-ground/80 text-accent-strong"
+                  ? "bg-accent-strong text-accent-fg"
+                  : "bg-ground/85 text-accent-strong ring-1 ring-accent"
               }`}
             >
               <Glyph name="check" size={9} />
@@ -250,11 +254,11 @@ function Tile({
           )}
         </div>
 
-        <div className="flex flex-col gap-0.5 border-t border-line px-1.5 py-1">
+        <div className="flex flex-col gap-0.5 px-1 pb-0.5 pt-1.5">
           <p className="truncate text-xs text-fg" title={asset.original_filename}>
             {asset.original_filename}
           </p>
-          <div className="flex items-center justify-between gap-1 font-mono text-2xs tabular-nums text-dim">
+          <div className="flex items-center justify-between gap-1 font-mono text-2xs tabular-nums text-faint">
             <span className="truncate">
               {asset.width ? `${asset.width}×${asset.height}` : t(KIND_LABEL[asset.kind])}
               {asset.fps ? ` · ${formatFps(asset.fps)}` : ""}
@@ -323,8 +327,8 @@ function ListRow({
       onKeyDown={(event) => {
         if (event.key === "Enter") onOpen();
       }}
-      className={`cursor-default border-b border-line/50 transition-colors ${
-        active ? "bg-accent-soft" : selected ? "bg-raised" : "hover:bg-raised"
+      className={`cursor-default border-b border-subtle/50 transition-colors ${
+        active ? "bg-accent-soft" : selected ? "bg-elevated" : "hover:bg-elevated"
       }`}
     >
       {/* The current row is marked on the left edge as well as by its fill, so
@@ -356,17 +360,17 @@ function ListRow({
         {shortDuration(asset.duration_ms)}
       </td>
       {columns.resolution && (
-        <td className="w-[62px] px-1 text-right font-mono text-2xs tabular-nums text-dim">
+        <td className="w-[62px] px-1 text-right font-mono text-2xs tabular-nums text-faint">
           {resolution(asset.width, asset.height)}
         </td>
       )}
       {columns.fps && (
-        <td className="w-[32px] px-1 text-right font-mono text-2xs tabular-nums text-dim">
+        <td className="w-[32px] px-1 text-right font-mono text-2xs tabular-nums text-faint">
           {formatFps(asset.fps)}
         </td>
       )}
       {columns.size && (
-        <td className="w-[48px] px-1 text-right font-mono text-2xs tabular-nums text-dim">
+        <td className="w-[48px] px-1 text-right font-mono text-2xs tabular-nums text-faint">
           {bytes(asset.bytes_size)}
         </td>
       )}
@@ -412,18 +416,18 @@ function CompactRow({
         active
           ? "border-l-accent bg-accent-soft"
           : selected
-            ? "border-l-accent/45 bg-raised"
-            : "border-l-transparent hover:bg-raised"
+            ? "border-l-accent/45 bg-elevated"
+            : "border-l-transparent hover:bg-elevated"
       }`}
     >
-      <span className="shrink-0 text-dim" title={t(KIND_LABEL[asset.kind])}>
+      <span className="shrink-0 text-faint" title={t(KIND_LABEL[asset.kind])}>
         <Glyph name={KIND_GLYPH[asset.kind]} size={10} />
       </span>
       <span className="min-w-0 flex-1 truncate text-xs text-fg" title={asset.original_filename}>
         {asset.original_filename}
       </span>
       <AnalysedMark analysed={analyzed} label={t("media.analysed")} />
-      <span className="shrink-0 font-mono text-2xs tabular-nums text-dim">
+      <span className="shrink-0 font-mono text-2xs tabular-nums text-faint">
         {shortDuration(asset.duration_ms)}
       </span>
       {asset.status !== "ready" && (
@@ -440,12 +444,22 @@ export function MediaBrowser({
   loading,
   analyzedIds,
   onUploaded,
+  wide = false,
 }: {
   projectId: string;
   media: MediaAsset[];
   loading: boolean;
   analyzedIds: Set<string>;
   onUploaded: () => void;
+  /**
+   * Whether the browser has the viewport rather than a column.
+   *
+   * The Assets workspace passes this. It changes the tile grid from two columns
+   * to as many as fit, and puts the import and filter controls on one row --
+   * the same component doing the same job with room to do it in, not a second
+   * implementation.
+   */
+  wide?: boolean;
 }) {
   const t = useT();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -554,8 +568,8 @@ export function MediaBrowser({
   );
 
   return (
-    <Panel className="h-full border-r border-line">
-      <PanelHeader title={t("media.title")}>
+    <Panel className="h-full overflow-hidden rounded-xl shadow-panel">
+      <PanelHeader title={t("media.title")} icon="layers">
         <span className="ml-auto flex items-center gap-0.5">
           {(
             [
@@ -578,7 +592,11 @@ export function MediaBrowser({
       </PanelHeader>
 
       {/* ---- import ---- */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1.5">
+      <div
+        className={`flex shrink-0 items-center gap-1.5 px-panel pb-2 ${
+          wide ? "order-2" : ""
+        }`}
+      >
         <Button
           size="sm"
           title={t("media.import.filesHint")}
@@ -634,24 +652,24 @@ export function MediaBrowser({
       </div>
 
       {/* ---- filter ---- */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1.5">
+      <div className="flex shrink-0 items-center gap-1.5 px-panel pb-2.5">
         <div className="relative min-w-0 flex-1">
-          <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-dim">
-            <Glyph name="search" size={11} />
+          <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint">
+            <Glyph name="search" size={12} />
           </span>
           <TextInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder={t("media.search")}
             aria-label={t("media.search.label")}
-            className="h-control-sm pl-6 text-2xs"
+            className="pl-7"
           />
         </div>
         <select
           value={filter}
           onChange={(event) => setFilter(event.target.value as Filter)}
           aria-label={t("media.filter.label")}
-          className="h-control-sm shrink-0 rounded border border-line-strong bg-control px-1 text-2xs text-fg transition-colors hover:bg-control-hover focus:border-accent"
+          className="h-control shrink-0 rounded-md border border-subtle bg-elevated px-2 text-2xs text-fg shadow-raised transition-colors hover:border-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
         >
           <option value="all">{t("media.filter.all")}</option>
           <option value="video">{t("media.filter.video")}</option>
@@ -662,7 +680,7 @@ export function MediaBrowser({
       </div>
 
       {uploading && (
-        <div className="shrink-0 border-b border-line px-2 py-1">
+        <div className="shrink-0 px-panel pb-2">
           <div className="flex justify-between font-mono text-2xs tabular-nums text-muted">
             <span>{t("media.uploading")}</span>
             <span>
@@ -676,9 +694,9 @@ export function MediaBrowser({
       )}
 
       {failures.length > 0 && (
-        <ul className="max-h-24 shrink-0 overflow-y-auto border-b border-line">
+        <ul className="max-h-24 shrink-0 overflow-y-auto">
           {failures.map((failure) => (
-            <li key={failure.filename} className="px-2 py-1">
+            <li key={failure.filename} className="px-panel pb-1.5">
               <ErrorNote hint={failure.hint}>
                 <span className="font-mono">{failure.filename}</span> — {failure.message}
               </ErrorNote>
@@ -732,7 +750,11 @@ export function MediaBrowser({
             role="listbox"
             aria-label={t("media.library")}
             aria-multiselectable
-            className="grid grid-cols-2 gap-1.5 p-1.5"
+            className={`grid gap-2 px-panel pb-panel ${
+              wide
+                ? "grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
+                : "grid-cols-2"
+            }`}
           >
             {visible.map((asset) => (
               <Tile
@@ -799,7 +821,7 @@ export function MediaBrowser({
         )}
       </div>
 
-      <footer className="flex h-row shrink-0 items-center justify-between gap-2 border-t border-line px-2 font-mono text-2xs tabular-nums text-dim">
+      <footer className="flex h-row shrink-0 items-center justify-between gap-2 px-panel pb-1 font-mono text-2xs tabular-nums text-faint">
         <span>
           {filtered
             ? t("media.count", { visible: visible.length, total: media.length })

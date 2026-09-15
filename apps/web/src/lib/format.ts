@@ -74,14 +74,26 @@ export function elapsed(value: unknown): string {
   return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${Math.round(value)} ms`;
 }
 
-export function relativeTime(iso: string | null | undefined): string {
+/**
+ * "2 hours ago", "2 giờ trước".
+ *
+ * `Intl.RelativeTimeFormat` rather than four message keys and a ladder of ifs:
+ * the platform already knows how every locale pluralises and orders this, and
+ * the previous version of this function returned hard-coded English from a file
+ * the i18n layer could not see -- the one place in the application where a
+ * Vietnamese user was shown English.
+ */
+export function relativeTime(iso: string | null | undefined, lang = "en"): string {
   if (!iso) return "—";
-  const delta = Date.now() - Date.parse(iso);
+  const delta = Date.parse(iso) - Date.now();
   if (!Number.isFinite(delta)) return "—";
+
+  const format = new Intl.RelativeTimeFormat(lang, { numeric: "auto" });
   const minutes = Math.round(delta / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
+  if (Math.abs(minutes) < 60) return format.format(minutes, "minute");
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  if (Math.abs(hours) < 24) return format.format(hours, "hour");
+  const days = Math.round(hours / 24);
+  if (Math.abs(days) < 30) return format.format(days, "day");
+  return format.format(Math.round(days / 30), "month");
 }

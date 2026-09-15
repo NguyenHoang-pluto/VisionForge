@@ -54,7 +54,7 @@ function Section({
     <section>
       <SectionTitle
         aside={
-          <span className="flex shrink-0 items-center gap-1.5 font-mono text-2xs text-dim">
+          <span className="flex shrink-0 items-center gap-1.5 font-mono text-2xs text-faint">
             v{record.analyzer_version}
             <Badge tone={status.tone}>{t(status.label)}</Badge>
           </span>
@@ -64,7 +64,7 @@ function Section({
       </SectionTitle>
 
       {record.status === "unsupported" ? (
-        <p className="py-1 text-xs text-dim">
+        <p className="py-1 text-xs text-faint">
           {String(record.payload.reason ?? t("analysis.notApplicable"))}
         </p>
       ) : (
@@ -150,13 +150,13 @@ function Scenes({ p }: { p: Record<string, unknown> }) {
       {/* Boundaries as a strip: where the cuts fall matters more than when. */}
       {scenes.length > 0 && total > 0 && (
         <div
-          className="mt-1.5 flex h-4 w-full overflow-hidden rounded-sm border border-line"
+          className="mt-1.5 flex h-4 w-full overflow-hidden rounded-sm border border-subtle"
           title={t("analysis.scenes.strip", { count: scenes.length })}
         >
           {scenes.map((scene, index) => (
             <div
               key={index}
-              className={`border-r border-panel last:border-r-0 ${
+              className={`border-r border-surface last:border-r-0 ${
                 index % 2 ? "bg-accent/35" : "bg-accent/60"
               }`}
               style={{ width: `${((scene.end_ms - scene.start_ms) / total) * 100}%` }}
@@ -336,7 +336,7 @@ export function AnalysisPanel({
                 <button
                   type="button"
                   onClick={() => onSelectMedia(hit.media_id)}
-                  className="flex min-h-row w-full items-baseline justify-between gap-3 border-b border-line/60 py-[3px] text-left transition-colors last:border-b-0 hover:text-accent-strong"
+                  className="flex min-h-row w-full items-baseline justify-between gap-3 border-b border-subtle/60 py-[3px] text-left transition-colors last:border-b-0 hover:text-accent-strong"
                 >
                   <span className="truncate text-xs text-muted">
                     {hit.media_id.slice(0, 8)}

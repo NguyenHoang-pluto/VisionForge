@@ -3,10 +3,11 @@ import type { Config } from "tailwindcss";
 /**
  * Semantic names only.
  *
- * Components say `bg-panel` and `border-line`, never `bg-slate-900`. The values
- * live in globals.css as custom properties, so the application can be re-toned
- * in one place — and re-themed, re-accented and re-densified at runtime —
- * while a component remains unable to invent a colour that is off-palette.
+ * Components say `bg-surface` and `border-subtle`, never `bg-slate-900`. The
+ * values live in globals.css as custom properties, so the application can be
+ * re-toned in one place — and re-themed, re-accented and re-densified at
+ * runtime — while a component remains unable to invent a colour that is
+ * off-palette.
  *
  * Colours are declared in the `rgb(var(--x) / <alpha-value>)` form rather than
  * as a bare `var(--x)`. That is what lets `bg-accent/40` and `border-danger/30`
@@ -24,18 +25,20 @@ export default {
   theme: {
     extend: {
       colors: {
-        ground: channel("surface-0"),
-        panel: channel("surface-1"),
-        raised: channel("surface-2"),
-        control: channel("surface-3"),
-        "control-hover": channel("surface-4"),
+        /* Four surface levels and a well. Hierarchy is carried by the level
+           first, a shadow second and a line only where two things abut. */
+        ground: channel("background"),
+        surface: channel("surface"),
+        elevated: channel("surface-elevated"),
+        hover: channel("surface-hover"),
+        sunken: channel("surface-sunken"),
 
-        line: channel("line"),
-        "line-strong": channel("line-strong"),
+        subtle: channel("border-subtle"),
+        strong: channel("border-strong"),
 
-        fg: channel("text"),
-        muted: channel("text-muted"),
-        dim: channel("text-dim"),
+        fg: channel("foreground"),
+        muted: channel("foreground-muted"),
+        faint: channel("foreground-subtle"),
 
         accent: channel("accent"),
         "accent-strong": channel("accent-strong"),
@@ -43,14 +46,15 @@ export default {
         /* Mixed per theme, so it carries no alpha channel of its own. */
         "accent-soft": "var(--accent-soft)",
 
-        ok: channel("ok"),
-        warn: channel("warn"),
+        success: channel("success"),
+        warning: channel("warning"),
         danger: channel("danger"),
         info: channel("info"),
 
         "track-video": "var(--track-video)",
         "track-video-selected": "var(--track-video-selected)",
         "track-audio": "var(--track-audio)",
+        "track-audio-selected": "var(--track-audio-selected)",
         playhead: channel("playhead"),
         ruler: channel("ruler"),
         lane: channel("lane"),
@@ -64,47 +68,76 @@ export default {
         header: "var(--h-header)",
         strip: "var(--h-strip)",
         row: "var(--h-row)",
+        rail: "var(--h-rail)",
       },
       minHeight: {
         control: "var(--h-control)",
+        row: "var(--h-row)",
       },
       width: {
         control: "var(--h-control)",
         "control-sm": "var(--h-control-sm)",
+        rail: "var(--h-rail)",
       },
       spacing: {
         panel: "var(--pad-panel)",
         "panel-gap": "var(--gap-panel)",
       },
 
+      /*
+       * Radius.
+       *
+       * The single largest contributor to how rigid the application felt: the
+       * previous scale stopped at 6px, so a panel and a checkbox were the same
+       * shape. This one runs far enough that a surface can be visibly softer
+       * than the control sitting on it, which is what lets a layout read as
+       * layered rather than as a grid of boxes.
+       *
+       * `DEFAULT` is 6 — controls, tiles, clips. Panels take `xl`/`2xl`.
+       */
       borderRadius: {
-        // Workstation radius: present enough to soften an edge, small enough
-        // that nothing reads as a card.
-        DEFAULT: "3px",
-        sm: "2px",
-        md: "4px",
-        lg: "6px",
+        none: "0",
+        sm: "4px",
+        DEFAULT: "6px",
+        md: "8px",
+        lg: "10px",
+        xl: "14px",
+        "2xl": "18px",
+        "3xl": "24px",
       },
 
       boxShadow: {
+        raised: "var(--shadow-raised)",
+        panel: "var(--shadow-panel)",
         menu: "var(--shadow-menu)",
+        float: "var(--shadow-float)",
       },
 
+      /*
+       * Type.
+       *
+       * Raised a step across the board from the previous scale, where 11px did
+       * the work of a body size and everything below it was 10px. The steps are
+       * now far enough apart to build a hierarchy from: a section title, a
+       * label and a value are three visibly different things without needing
+       * three different colours to say so.
+       */
       fontSize: {
-        // A dense scale. 11px is the working size of this application; the
-        // larger steps are for the few places a heading is genuinely needed.
-        "2xs": ["10px", { lineHeight: "14px" }],
-        xs: ["11px", { lineHeight: "15px" }],
-        sm: ["12px", { lineHeight: "16px" }],
-        base: ["13px", { lineHeight: "18px" }],
-        lg: ["15px", { lineHeight: "20px" }],
-        xl: ["18px", { lineHeight: "24px" }],
+        "2xs": ["11px", { lineHeight: "15px", letterSpacing: "0.01em" }],
+        xs: ["12px", { lineHeight: "17px" }],
+        sm: ["13px", { lineHeight: "19px" }],
+        base: ["14px", { lineHeight: "21px" }],
+        lg: ["16px", { lineHeight: "23px", letterSpacing: "-0.005em" }],
+        xl: ["19px", { lineHeight: "26px", letterSpacing: "-0.012em" }],
+        "2xl": ["23px", { lineHeight: "30px", letterSpacing: "-0.018em" }],
+        "3xl": ["30px", { lineHeight: "36px", letterSpacing: "-0.022em" }],
       },
 
       fontFamily: {
         sans: [
           "ui-sans-serif",
           "system-ui",
+          "Segoe UI Variable Display",
           "Segoe UI",
           "Inter",
           "Roboto",
@@ -121,8 +154,14 @@ export default {
         ],
       },
 
+      transitionTimingFunction: {
+        DEFAULT: "var(--ease)",
+        ease: "var(--ease)",
+      },
       transitionDuration: {
-        DEFAULT: "120ms",
+        DEFAULT: "var(--t-fast)",
+        fast: "var(--t-fast)",
+        base: "var(--t-base)",
       },
     },
   },

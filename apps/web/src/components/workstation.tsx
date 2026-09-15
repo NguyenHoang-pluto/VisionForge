@@ -8,28 +8,40 @@ import { useT, type MessageKey } from "@/lib/i18n";
 import { applyAudioBounds, applyBounds, draftProblems } from "@/lib/timeline";
 import { useEditorStore, type InspectorTab } from "@/stores/editor-store";
 import { Button, Dialog, KeyCap, useShortcuts } from "@/components/ui";
+import { ProjectHome } from "@/components/home/project-home";
 import { Inspector } from "@/components/inspector/inspector";
 import { MediaBrowser } from "@/components/media-browser";
 import { PlanReview } from "@/components/plan-review";
 import { PreferencesDialog } from "@/components/preferences-dialog";
 import { Preview } from "@/components/preview";
+import { NavRail } from "@/components/shell/nav-rail";
+import { ProjectBar } from "@/components/shell/project-bar";
 import { StatusBar } from "@/components/status-bar";
 import { Timeline } from "@/components/timeline";
-import { NewProjectDialog, TopBar } from "@/components/top-bar";
-import { Welcome } from "@/components/welcome";
+import { NewProjectDialog } from "@/components/top-bar";
+import { AudioWorkspace } from "@/components/views/audio-workspace";
+import { AssetsWorkspace } from "@/components/views/assets-workspace";
+import { ExportWorkspace } from "@/components/views/export-workspace";
 
 /**
- * The editing workstation.
+ * The application shell.
  *
- * Owns the layout and the project-scoped queries; every panel below is given
- * what it needs rather than fetching for itself, so the media list is fetched
- * once per project and not once per panel that happens to want a filename.
+ * Owns the navigation, the layout and the project-scoped queries; every panel
+ * below is given what it needs rather than fetching for itself, so the media
+ * list is fetched once per project and not once per panel that happens to want
+ * a filename.
  *
- *   ┌────────────────────── top bar ──────────────────────┐
- *   │ browser │            preview           │ inspector  │
- *   │         ├─────────────────────────────┤             │
- *   │         │            timeline          │            │
- *   └───────────────────── status bar ─────────────────────┘
+ *   ┌────┬────────────────── project bar ──────────────────┐
+ *   │    ├─────────┬───────────────────────┬───────────────┤
+ *   │ n  │ browser │        preview        │   inspector   │
+ *   │ a  │         ├───────────────────────┤               │
+ *   │ v  │         │       timeline        │               │
+ *   │    ├─────────────────── status bar ──────────────────┤
+ *
+ * The panels are inset cards on the application ground rather than regions
+ * divided by hairlines. That one change is most of why the workspace stopped
+ * reading as a grid of boxes: the gaps do the separating, so the borders could
+ * go, and a panel now has a shape instead of an outline.
  */
 
 const POLL_WHILE_WORKING_MS = 3000;
@@ -40,10 +52,11 @@ const POLL_WHILE_WORKING_MS = 3000;
  * A fixed 250px browser is a third of the screen at 1280 and a strip at 1920.
  * These are the widths at which the browser shows two tiles per row and the
  * inspector's two-column forms stay two columns, measured at each breakpoint
- * rather than picked once and lived with.
+ * rather than picked once and lived with. They are a little wider than the
+ * previous revision's because the type inside them is a step larger.
  */
-const BROWSER_WIDTH = { base: 232, md: 256, lg: 288 };
-const INSPECTOR_WIDTH = { base: 280, md: 300, lg: 328 };
+const BROWSER_WIDTH = { base: 244, md: 272, lg: 304 };
+const INSPECTOR_WIDTH = { base: 296, md: 320, lg: 348 };
 
 /** Below this, the side panels stop being useful and start being in the way. */
 const NARROW_BREAKPOINT = 1180;
@@ -68,6 +81,8 @@ export function Workstation() {
 
   const projectId = useEditorStore((s) => s.projectId);
   const openProject = useEditorStore((s) => s.openProject);
+  const view = useEditorStore((s) => s.view);
+  const setView = useEditorStore((s) => s.setView);
   const browserOpen = useEditorStore((s) => s.browserOpen);
   const inspectorOpen = useEditorStore((s) => s.inspectorOpen);
   const toggleBrowser = useEditorStore((s) => s.toggleBrowser);
@@ -196,6 +211,8 @@ export function Workstation() {
     [clips, byId],
   );
 
+  const project = projects.data?.find((item) => item.id === projectId) ?? null;
+
   // ---------------------------------------------------------------- mutations
   const invalidateProject = useCallback(() => {
     for (const key of ["media", "jobs", "project-analysis", "renders"]) {
@@ -205,8 +222,8 @@ export function Workstation() {
 
   const createProject = useMutation({
     mutationFn: (title: string) => api.createProject(title),
-    onSuccess: (project) => {
-      openProject(project.id);
+    onSuccess: (created) => {
+      openProject(created.id);
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
@@ -226,21 +243,15 @@ export function Workstation() {
     onSuccess: invalidateProject,
   });
 
-  // Open the first project automatically: an editor that opens to a chooser
-  // when there is exactly one thing to choose is asking a pointless question.
-  useEffect(() => {
-    if (!projectId && projects.data && projects.data.length > 0) {
-      openProject(projects.data[0].id);
-    }
-  }, [projectId, projects.data, openProject]);
-
-  /** Show the inspector tab a top-bar verb refers to, opening the panel if shut. */
+  /** Show the inspector tab a verb refers to, opening the panel if shut. */
   const goToPanel = useCallback(
     (tab: InspectorTab) => {
       setInspectorTab(tab);
-      if (!useEditorStore.getState().inspectorOpen) toggleInspector();
+      const state = useEditorStore.getState();
+      if (state.view !== "editor") state.setView("editor");
+      if (!state.inspectorOpen) state.toggleInspector();
     },
-    [setInspectorTab, toggleInspector],
+    [setInspectorTab],
   );
 
   // ------------------------------------------------------------ layout sizing
@@ -270,7 +281,8 @@ export function Workstation() {
    * desktops and one set of panel widths cannot serve them. Three steps, and
    * below 1180 the browser is collapsed rather than squeezed -- it goes first
    * because its work (picking clips) happens before the work the other panels
-   * support. Below 1024 the inspector follows it.
+   * support, and because the Assets workspace gives it the whole viewport when
+   * that is the job at hand. Below 1024 the inspector follows it.
    *
    * Collapsing is done once per crossing rather than on every resize event, so
    * a user who reopens a panel at a narrow width keeps it open.
@@ -322,150 +334,189 @@ export function Workstation() {
     "-": () => useEditorStore.getState().zoom(1 / 1.4),
     b: toggleBrowser,
     i: toggleInspector,
+    // The workspaces, on the digits. One press from anywhere to anywhere, which
+    // is the point of having named places at all.
+    "1": () => setView("home"),
+    "2": () => projectId && setView("editor"),
+    "3": () => projectId && setView("assets"),
+    "4": () => projectId && setView("audio"),
+    "5": () => projectId && setView("export"),
     "?": () => setShortcutsOpen(true),
   });
 
-  // ------------------------------------------------------------------ render
+  // ------------------------------------------------------------------ chrome
   const chrome = (
     <>
       <PreferencesDialog open={preferencesOpen} onClose={() => setPreferencesOpen(false)} />
       <ShortcutHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <NewProjectDialog
+        open={creatingProject}
+        title={newTitle}
+        onTitle={setNewTitle}
+        onClose={() => setCreatingProject(false)}
+        onCreate={(value) => {
+          createProject.mutate(value);
+          setNewTitle("");
+          setCreatingProject(false);
+        }}
+      />
+      {projectId && (
+        <PlanReview
+          projectId={projectId}
+          planId={reviewPlanId}
+          media={byId}
+          open={reviewOpen}
+          onClose={() => setReviewOpen(false)}
+        />
+      )}
     </>
   );
 
-  if (!projectId) {
-    return (
-      <div className="flex h-screen flex-col overflow-hidden">
-        <TopBar
-          projects={projects.data ?? []}
-          projectId={null}
-          media={[]}
-          analyzing={false}
-          onOpenProject={openProject}
-          onCreateProject={(title) => createProject.mutate(title)}
-          onAnalyze={() => undefined}
-          onShowShortcuts={() => setShortcutsOpen(true)}
-          onShowPreferences={() => setPreferencesOpen(true)}
-          onGoToPanel={goToPanel}
-        />
+  // Home is the only workspace that works without a project, so it is also the
+  // fallback: a project that has not loaded cannot be edited, exported or
+  // listened to, and pretending otherwise produces four empty panels.
+  const current = projectId ? view : "home";
 
-        <Welcome
-          projects={projects.data ?? []}
-          loading={projects.isLoading}
-          unreachable={projects.isError}
-          onOpen={openProject}
-          onCreate={() => setCreatingProject(true)}
-          onRetry={() => void projects.refetch()}
-        />
-
-        <NewProjectDialog
-          open={creatingProject}
-          title={newTitle}
-          onTitle={setNewTitle}
-          onClose={() => setCreatingProject(false)}
-          onCreate={(value) => {
-            createProject.mutate(value);
-            setNewTitle("");
-            setCreatingProject(false);
-          }}
-        />
-        {chrome}
-      </div>
-    );
-  }
+  const onPlanned = (plan: EditPlan) => {
+    setReviewPlanId(plan.id);
+    setReviewOpen(true);
+  };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
-      <TopBar
-        projects={projects.data ?? []}
-        projectId={projectId}
-        media={items}
-        analyzing={analyze.isPending}
-        onOpenProject={openProject}
-        onCreateProject={(title) => createProject.mutate(title)}
-        onAnalyze={(scope) =>
-          analyze.mutate(
-            scope === "all" ? [] : useEditorStore.getState().selectedMediaIds,
-          )
-        }
+    <div className="flex h-screen overflow-hidden bg-ground">
+      <NavRail
         onShowShortcuts={() => setShortcutsOpen(true)}
         onShowPreferences={() => setPreferencesOpen(true)}
-        onGoToPanel={goToPanel}
       />
 
-      <div className="flex min-h-0 flex-1">
-        {browserOpen && (
-          <div className="min-h-0 shrink-0" style={{ width: BROWSER_WIDTH[step] }}>
-            <MediaBrowser
-              projectId={projectId}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {current === "home" ? (
+          <ProjectHome
+            projects={projects.data ?? []}
+            loading={projects.isLoading}
+            unreachable={projects.isError}
+            onOpen={openProject}
+            onCreate={() => setCreatingProject(true)}
+            onRetry={() => void projects.refetch()}
+          />
+        ) : (
+          <>
+            <ProjectBar
+              projects={projects.data ?? []}
+              project={project}
               media={items}
-              loading={media.isLoading}
-              analyzedIds={analyzedIds}
-              onUploaded={invalidateProject}
+              analyzing={analyze.isPending}
+              onOpenProject={openProject}
+              onCreateProject={() => setCreatingProject(true)}
+              onAnalyze={(scope) =>
+                analyze.mutate(scope === "all" ? [] : useEditorStore.getState().selectedMediaIds)
+              }
+              onGoToPanel={goToPanel}
             />
-          </div>
-        )}
 
-        {/* ---- centre column: preview over timeline ---- */}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <Preview projectId={projectId} media={byId} render={render.data ?? null} />
+            {current === "editor" && (
+              <div className="vf-view flex min-h-0 flex-1 gap-2 px-2 pb-1">
+                {browserOpen && (
+                  <div className="min-h-0 shrink-0" style={{ width: BROWSER_WIDTH[step] }}>
+                    <MediaBrowser
+                      projectId={projectId!}
+                      media={items}
+                      loading={media.isLoading}
+                      analyzedIds={analyzedIds}
+                      onUploaded={invalidateProject}
+                    />
+                  </div>
+                )}
 
-          <div
-            role="separator"
-            aria-label={t("timeline.resize")}
-            aria-orientation="horizontal"
-            tabIndex={0}
-            onPointerDown={(event) => {
-              resizeRef.current = { startY: event.clientY, startHeight: timelineHeight };
-              document.body.classList.add("vf-dragging");
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowUp") setTimelineHeight(timelineHeight + 20);
-              if (event.key === "ArrowDown") setTimelineHeight(timelineHeight - 20);
-            }}
-            className="group relative h-[4px] shrink-0 cursor-row-resize bg-line transition-colors hover:bg-accent"
-          >
-            {/* A grip, so the divider looks draggable before it is dragged. */}
-            <span
-              aria-hidden
-              className="absolute left-1/2 top-1/2 h-[2px] w-8 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-line-strong transition-colors group-hover:bg-accent-strong"
+                {/* ---- centre column: preview over timeline ---- */}
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <Preview projectId={projectId!} media={byId} render={render.data ?? null} />
+
+                  <div
+                    role="separator"
+                    aria-label={t("timeline.resize")}
+                    aria-orientation="horizontal"
+                    tabIndex={0}
+                    onPointerDown={(event) => {
+                      resizeRef.current = { startY: event.clientY, startHeight: timelineHeight };
+                      document.body.classList.add("vf-dragging");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowUp") setTimelineHeight(timelineHeight + 20);
+                      if (event.key === "ArrowDown") setTimelineHeight(timelineHeight - 20);
+                    }}
+                    className="group relative -my-1 flex h-3 shrink-0 cursor-row-resize items-center justify-center"
+                  >
+                    {/* A grip, so the divider looks draggable before it is
+                        dragged. It brightens rather than appearing, so the
+                        divider is never invisible and never loud. */}
+                    <span
+                      aria-hidden
+                      className="h-[3px] w-10 rounded-full bg-strong transition-[background-color,width] duration-base group-hover:w-16 group-hover:bg-accent"
+                    />
+                  </div>
+
+                  <div className="flex shrink-0 flex-col" style={{ height: timelineHeight }}>
+                    <Timeline
+                      projectId={projectId!}
+                      media={byId}
+                      invalidClipIds={invalidClipIds}
+                    />
+                  </div>
+                </div>
+
+                {inspectorOpen && (
+                  <div className="min-h-0 shrink-0" style={{ width: INSPECTOR_WIDTH[step] }}>
+                    <Inspector
+                      projectId={projectId!}
+                      media={byId}
+                      mediaList={items}
+                      render={render.data ?? null}
+                      onPlanned={onPlanned}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {current === "assets" && (
+              <AssetsWorkspace
+                projectId={projectId!}
+                media={items}
+                loading={media.isLoading}
+                analyzedIds={analyzedIds}
+                onUploaded={invalidateProject}
+              />
+            )}
+
+            {current === "audio" && (
+              <AudioWorkspace
+                projectId={projectId!}
+                media={byId}
+                mediaList={items}
+                invalidClipIds={invalidClipIds}
+              />
+            )}
+
+            {current === "export" && (
+              <ExportWorkspace
+                projectId={projectId!}
+                media={byId}
+                renders={renders.data?.items ?? []}
+                render={render.data ?? null}
+                jobs={jobs.data ?? []}
+              />
+            )}
+
+            <StatusBar
+              projectId={projectId!}
+              jobs={jobs.data ?? []}
+              onCancel={(jobId) => cancelJob.mutate(jobId)}
             />
-          </div>
-
-          <div className="flex shrink-0 flex-col" style={{ height: timelineHeight }}>
-            <Timeline projectId={projectId} media={byId} invalidClipIds={invalidClipIds} />
-          </div>
-        </div>
-
-        {inspectorOpen && (
-          <div className="min-h-0 shrink-0" style={{ width: INSPECTOR_WIDTH[step] }}>
-            <Inspector
-              projectId={projectId}
-              media={byId}
-              mediaList={items}
-              render={render.data ?? null}
-              onPlanned={(plan: EditPlan) => {
-                setReviewPlanId(plan.id);
-                setReviewOpen(true);
-              }}
-            />
-          </div>
+          </>
         )}
       </div>
 
-      <StatusBar
-        projectId={projectId}
-        jobs={jobs.data ?? []}
-        onCancel={(jobId) => cancelJob.mutate(jobId)}
-      />
-
-      <PlanReview
-        projectId={projectId}
-        planId={reviewPlanId}
-        media={byId}
-        open={reviewOpen}
-        onClose={() => setReviewOpen(false)}
-      />
       {chrome}
     </div>
   );
@@ -498,6 +549,16 @@ const SHORTCUT_GROUPS: {
     ],
   },
   {
+    title: "shortcuts.group.workspaces",
+    rows: [
+      { keys: ["1"], label: "nav.home" },
+      { keys: ["2"], label: "nav.editor" },
+      { keys: ["3"], label: "nav.assets" },
+      { keys: ["4"], label: "nav.audio" },
+      { keys: ["5"], label: "nav.exports" },
+    ],
+  },
+  {
     title: "shortcuts.group.view",
     rows: [
       { keys: ["+", "−"], label: "shortcuts.zoom" },
@@ -512,18 +573,18 @@ const SHORTCUT_GROUPS: {
 function ShortcutHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
   const t = useT();
   return (
-    <Dialog open={open} onClose={onClose} title={t("shortcuts.title")}>
-      <div className="flex flex-col gap-panel-gap">
+    <Dialog open={open} onClose={onClose} title={t("shortcuts.title")} size="lg">
+      <div className="grid grid-cols-2 gap-x-panel-gap gap-y-5">
         {SHORTCUT_GROUPS.map((group) => (
           <section key={group.title}>
-            <h3 className="border-b border-line-strong pb-1 text-xs font-semibold uppercase tracking-wider text-muted">
+            <h3 className="text-2xs font-semibold uppercase tracking-[0.08em] text-faint">
               {t(group.title)}
             </h3>
-            <dl className="mt-1 flex flex-col">
+            <dl className="mt-2 flex flex-col gap-1">
               {group.rows.map((row) => (
                 <div
                   key={row.label}
-                  className="flex min-h-row items-center justify-between gap-4 border-b border-line/60 py-1 last:border-b-0"
+                  className="flex min-h-row items-center justify-between gap-4"
                 >
                   <dt className="flex shrink-0 items-center gap-1">
                     {row.keys.map((key) => (
@@ -538,9 +599,9 @@ function ShortcutHelp({ open, onClose }: { open: boolean; onClose: () => void })
         ))}
       </div>
 
-      <p className="mt-3 text-2xs leading-snug text-dim">{t("shortcuts.note")}</p>
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="font-mono text-2xs text-dim">
+      <p className="mt-5 text-2xs leading-snug text-faint">{t("shortcuts.note")}</p>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <span className="font-mono text-2xs text-faint">
           {t("app.version", { version: APP_VERSION })}
         </span>
         <Button onClick={onClose}>{t("common.close")}</Button>

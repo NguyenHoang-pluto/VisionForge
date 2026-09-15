@@ -37,8 +37,8 @@ const FALLBACK_TEXT: Record<string, MessageKey> = {
 const STRIP_COLOURS = [
   "bg-accent/70",
   "bg-info/60",
-  "bg-ok/50",
-  "bg-warn/45",
+  "bg-success/50",
+  "bg-warning/45",
   "bg-accent/45",
   "bg-info/40",
 ];
@@ -74,7 +74,7 @@ export function PlanReview({
   return (
     <Dialog open={open} onClose={onClose} title={t("plan.title")} size="lg">
       {!plan ? (
-        <p className="py-6 text-center text-xs text-dim">
+        <p className="py-6 text-center text-xs text-faint">
           {detail.isError ? t("plan.loadFailed") : t("plan.loading")}
         </p>
       ) : (
@@ -85,7 +85,7 @@ export function PlanReview({
           <Rejections plan={plan} media={media} />
           <Provenance plan={plan} />
 
-          <div className="flex gap-1 border-t border-line pt-2">
+          <div className="flex gap-1 border-t border-subtle pt-2">
             <Button
               tone="primary"
               onClick={() => {
@@ -151,11 +151,11 @@ function PlanSummary({ plan }: { plan: EditPlan }) {
 function Strip({ plan, media }: { plan: EditPlan; media: Map<string, MediaAsset> }) {
   const total = plan.total_duration_ms || 1;
   return (
-    <div className="flex h-6 w-full overflow-hidden rounded-sm border border-line">
+    <div className="flex h-6 w-full overflow-hidden rounded-sm border border-subtle">
       {plan.plan.segments.map((segment, index) => (
         <div
           key={`${segment.media_id}-${segment.order}`}
-          className={`flex items-center justify-center overflow-hidden border-r border-panel last:border-r-0 ${
+          className={`flex items-center justify-center overflow-hidden border-r border-surface last:border-r-0 ${
             STRIP_COLOURS[index % STRIP_COLOURS.length]
           }`}
           style={{ width: `${(segment.duration_ms / total) * 100}%` }}
@@ -175,8 +175,8 @@ function Segments({ plan, media }: { plan: EditPlan; media: Map<string, MediaAss
   return (
     <div className="overflow-x-auto">
       <table className="w-full font-mono text-2xs tabular-nums">
-        <thead className="text-dim">
-          <tr className="border-b border-line-strong">
+        <thead className="text-faint">
+          <tr className="border-b border-strong">
             <th className="py-1 pr-2 text-left font-normal">{t("plan.column.index")}</th>
             <th className="py-1 pr-2 text-left font-normal">{t("plan.column.source")}</th>
             <th className="py-1 pr-2 text-right font-normal">{t("plan.column.in")}</th>
@@ -189,9 +189,9 @@ function Segments({ plan, media }: { plan: EditPlan; media: Map<string, MediaAss
           {plan.plan.segments.map((segment) => (
             <tr
               key={`${segment.media_id}-${segment.order}`}
-              className="border-b border-line/50 last:border-b-0"
+              className="border-b border-subtle/50 last:border-b-0"
             >
-              <td className="py-0.5 pr-2 text-dim">{segment.order + 1}</td>
+              <td className="py-0.5 pr-2 text-faint">{segment.order + 1}</td>
               <td className="max-w-[12rem] truncate py-0.5 pr-2 text-fg">
                 {media.get(segment.media_id)?.original_filename ??
                   segment.media_id.slice(0, 8)}
@@ -199,7 +199,7 @@ function Segments({ plan, media }: { plan: EditPlan; media: Map<string, MediaAss
               <td className="py-0.5 pr-2 text-right">{seconds(segment.source_in_ms)}</td>
               <td className="py-0.5 pr-2 text-right">{seconds(segment.source_out_ms)}</td>
               <td className="py-0.5 pr-2 text-right">{seconds(segment.duration_ms)}</td>
-              <td className="py-0.5 text-right text-dim">{segment.transition_in}</td>
+              <td className="py-0.5 text-right text-faint">{segment.transition_in}</td>
             </tr>
           ))}
         </tbody>
@@ -216,7 +216,7 @@ function Rejections({ plan, media }: { plan: EditPlan; media: Map<string, MediaA
 
   return (
     <details>
-      <summary className="cursor-pointer font-mono text-2xs text-dim marker:text-line-strong hover:text-muted">
+      <summary className="cursor-pointer font-mono text-2xs text-faint marker:text-strong hover:text-muted">
         {t.plural("plan.rejected", rejected.length)}
       </summary>
       <ul className="mt-1 flex flex-col gap-0.5">
@@ -225,8 +225,8 @@ function Rejections({ plan, media }: { plan: EditPlan; media: Map<string, MediaA
             <span className="w-32 truncate text-muted">
               {media.get(item.media_id)?.original_filename ?? item.media_id.slice(0, 8)}
             </span>
-            <span className="shrink-0 text-warn">{item.reason.replace(/_/g, " ")}</span>
-            <span className="truncate text-dim">{item.detail}</span>
+            <span className="shrink-0 text-warning">{item.reason.replace(/_/g, " ")}</span>
+            <span className="truncate text-faint">{item.detail}</span>
           </li>
         ))}
       </ul>
@@ -277,29 +277,29 @@ function Provenance({ plan }: { plan: EditPlan }) {
   }
 
   return (
-    <section className="border-t border-line pt-2">
+    <section className="border-t border-subtle pt-2">
       <dl className="flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-2xs tabular-nums">
         {fields.map(([label, value]) => (
           <div key={label} className="flex gap-1.5">
-            <dt className="text-dim">{label}</dt>
+            <dt className="text-faint">{label}</dt>
             <dd className="text-muted">{value}</dd>
           </div>
         ))}
       </dl>
 
       {fell && (
-        <p className="mt-1 border-l-2 border-warn pl-2 text-2xs leading-snug text-warn">
+        <p className="mt-1 border-l-2 border-warning pl-2 text-2xs leading-snug text-warning">
           {t("plan.fallback", {
             reason: FALLBACK_TEXT[fell] ? t(FALLBACK_TEXT[fell]) : fell.replace(/_/g, " "),
           })}
           {llm?.fallback_detail && (
-            <span className="block truncate text-dim">{llm.fallback_detail}</span>
+            <span className="block truncate text-faint">{llm.fallback_detail}</span>
           )}
         </p>
       )}
 
       {plan.mode?.reason && !fell && (
-        <p className="mt-1 text-2xs leading-snug text-dim">{plan.mode.reason}.</p>
+        <p className="mt-1 text-2xs leading-snug text-faint">{plan.mode.reason}.</p>
       )}
 
       {typeof plan.plan.metadata?.rationale === "string" &&

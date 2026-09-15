@@ -528,6 +528,48 @@ export const en = {
   "timeline.music.empty": "No music. Choose an audio asset in the Audio panel.",
   "timeline.music.clip": "Music: {name}, {duration}",
 
+  // --------------------------------------------------------------- navigation
+  "nav.title": "Workspaces",
+  "nav.home": "Home",
+  "nav.editor": "Editor",
+  "nav.assets": "Assets",
+  "nav.audio": "Audio",
+  "nav.exports": "Exports",
+  "nav.settings": "Settings",
+  "nav.needsProject": "{view} — open a project first",
+  "nav.theme.toDark": "Switch to dark",
+  "nav.theme.toLight": "Switch to light",
+
+  // --------------------------------------------------------------------- home
+  "home.lead":
+    "A local-first video workstation. Import footage, let the analysers read it, cut to the beat, and render — all on this machine.",
+  "home.recent": "Recent projects",
+  "home.projectCount.one": "{count} project",
+  "home.projectCount.other": "{count} projects",
+  "home.create": "New project",
+  "home.import": "Import media",
+  "home.importInto": "Import into {project}",
+  "home.importNeeds": "Create a project first",
+  "home.active": "Active {when}",
+  "home.empty.title": "No projects yet",
+  "home.empty.body":
+    "A project holds your footage, its analysis, the timeline you cut and everything you render from it.",
+  "home.how": "How it works",
+  "home.local": "Everything runs locally. No footage leaves this machine.",
+
+  "shortcuts.group.workspaces": "Workspaces",
+  "export.title": "Export",
+  "export.history": "Render history",
+  "export.noRenders.title": "Nothing rendered yet",
+  "export.progress.running": "Rendering",
+  "export.progress.done": "Render finished",
+  "export.stage.prepare": "Preparing — resolving sources",
+  "export.stage.compile": "Compiling — building the filter graph",
+  "export.stage.encode": "Encoding — running FFmpeg",
+  "export.stage.publish": "Publishing — uploading the file",
+  "export.stage.complete": "Complete",
+  "export.stage.attempt": "Attempt {attempt}",
+
   // ---------------------------------------------------------------- common
   "common.close": "Close",
   "common.cancel": "Cancel",

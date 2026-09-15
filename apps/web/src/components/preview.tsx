@@ -251,7 +251,7 @@ export function Preview({
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-ground" aria-label={t("preview.title")}>
       {/* ---------------- viewer header ---------------- */}
-      <header className="flex h-header shrink-0 items-center gap-2 border-b border-line bg-raised px-2">
+      <header className="flex h-header shrink-0 items-center gap-2 border-b border-subtle bg-elevated px-2">
         <SegmentedControl
           label={t("preview.source")}
           value={source}
@@ -278,7 +278,7 @@ export function Preview({
           ]}
         />
 
-        <span className="min-w-0 truncate text-2xs text-dim" title={activeAsset?.original_filename}>
+        <span className="min-w-0 truncate text-2xs text-faint" title={activeAsset?.original_filename}>
           {source === "source"
             ? (activeAsset?.original_filename ?? t("preview.nothingSelected"))
             : source === "render"
@@ -293,7 +293,7 @@ export function Preview({
         )}
 
         {/* The output shape, at the right, where an NLE puts it. */}
-        <span className="ml-auto shrink-0 font-mono text-2xs tabular-nums text-dim">
+        <span className="ml-auto shrink-0 font-mono text-2xs tabular-nums text-faint">
           {source === "program" ? aspect : ""}
         </span>
       </header>
@@ -305,7 +305,7 @@ export function Preview({
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
         <div
           ref={frameRef}
-          className={`relative flex max-h-full max-w-full items-center justify-center bg-black shadow-[0_0_0_1px_rgb(var(--line-strong))] ${
+          className={`relative flex max-h-full max-w-full items-center justify-center bg-black shadow-[0_0_0_1px_rgb(var(--border-strong))] ${
             source === "program" ? ASPECT_CLASS[aspect] : "aspect-video"
           }`}
           style={{ height: "100%" }}
@@ -363,7 +363,7 @@ export function Preview({
       </div>
 
       {/* ---------------- transport ---------------- */}
-      <div className="flex h-strip shrink-0 items-center gap-1 border-t border-line bg-raised px-2">
+      <div className="flex h-strip shrink-0 items-center gap-1 border-t border-subtle bg-elevated px-2">
         <IconButton label={t("preview.toStart")} size="sm" onClick={() => seek(0)}>
           <Glyph name="skip-back" size={12} />
         </IconButton>
@@ -384,7 +384,7 @@ export function Preview({
           aria-pressed={playing}
           disabled={empty}
           onClick={() => setPlaying(!playing)}
-          className="inline-flex h-control w-[30px] shrink-0 items-center justify-center rounded border border-line-strong bg-control text-fg transition-colors hover:bg-control-hover disabled:pointer-events-none disabled:opacity-35"
+          className="inline-flex h-control w-[30px] shrink-0 items-center justify-center rounded border border-strong bg-elevated text-fg transition-colors hover:bg-hover disabled:pointer-events-none disabled:opacity-35"
         >
           <Glyph name={playing ? "pause" : "play"} />
         </button>
@@ -410,7 +410,7 @@ export function Preview({
           <span title={t("preview.position")} aria-label={t("preview.position")}>
             {timecode(positionMs)}
           </span>
-          <span className="text-dim" title={t("preview.duration")} aria-label={t("preview.duration")}>
+          <span className="text-faint" title={t("preview.duration")} aria-label={t("preview.duration")}>
             {" / "}
             {timecode(durationMs)}
           </span>
@@ -434,7 +434,7 @@ export function Preview({
           onChange={(event) => setSpeed(Number(event.target.value))}
           aria-label={t("preview.speed")}
           title={t("preview.speed")}
-          className="h-control-sm shrink-0 rounded border border-line-strong bg-control px-1 font-mono text-2xs text-muted transition-colors hover:bg-control-hover focus:border-accent"
+          className="h-control-sm shrink-0 rounded border border-strong bg-elevated px-1 font-mono text-2xs text-muted transition-colors hover:bg-hover focus:border-accent"
         >
           {SPEEDS.map((value) => (
             <option key={value} value={value}>

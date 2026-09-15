@@ -219,7 +219,7 @@ export function ExportPanel({
           </Field>
         </div>
 
-        <p className="mt-1.5 text-2xs leading-snug text-dim">{t(QUALITY_NOTE[quality])}</p>
+        <p className="mt-1.5 text-2xs leading-snug text-faint">{t(QUALITY_NOTE[quality])}</p>
 
         {/* What will actually be heard, stated where the render is started.
             "Silent" plus a music bed is a contradiction worth not shipping. */}
@@ -237,7 +237,7 @@ export function ExportPanel({
       <section>
         <SectionTitle
           aside={
-            <span className="shrink-0 font-mono text-2xs tabular-nums text-dim">
+            <span className="shrink-0 font-mono text-2xs tabular-nums text-faint">
               {t.plural("timeline.clipCount", clips.length)}
             </span>
           }
@@ -268,7 +268,7 @@ export function ExportPanel({
             {problems.slice(0, 4).map((problem, index) => (
               <li
                 key={index}
-                className="flex items-start gap-1.5 text-2xs leading-snug text-warn"
+                className="flex items-start gap-1.5 text-2xs leading-snug text-warning"
               >
                 <span className="mt-px shrink-0">
                   <Glyph name="warning" size={11} />
@@ -347,7 +347,7 @@ export function ExportPanel({
                 <a
                   href={render.playback_url}
                   download
-                  className="inline-flex h-control-sm items-center gap-1 rounded border border-line-strong bg-control px-2 text-2xs font-medium text-fg transition-colors hover:bg-control-hover"
+                  className="inline-flex h-control-sm items-center gap-1 rounded border border-strong bg-elevated px-2 text-2xs font-medium text-fg transition-colors hover:bg-hover"
                 >
                   <Glyph name="download" size={10} />
                   {t("export.download")}

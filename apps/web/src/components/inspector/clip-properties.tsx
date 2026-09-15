@@ -71,7 +71,7 @@ export function ClipProperties({ media }: { media: Map<string, MediaAsset> }) {
         <section>
           <SectionTitle
             aside={
-              <span className="shrink-0 font-mono text-2xs tabular-nums text-dim">
+              <span className="shrink-0 font-mono text-2xs tabular-nums text-faint">
                 {t("clip.position", { index: index + 1, total: clips.length })}
               </span>
             }

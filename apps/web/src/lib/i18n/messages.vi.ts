@@ -525,6 +525,48 @@ export const vi: Record<MessageKey, string> = {
   "timeline.music.empty": "Chưa có nhạc nền. Chọn một tệp âm thanh trong bảng Âm thanh.",
   "timeline.music.clip": "Nhạc nền: {name}, {duration}",
 
+  // --------------------------------------------------------------- navigation
+  "nav.title": "Không gian làm việc",
+  "nav.home": "Trang chủ",
+  "nav.editor": "Biên tập",
+  "nav.assets": "Tư liệu",
+  "nav.audio": "Âm thanh",
+  "nav.exports": "Kết xuất",
+  "nav.settings": "Cài đặt",
+  "nav.needsProject": "{view} — hãy mở một dự án trước",
+  "nav.theme.toDark": "Chuyển sang nền tối",
+  "nav.theme.toLight": "Chuyển sang nền sáng",
+
+  // --------------------------------------------------------------------- home
+  "home.lead":
+    "Trạm dựng phim ưu tiên cục bộ. Nhập tư liệu, để các bộ phân tích đọc chúng, cắt theo nhịp và kết xuất — tất cả trên máy này.",
+  "home.recent": "Dự án gần đây",
+  "home.projectCount.one": "{count} dự án",
+  "home.projectCount.other": "{count} dự án",
+  "home.create": "Dự án mới",
+  "home.import": "Nhập tư liệu",
+  "home.importInto": "Nhập vào {project}",
+  "home.importNeeds": "Hãy tạo một dự án trước",
+  "home.active": "Hoạt động {when}",
+  "home.empty.title": "Chưa có dự án nào",
+  "home.empty.body":
+    "Một dự án chứa tư liệu, kết quả phân tích, dòng thời gian bạn cắt và mọi thứ bạn kết xuất từ đó.",
+  "home.how": "Cách hoạt động",
+  "home.local": "Mọi thứ chạy cục bộ. Không tư liệu nào rời khỏi máy này.",
+
+  "shortcuts.group.workspaces": "Không gian làm việc",
+  "export.title": "Kết xuất",
+  "export.history": "Lịch sử kết xuất",
+  "export.noRenders.title": "Chưa kết xuất gì",
+  "export.progress.running": "Đang kết xuất",
+  "export.progress.done": "Kết xuất xong",
+  "export.stage.prepare": "Chuẩn bị — phân giải nguồn",
+  "export.stage.compile": "Biên dịch — dựng đồ thị bộ lọc",
+  "export.stage.encode": "Mã hoá — chạy FFmpeg",
+  "export.stage.publish": "Công bố — tải tệp lên",
+  "export.stage.complete": "Hoàn tất",
+  "export.stage.attempt": "Lần thử {attempt}",
+
   // ---------------------------------------------------------------- common
   "common.close": "Đóng",
   "common.cancel": "Huỷ",

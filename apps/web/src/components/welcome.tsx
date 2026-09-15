@@ -51,29 +51,29 @@ export function Welcome({
           <BrandMark size={22} />
           <div className="min-w-0">
             <h1 className="text-xl font-semibold tracking-tight text-fg">{t("app.name")}</h1>
-            <p className="text-xs text-dim">{t("app.tagline")}</p>
+            <p className="text-xs text-faint">{t("app.tagline")}</p>
           </div>
         </header>
 
         <p className="mt-4 max-w-[58ch] text-sm leading-relaxed text-muted">{t("welcome.lead")}</p>
 
         {/* ---- the three steps ---- */}
-        <ol className="mt-5 grid grid-cols-3 gap-px overflow-hidden rounded border border-line bg-line">
+        <ol className="mt-5 grid grid-cols-3 gap-px overflow-hidden rounded border border-subtle bg-subtle">
           {STEPS.map((step, index) => (
-            <li key={step.title} className="flex flex-col gap-1.5 bg-panel p-panel">
-              <span className="flex items-center gap-1.5 text-dim">
+            <li key={step.title} className="flex flex-col gap-1.5 bg-surface p-panel">
+              <span className="flex items-center gap-1.5 text-faint">
                 <Glyph name={step.icon} size={13} />
                 <span className="font-mono text-2xs tabular-nums">{index + 1}</span>
               </span>
               <h2 className="text-xs font-semibold text-fg">{t(step.title)}</h2>
-              <p className="text-2xs leading-relaxed text-dim">{t(step.body)}</p>
+              <p className="text-2xs leading-relaxed text-faint">{t(step.body)}</p>
             </li>
           ))}
         </ol>
 
         {/* ---- the projects themselves ---- */}
         <section className="mt-5">
-          <header className="flex items-baseline justify-between gap-2 border-b border-line-strong pb-1">
+          <header className="flex items-baseline justify-between gap-2 border-b border-strong pb-1">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
               {t("welcome.recent")}
             </h2>
@@ -94,9 +94,9 @@ export function Welcome({
               </div>
             </div>
           ) : loading ? (
-            <p className="py-6 text-center text-xs text-dim">{t("welcome.loading")}</p>
+            <p className="py-6 text-center text-xs text-faint">{t("welcome.loading")}</p>
           ) : projects.length === 0 ? (
-            <p className="py-6 text-center text-xs text-dim">{t("welcome.empty")}</p>
+            <p className="py-6 text-center text-xs text-faint">{t("welcome.empty")}</p>
           ) : (
             <ul className="mt-1 max-h-[38vh] overflow-y-auto">
               {projects.map((project) => (
@@ -104,16 +104,16 @@ export function Welcome({
                   <button
                     type="button"
                     onClick={() => onOpen(project.id)}
-                    className="group flex w-full items-center gap-3 border-b border-line/60 px-1 py-1.5 text-left transition-colors last:border-b-0 hover:bg-accent-soft"
+                    className="group flex w-full items-center gap-3 border-b border-subtle/60 px-1 py-1.5 text-left transition-colors last:border-b-0 hover:bg-accent-soft"
                   >
                     <span className="min-w-0 flex-1 truncate text-xs text-fg">{project.title}</span>
-                    <span className="shrink-0 font-mono text-2xs tabular-nums text-dim">
+                    <span className="shrink-0 font-mono text-2xs tabular-nums text-faint">
                       {t.plural("top.project.mediaCount", project.media_count)}
                     </span>
-                    <span className="w-16 shrink-0 text-right font-mono text-2xs text-dim">
+                    <span className="w-16 shrink-0 text-right font-mono text-2xs text-faint">
                       {relativeTime(project.created_at)}
                     </span>
-                    <span className="shrink-0 text-dim transition-colors group-hover:text-accent-strong">
+                    <span className="shrink-0 text-faint transition-colors group-hover:text-accent-strong">
                       <Glyph name="chevron-right" size={12} />
                     </span>
                   </button>

@@ -160,7 +160,7 @@ export function AiEditPanel({
           }))}
         />
       </Field>
-      {activeNote && <p className="-mt-1.5 text-2xs leading-snug text-dim">{t(activeNote)}</p>}
+      {activeNote && <p className="-mt-1.5 text-2xs leading-snug text-faint">{t(activeNote)}</p>}
 
       <Field label={t("ai.style")} hint={selectedStyle?.description}>
         <Select
@@ -188,7 +188,7 @@ export function AiEditPanel({
         </Select>
       </Field>
       {selectedStyle && (
-        <p className="-mt-1.5 text-2xs leading-snug text-dim">{selectedStyle.description}</p>
+        <p className="-mt-1.5 text-2xs leading-snug text-faint">{selectedStyle.description}</p>
       )}
 
       <Field label={t("ai.request")} hint={t("ai.request.hint")}>
@@ -285,10 +285,10 @@ export function AiEditPanel({
 
       {error && <ErrorNote hint={error.hint}>{error.message}</ErrorNote>}
 
-      {readyCount === 0 && <p className="text-2xs leading-snug text-dim">{t("ai.noMedia")}</p>}
+      {readyCount === 0 && <p className="text-2xs leading-snug text-faint">{t("ai.noMedia")}</p>}
 
       {/* What this server actually has. No claim beyond it. */}
-      <p className="border-t border-line pt-2 font-mono text-2xs leading-snug text-dim">
+      <p className="border-t border-subtle pt-2 font-mono text-2xs leading-snug text-faint">
         {aiAvailable
           ? capabilities.data?.is_stub
             ? t("ai.planner.stub", { provider: capabilities.data.provider ?? "—" })
@@ -299,7 +299,7 @@ export function AiEditPanel({
           : t("ai.planner.rules")}
       </p>
       {mode === "ai" && !aiAvailable && (
-        <p className="text-2xs leading-snug text-warn">{t("ai.planner.willFallBack")}</p>
+        <p className="text-2xs leading-snug text-warning">{t("ai.planner.willFallBack")}</p>
       )}
     </div>
   );

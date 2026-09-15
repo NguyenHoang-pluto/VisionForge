@@ -107,7 +107,7 @@ function Clip({
           ? "border-danger bg-danger/25"
           : selected
             ? "border-accent-strong bg-track-video-selected ring-1 ring-inset ring-accent-strong/60"
-            : "border-line-strong bg-track-video hover:border-line-strong"
+            : "border-strong bg-track-video hover:border-strong"
       }`}
     >
       {/* The filmstrip: one thumbnail tiled along the clip. A texture that says
@@ -235,7 +235,7 @@ function MusicBlock({
       className={`absolute inset-y-[2px] cursor-default select-none overflow-hidden rounded-sm border transition-colors ${
         selected
           ? "border-accent-strong bg-track-audio ring-1 ring-inset ring-accent-strong/60"
-          : "border-line-strong/70 bg-track-audio hover:border-line-strong"
+          : "border-strong/70 bg-track-audio hover:border-strong"
       }`}
     >
       {/* Beat markers, behind the label. Hairlines rather than ticks: they are
@@ -291,13 +291,13 @@ function TrackLabel({
   return (
     <div
       style={{ height }}
-      className="flex items-center gap-1.5 border-b border-line px-2 last:border-b-0"
+      className="flex items-center gap-1.5 border-b border-subtle px-2 last:border-b-0"
     >
-      <span className="text-dim">
+      <span className="text-faint">
         <Glyph name={glyph} size={11} />
       </span>
       <span className="font-mono text-2xs font-medium text-muted">{name}</span>
-      <span className="ml-auto truncate font-mono text-2xs tabular-nums text-dim">{detail}</span>
+      <span className="ml-auto truncate font-mono text-2xs tabular-nums text-faint">{detail}</span>
     </div>
   );
 }
@@ -544,10 +544,10 @@ export function Timeline({
   const playheadX = (playheadMs / 1000) * pxPerSecond;
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-panel" aria-label={t("timeline.title")}>
+    <section className="flex min-h-0 flex-1 flex-col bg-surface" aria-label={t("timeline.title")}>
       {/* ---------------- toolbar ---------------- */}
-      <header className="flex h-header shrink-0 items-center gap-1.5 border-b border-line bg-raised px-2">
-        <h2 className="select-none font-mono text-2xs font-medium uppercase tracking-wider text-dim">
+      <header className="flex h-header shrink-0 items-center gap-1.5 border-b border-subtle bg-elevated px-2">
+        <h2 className="select-none font-mono text-2xs font-medium uppercase tracking-wider text-faint">
           {t("timeline.title")}
         </h2>
         {dirty && (
@@ -602,10 +602,10 @@ export function Timeline({
         </IconButton>
 
         {/* The current time, at the size an editor actually reads it. */}
-        <span className="ml-auto flex items-center gap-2.5 font-mono text-2xs tabular-nums text-dim">
+        <span className="ml-auto flex items-center gap-2.5 font-mono text-2xs tabular-nums text-faint">
           <span className="text-sm text-fg">{timecode(playheadMs)}</span>
           <span>/ {timecode(totalMs)}</span>
-          <span className="border-l border-line pl-2.5">
+          <span className="border-l border-subtle pl-2.5">
             {t.plural("timeline.clipCount", clips.length)}
           </span>
         </span>
@@ -614,10 +614,10 @@ export function Timeline({
       {/* ---------------- tracks ---------------- */}
       <div className="flex min-h-0 flex-1">
         {/* Track headers stay put while the lanes scroll. */}
-        <div className="shrink-0 border-r border-line bg-raised" style={{ width: GUTTER }}>
+        <div className="shrink-0 border-r border-subtle bg-elevated" style={{ width: GUTTER }}>
           <div
             style={{ height: RULER_HEIGHT }}
-            className="flex items-center border-b border-line px-2 font-mono text-2xs uppercase tracking-wider text-dim"
+            className="flex items-center border-b border-subtle px-2 font-mono text-2xs uppercase tracking-wider text-faint"
           >
             {/* The ruler's own column heading: what the numbers to the right
                 are. Better than an empty box the eye has to explain to itself. */}
@@ -667,17 +667,17 @@ export function Timeline({
                 if (event.key === "End") setPlayhead(totalMs);
               }}
               style={{ height: RULER_HEIGHT }}
-              className="relative cursor-pointer select-none border-b border-line bg-ruler"
+              className="relative cursor-pointer select-none border-b border-subtle bg-ruler"
             >
               {ticks.map((second) => (
                 <div key={second}>
                   <span
                     aria-hidden
-                    className="absolute bottom-0 top-0 w-px bg-line-strong"
+                    className="absolute bottom-0 top-0 w-px bg-strong"
                     style={{ left: second * pxPerSecond }}
                   />
                   <span
-                    className="absolute top-[3px] ml-1 font-mono text-2xs tabular-nums text-dim"
+                    className="absolute top-[3px] ml-1 font-mono text-2xs tabular-nums text-faint"
                     style={{ left: second * pxPerSecond }}
                   >
                     {timecode(second * 1000, false)}
@@ -687,7 +687,7 @@ export function Timeline({
                       <span
                         key={n}
                         aria-hidden
-                        className="absolute bottom-0 h-[5px] w-px bg-line-strong/60"
+                        className="absolute bottom-0 h-[5px] w-px bg-strong/60"
                         style={{ left: (second + n * minorStep) * pxPerSecond }}
                       />
                     ))}
@@ -701,7 +701,7 @@ export function Timeline({
               aria-label={t("timeline.track.video")}
               onPointerDown={onLanePointerDown}
               style={{ height: "var(--h-track)" }}
-              className="relative border-b border-line bg-lane"
+              className="relative border-b border-subtle bg-lane"
             >
               {placed.map((clip) => (
                 <Clip
@@ -731,7 +731,7 @@ export function Timeline({
               )}
 
               {clips.length === 0 && (
-                <p className="pointer-events-none absolute inset-0 flex items-center pl-3 text-xs text-dim">
+                <p className="pointer-events-none absolute inset-0 flex items-center pl-3 text-xs text-faint">
                   {t("timeline.empty")}
                 </p>
               )}
@@ -766,14 +766,14 @@ export function Timeline({
                     }}
                     className={`absolute inset-y-[2px] overflow-hidden rounded-sm border ${
                       hasAudio
-                        ? "border-line-strong/70 bg-track-audio"
-                        : "border-dashed border-line-strong/50 bg-transparent"
+                        ? "border-strong/70 bg-track-audio"
+                        : "border-dashed border-strong/50 bg-transparent"
                     }`}
                   >
                     {hasAudio && (
                       <span
                         aria-hidden
-                        className="absolute inset-x-1 top-1/2 h-px -translate-y-1/2 bg-ok/50"
+                        className="absolute inset-x-1 top-1/2 h-px -translate-y-1/2 bg-success/50"
                       />
                     )}
                   </div>
@@ -789,7 +789,7 @@ export function Timeline({
             <div
               aria-label={t("timeline.track.music")}
               style={{ height: "var(--h-track-audio)" }}
-              className="relative border-t border-line bg-lane/40"
+              className="relative border-t border-subtle bg-lane/40"
             >
               {music ? (
                 <MusicBlock
@@ -803,7 +803,7 @@ export function Timeline({
                 />
               ) : (
                 clips.length > 0 && (
-                  <p className="pointer-events-none absolute inset-0 flex items-center pl-3 text-2xs text-dim">
+                  <p className="pointer-events-none absolute inset-0 flex items-center pl-3 text-2xs text-faint">
                     {t("timeline.music.empty")}
                   </p>
                 )
@@ -826,7 +826,7 @@ export function Timeline({
       </div>
 
       {/* ---------------- selected clip readout ---------------- */}
-      <footer className="flex h-row shrink-0 items-center gap-3 border-t border-line bg-raised px-2 font-mono text-2xs tabular-nums text-dim">
+      <footer className="flex h-row shrink-0 items-center gap-3 border-t border-subtle bg-elevated px-2 font-mono text-2xs tabular-nums text-faint">
         {selected ? (
           <>
             <span className="truncate text-muted">

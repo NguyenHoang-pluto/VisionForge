@@ -95,15 +95,15 @@ function JobRow({
         <span className="font-mono text-2xs text-muted">
           {JOB_LABEL[job.type] ? t(JOB_LABEL[job.type]) : job.type}
         </span>
-        <span className="font-mono text-2xs text-dim">{job.id.slice(0, 8)}</span>
+        <span className="font-mono text-2xs text-faint">{job.id.slice(0, 8)}</span>
         {attempt > 1 && (
-          <span className="font-mono text-2xs text-warn">
+          <span className="font-mono text-2xs text-warning">
             {t("status.attempt", { attempt, max: maxAttempts })}
           </span>
         )}
 
         <span className="ml-auto flex items-center gap-2">
-          <span className="font-mono text-2xs tabular-nums text-dim">
+          <span className="font-mono text-2xs tabular-nums text-faint">
             {event?.current_step ? `${event.current_step} · ` : ""}
             {stepsDone}/{stepsTotal} · {Math.round(progress * 100)}%
           </span>
@@ -122,7 +122,7 @@ function JobRow({
       />
 
       {status === "retry_wait" && retrySeconds !== null && (
-        <p className="text-2xs text-warn">{t("status.retry", { seconds: retrySeconds })}</p>
+        <p className="text-2xs text-warning">{t("status.retry", { seconds: retrySeconds })}</p>
       )}
       {status === "failed" && (
         <p className="text-2xs leading-snug text-danger">
@@ -172,11 +172,11 @@ export function StatusBar({
       : 0;
 
   return (
-    <section className="shrink-0 border-t border-line bg-raised" aria-label={t("status.title")}>
+    <section className="shrink-0 border-t border-subtle bg-elevated" aria-label={t("status.title")}>
       {expanded && (
-        <ul className="max-h-40 divide-y divide-line/50 overflow-y-auto overscroll-contain border-b border-line">
+        <ul className="max-h-40 divide-y divide-subtle/50 overflow-y-auto overscroll-contain border-b border-subtle">
           {jobs.length === 0 ? (
-            <li className="px-2 py-3 text-center text-2xs text-dim">{t("status.noJobs")}</li>
+            <li className="px-2 py-3 text-center text-2xs text-faint">{t("status.noJobs")}</li>
           ) : (
             jobs
               .slice(0, 20)
@@ -222,7 +222,7 @@ export function StatusBar({
           </button>
         )}
 
-        <span className="ml-auto flex items-center gap-3 font-mono text-2xs text-dim">
+        <span className="ml-auto flex items-center gap-3 font-mono text-2xs text-faint">
           <StatusDot
             tone={!apiReachable ? "danger" : infraOk ? "ok" : "warn"}
             title={

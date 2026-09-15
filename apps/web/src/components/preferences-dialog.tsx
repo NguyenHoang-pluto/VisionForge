@@ -45,7 +45,7 @@ function Setting({
     <section className="flex flex-col gap-1.5">
       <SectionTitle>{label}</SectionTitle>
       {children}
-      <p className="text-2xs leading-snug text-dim">{hint}</p>
+      <p className="text-2xs leading-snug text-faint">{hint}</p>
     </section>
   );
 }
@@ -110,7 +110,7 @@ export function PreferencesDialog({ open, onClose }: { open: boolean; onClose: (
                   onClick={() => setAccent(option)}
                   data-accent={option}
                   className={`flex h-7 flex-1 items-center justify-center rounded border transition-colors ${
-                    selected ? "border-fg" : "border-line-strong hover:border-line-strong"
+                    selected ? "border-fg" : "border-strong hover:border-strong"
                   }`}
                   style={{ background: "rgb(var(--accent))" }}
                 >
@@ -139,8 +139,8 @@ export function PreferencesDialog({ open, onClose }: { open: boolean; onClose: (
           />
         </Setting>
 
-        <footer className="flex items-center gap-2 border-t border-line pt-2">
-          <p className="min-w-0 flex-1 text-2xs leading-snug text-dim">{t("prefs.stored")}</p>
+        <footer className="flex items-center gap-2 border-t border-subtle pt-2">
+          <p className="min-w-0 flex-1 text-2xs leading-snug text-faint">{t("prefs.stored")}</p>
           <Button size="sm" onClick={reset}>
             {t("prefs.reset")}
           </Button>

@@ -82,7 +82,7 @@ export function TopBar({
   const canAnalyseSelection = selectedReady > 0 && !analyzing;
 
   return (
-    <header className="flex h-strip shrink-0 items-center gap-2 border-b border-line bg-raised px-2">
+    <header className="flex h-strip shrink-0 items-center gap-2 border-b border-subtle bg-elevated px-2">
       {/* ---- brand, doubling as the application menu ---- */}
       <Menu
         label={t("app.menu")}
@@ -96,7 +96,7 @@ export function TopBar({
         <span className="select-none whitespace-nowrap text-sm font-semibold tracking-tight text-fg">
           {t("app.name")}
         </span>
-        <span className="text-dim">
+        <span className="text-faint">
           <Glyph name="chevron-down" size={10} />
         </span>
       </Menu>
@@ -110,7 +110,7 @@ export function TopBar({
           id="project-picker"
           value={projectId ?? ""}
           onChange={(event) => event.target.value && onOpenProject(event.target.value)}
-          className="h-control min-w-0 max-w-[200px] rounded border border-line-strong bg-control px-1.5 text-xs text-fg transition-colors hover:bg-control-hover focus:border-accent"
+          className="h-control min-w-0 max-w-[200px] rounded border border-strong bg-elevated px-1.5 text-xs text-fg transition-colors hover:bg-hover focus:border-accent"
         >
           <option value="" disabled>
             {t("top.project.select")}
@@ -141,7 +141,7 @@ export function TopBar({
         >
           <Glyph name="analyse" size={11} />
           {analyzing ? t("top.analyse.busy") : t("top.analyse")}
-          <span className="font-mono tabular-nums text-dim">{readyCount}</span>
+          <span className="font-mono tabular-nums text-faint">{readyCount}</span>
         </Button>
         <Button
           size="sm"
@@ -155,7 +155,7 @@ export function TopBar({
         >
           {t("top.analyse.selection")}
           {selectedReady > 0 && (
-            <span className="font-mono tabular-nums text-dim">{selectedReady}</span>
+            <span className="font-mono tabular-nums text-faint">{selectedReady}</span>
           )}
         </Button>
 
@@ -183,7 +183,7 @@ export function TopBar({
           A readout, not a control. Sits beside the verbs because "17 clips,
           unsaved" is the answer to the question the verbs raise. */}
       {clipCount > 0 && (
-        <ToolGroup className="font-mono text-2xs tabular-nums text-dim">
+        <ToolGroup className="font-mono text-2xs tabular-nums text-faint">
           <span>{t.plural("timeline.clipCount", clipCount)}</span>
           {dirty && (
             <Badge tone="warn" title={t("timeline.editedHint")}>
@@ -224,7 +224,7 @@ export function TopBar({
             value={language}
             title={t("top.language")}
             onChange={(event) => setLanguage(event.target.value as Language)}
-            className="h-control rounded border border-transparent bg-transparent px-1 text-2xs uppercase tracking-wider text-muted transition-colors hover:bg-control hover:text-fg focus:border-accent"
+            className="h-control rounded border border-transparent bg-transparent px-1 text-2xs uppercase tracking-wider text-muted transition-colors hover:bg-elevated hover:text-fg focus:border-accent"
           >
             {LANGUAGES.map((item) => (
               <option key={item.value} value={item.value}>

@@ -122,7 +122,7 @@ export function AudioPanel({
         </EmptyState>
 
         {audioCount > 0 && (
-          <p className="text-center font-mono text-2xs text-dim">
+          <p className="text-center font-mono text-2xs text-faint">
             {t("media.filter.audio")}: {audioCount}
           </p>
         )}
@@ -229,7 +229,7 @@ export function AudioPanel({
             </div>
           </Field>
           {audioMode === "none" && (
-            <p className="-mt-1 text-2xs leading-snug text-dim">{t("audio.sourceMuted")}</p>
+            <p className="-mt-1 text-2xs leading-snug text-faint">{t("audio.sourceMuted")}</p>
           )}
         </div>
 
@@ -303,7 +303,7 @@ export function AudioPanel({
           aside={
             grid ? (
               <StatusDot tone={reliable ? "ok" : "warn"}>
-                <span className="font-mono text-2xs text-dim">
+                <span className="font-mono text-2xs text-faint">
                   {reliable ? t("audio.beatsReady") : t("audio.beatsUnreliable")}
                 </span>
               </StatusDot>
@@ -314,9 +314,9 @@ export function AudioPanel({
         </SectionTitle>
 
         {beats.isLoading ? (
-          <p className="py-2 text-2xs text-dim">{t("audio.analysing")}</p>
+          <p className="py-2 text-2xs text-faint">{t("audio.analysing")}</p>
         ) : !grid ? (
-          <p className="py-2 text-2xs leading-snug text-dim">{t("audio.beatsMissing")}</p>
+          <p className="py-2 text-2xs leading-snug text-faint">{t("audio.beatsMissing")}</p>
         ) : (
           <div className="mt-1">
             <Row label={t("audio.bpm")} value={t("audio.bpmValue", { bpm: grid.bpm.toFixed(1) })} />
@@ -340,7 +340,7 @@ export function AudioPanel({
             />
             {t("audio.beatSync")}
           </label>
-          <p className="text-2xs leading-snug text-dim">{t("audio.beatSyncHint")}</p>
+          <p className="text-2xs leading-snug text-faint">{t("audio.beatSyncHint")}</p>
 
           <label
             className="mt-1 flex items-center gap-2 text-xs text-muted"
@@ -362,7 +362,7 @@ export function AudioPanel({
       {track.status !== "ready" && (
         <Badge tone="warn">{t(`media.status.${track.status}`)}</Badge>
       )}
-      <p className="font-mono text-2xs text-dim">
+      <p className="font-mono text-2xs text-faint">
         {shortDuration(cueMs)} · {asPercent(music.gain)}%
       </p>
     </div>

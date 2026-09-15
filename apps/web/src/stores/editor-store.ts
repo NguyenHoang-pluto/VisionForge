@@ -42,6 +42,20 @@ export type InspectorTabName = "clip" | "analysis" | "ai" | "audio" | "export";
 export type BrowserView = "grid" | "list" | "compact";
 export type InspectorTab = InspectorTabName;
 
+/**
+ * The workspace the navigation rail is pointing at.
+ *
+ * Six concepts rather than one screen with panels toggled on and off. They are
+ * all the *same* project and the same client state -- switching to Assets does
+ * not unload the timeline -- but they give each activity the whole viewport
+ * when it is the activity you are doing. Picking twelve clips out of two
+ * hundred is a different job from trimming four of them, and a 260px column is
+ * the wrong size for the first and the right size for the second.
+ *
+ * `home` is the only one that works without a project open.
+ */
+export type AppView = "home" | "editor" | "assets" | "audio" | "export" | "settings";
+
 interface EditorState {
   // --- project ---
   projectId: string | null;
@@ -122,6 +136,10 @@ interface EditorState {
     >,
   ) => void;
 
+  // --- navigation ---
+  view: AppView;
+  setView: (view: AppView) => void;
+
   // --- panels ---
   previewSource: PreviewSource;
   setPreviewSource: (source: PreviewSource) => void;
@@ -143,6 +161,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   openProject: (projectId) =>
     set({
       projectId,
+      // Opening a project is a request to edit it; landing back on Home with a
+      // project loaded would make the click look like it had failed.
+      view: "editor",
       // A timeline belongs to the project it was cut in. Carrying clips across
       // would produce a draft referencing media the new project does not have.
       clips: [],
@@ -159,6 +180,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // never heard of.
       music: null,
     }),
+
+  // ---------------------------------------------------------------- navigation
+  view: "home",
+  /**
+   * Switching view never clears the draft. The timeline the user is part-way
+   * through is the same timeline whether they are looking at the library or at
+   * the export settings, and losing it on a navigation click would be the
+   * single most expensive bug this store could ship.
+   */
+  setView: (view) => set({ view }),
 
   // ------------------------------------------------------------- browser
   browserView: "grid",
