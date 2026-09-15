@@ -473,6 +473,7 @@ export function Workstation() {
                       mediaList={items}
                       render={render.data ?? null}
                       onPlanned={onPlanned}
+                      onAnalyze={(mediaId) => analyze.mutate([mediaId])}
                     />
                   </div>
                 )}

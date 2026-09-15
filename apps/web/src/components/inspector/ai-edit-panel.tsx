@@ -10,6 +10,7 @@ import {
   type ClipOrder,
   type EditPlan,
   type EditStyle,
+  type MediaAsset,
   type PlannerMode,
   type QualityPreset,
 } from "@/lib/api";
@@ -28,6 +29,7 @@ import {
   Spinner,
   TextArea,
 } from "@/components/ui";
+import { ReferencePanel } from "@/components/inspector/reference-panel";
 
 /**
  * The AI edit panel.
@@ -60,11 +62,17 @@ const QUALITIES: { value: QualityPreset; label: MessageKey }[] = [
 export function AiEditPanel({
   projectId,
   readyCount,
+  media,
+  mediaList,
   onPlanned,
+  onAnalyze,
 }: {
   projectId: string;
   readyCount: number;
+  media: Map<string, MediaAsset>;
+  mediaList: MediaAsset[];
   onPlanned: (plan: EditPlan) => void;
+  onAnalyze: (mediaId: string) => void;
 }) {
   const t = useT();
   const queryClient = useQueryClient();
@@ -77,6 +85,7 @@ export function AiEditPanel({
   const setPreviewSource = useEditorStore((s) => s.setPreviewSource);
   const musicBed = useEditorStore((s) => s.music);
   const beatSync = useEditorStore((s) => s.beatSync);
+  const styleStrength = useEditorStore((s) => s.styleStrength);
 
   const [mode, setMode] = useState<PlannerMode>("automatic");
   const [style, setStyle] = useState<EditStyle | "">("");
@@ -115,6 +124,9 @@ export function AiEditPanel({
         // flag to decide whether the tempo may move a cut at all.
         music: toMusicRequest(musicBed),
         beat_sync: beatSync,
+        // How much of the reference to apply. Which clip the reference is stays
+        // server-side; this is only the dial.
+        style_strength: styleStrength,
       }),
     onSuccess: (plan) => {
       setError(null);
@@ -190,6 +202,17 @@ export function AiEditPanel({
           <p className="mt-2 text-2xs leading-snug text-warning">{t("ai.noMedia")}</p>
         )}
       </section>
+
+      {/* ------------------------------------------------------ reference ----
+          Between the brief and the mode: it shapes the edit like a style does,
+          and it is the thing the user came to this tab to set when they have a
+          clip they want copied. */}
+      <ReferencePanel
+        projectId={projectId}
+        media={media}
+        mediaList={mediaList}
+        onAnalyze={onAnalyze}
+      />
 
       {/* ----------------------------------------------------------- mode ---- */}
       <section>

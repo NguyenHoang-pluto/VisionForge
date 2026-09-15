@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import type { AspectRatio, MediaAsset, QualityPreset } from "@/lib/api";
+import type { AspectRatio, MediaAsset, QualityPreset, StyleStrength } from "@/lib/api";
 import {
   bedFromMedia,
   clampBed,
@@ -136,6 +136,18 @@ interface EditorState {
     >,
   ) => void;
 
+  // --- reference style (Phase 8) ---
+  /**
+   * How much of the project's reference video to apply.
+   *
+   * Client state, and "0" by default: attaching a reference must not change
+   * anyone's edit until they ask it to. Which clip *is* the reference is server
+   * state and deliberately not mirrored here -- one copy, on the side that
+   * enforces ownership.
+   */
+  styleStrength: StyleStrength;
+  setStyleStrength: (strength: StyleStrength) => void;
+
   // --- navigation ---
   view: AppView;
   setView: (view: AppView) => void;
@@ -179,7 +191,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // clips do: carrying it across would reference media the new project has
       // never heard of.
       music: null,
+      // The reference belongs to the project that was open, and so does the
+      // dial: carrying a strength across would apply one project's measurements
+      // to another's footage.
+      styleStrength: "0",
     }),
+
+  // ----------------------------------------------------------------- style
+  styleStrength: "0",
+  setStyleStrength: (styleStrength) => set({ styleStrength }),
 
   // ---------------------------------------------------------------- navigation
   view: "home",

@@ -33,12 +33,14 @@ export function Inspector({
   mediaList,
   render,
   onPlanned,
+  onAnalyze,
 }: {
   projectId: string;
   media: Map<string, MediaAsset>;
   mediaList: MediaAsset[];
   render: Render | null;
   onPlanned: (plan: EditPlan) => void;
+  onAnalyze: (mediaId: string) => void;
 }) {
   const t = useT();
   const tab = useEditorStore((s) => s.inspectorTab);
@@ -90,7 +92,14 @@ export function Inspector({
           ))}
 
         {tab === "ai" && (
-          <AiEditPanel projectId={projectId} readyCount={readyCount} onPlanned={onPlanned} />
+          <AiEditPanel
+            projectId={projectId}
+            readyCount={readyCount}
+            media={media}
+            mediaList={mediaList}
+            onPlanned={onPlanned}
+            onAnalyze={onAnalyze}
+          />
         )}
 
         {tab === "audio" && (

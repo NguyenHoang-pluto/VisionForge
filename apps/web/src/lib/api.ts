@@ -403,6 +403,71 @@ export interface PlanOptions {
   music?: MusicRequest | null;
   /** Let the track's detected beats decide clip length. */
   beat_sync?: boolean;
+  /**
+   * How much of the project's reference video to apply (Phase 8).
+   *
+   * There is deliberately no field naming the reference itself: which clip that
+   * is belongs to the project and is resolved server-side, so a request cannot
+   * point at media it does not own.
+   */
+  style_strength?: StyleStrength;
+}
+
+/** The five stops on the style dial. A closed set, validated server-side. */
+export type StyleStrength = "0" | "25" | "50" | "75" | "100";
+
+export const STYLE_STRENGTHS: StyleStrength[] = ["0", "25", "50", "75", "100"];
+
+/**
+ * A measured value and how far it should be trusted.
+ *
+ * The two travel together rather than being folded into one number, because a
+ * confidently-measured zero and an unmeasured field are different facts and the
+ * UI has to be able to show the difference.
+ */
+export interface Measurement {
+  value: number;
+  confidence: number;
+}
+
+/**
+ * What a reference video measured as.
+ *
+ * Every field is nullable, and every null means "not measured" -- never zero,
+ * never an average. Nothing here is a path, a key or a filename: the profile is
+ * numbers and bounded enums by construction.
+ */
+export interface ReferenceProfile {
+  media_id: string;
+  version: string;
+  duration_ms: number;
+  confidence: number;
+  usable: boolean;
+
+  pacing: "slow" | "measured" | "brisk" | "rapid" | null;
+  scene_count: number | null;
+  shot_ms: Measurement | null;
+  shot_ms_p25: number | null;
+  shot_ms_p75: number | null;
+  cut_rate: Measurement | null;
+
+  luminance: Measurement | null;
+  contrast: Measurement | null;
+  saturation: Measurement | null;
+  motion: Measurement | null;
+
+  bpm: number | null;
+  beat_confidence: number | null;
+  beat_sync: Measurement | null;
+  /** Advisory: the server never switches beat sync on by itself. */
+  suggests_beat_sync: boolean;
+}
+
+export interface ReferenceState {
+  media_id: string | null;
+  /** Analyzers this reference still owes, so the UI can say what to run. */
+  pending_analyzers: string[];
+  profile: ReferenceProfile | null;
 }
 
 /** One planning call, successful or not. */
@@ -612,6 +677,24 @@ export const api = {
 
   // --- planner ---
   plannerCapabilities: () => request<PlannerCapabilities>("/api/planner/capabilities"),
+
+  // ------------------------------------------------------------ reference
+  /** The project's style reference and what it measures as. */
+  reference: (projectId: string) =>
+    request<ReferenceState>(`/api/projects/${projectId}/reference`),
+
+  /** Nominate a clip in this project. The server checks it is one. */
+  setReference: (projectId: string, mediaId: string) =>
+    request<ReferenceState>(`/api/projects/${projectId}/reference`, {
+      method: "PUT",
+      body: JSON.stringify({ media_id: mediaId }),
+    }),
+
+  /** Stop styling after anything. The clip itself is untouched. */
+  clearReference: (projectId: string) =>
+    request<ReferenceState>(`/api/projects/${projectId}/reference`, {
+      method: "DELETE",
+    }),
 
   listLlmRuns: (projectId: string) =>
     request<{ items: LlmRun[]; total: number }>(`/api/projects/${projectId}/llm-runs`),
