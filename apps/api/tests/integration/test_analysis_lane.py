@@ -231,6 +231,7 @@ class TestCpuAnalysisJob:
             "SCENES",
             "PHASH",
             "BEATS",
+            "DYNAMICS",
             "FINALIZE",
         ]
         assert all(StepStatus(s.status) is StepStatus.SUCCEEDED for s in steps)
