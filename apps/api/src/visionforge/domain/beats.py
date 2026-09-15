@@ -120,38 +120,68 @@ class BeatGrid:
         return tuple(b for b in self.beats_ms if start_ms <= b < end_ms)
 
     # ------------------------------------------------------------ snapping
-    def snap_span_ms(self, target_ms: int, *, min_ms: int, max_ms: int) -> int:
-        """A clip length quantised to a whole number of beats.
+    def span_for_beats(self, count: int) -> int:
+        """How far ``count`` beats reach, measured from a beat.
 
-        This is the whole of beat-aware cutting, and it is deliberately this
-        small. The timeline is butt-joined -- every clip starts where the last
-        one ended -- so if every clip is a whole number of beats long and the
-        first one starts on a beat, *every* cut lands on a beat. There is no
-        per-cut search, no drift to accumulate, and no way to produce a gap or
-        an overlap, because the structure that would express one does not exist.
+        The one conversion from beats to milliseconds, and the reason it takes a
+        *cumulative* count rather than a per-clip one: a beat period is rarely a
+        whole number of milliseconds (128 BPM is 468.75), so rounding each clip
+        separately and adding the results accumulates error at up to half a
+        millisecond per cut. Rounding the running total instead keeps every cut
+        within half a millisecond of its beat no matter how many precede it.
 
-        Returns the target unchanged when no whole-beat span fits the bounds, or
-        when the nearest one that does is further from the target than
-        ``MAX_SNAP_DRIFT_RATIO``. Quantising is a preference, not a requirement:
-        a 25-second cut that becomes 40 seconds because the tempo is slow is not
-        the edit anybody asked for.
+        So a clip's length is always the *difference of two of these*, never a
+        product::
+
+            duration = span_for_beats(placed + n) - span_for_beats(placed)
         """
-        clamped = max(min_ms, min(max_ms, target_ms))
+        period = self.period_ms
+        if period <= 0 or count <= 0:
+            return 0
+        return int(round(count * period))
+
+    def snap_beats(self, target_ms: int, *, min_ms: int, max_ms: int) -> int | None:
+        """The whole number of beats closest to ``target_ms`` that is renderable.
+
+        Returns the *count*, not a duration. Callers need the integer: it is
+        what goes in the plan's metadata, and it is what lets a running total be
+        kept exactly. Handing back milliseconds and expecting the caller to
+        divide is what makes a "whole number of beats" come back as 10.999.
+
+        ``None`` means no whole-beat span works -- either none fits the bounds,
+        or the nearest that does is further from the target than
+        ``MAX_SNAP_DRIFT_RATIO`` allows. Quantising is a preference, not a
+        requirement: a 25-second cut that becomes 40 seconds because the tempo
+        is slow is not the edit anybody asked for.
+        """
         period = self.period_ms
         if period <= 0 or not self.is_reliable():
-            return clamped
+            return None
 
         wanted = max(1, round(target_ms / period))
         limit = max(1.0, target_ms * MAX_SNAP_DRIFT_RATIO)
 
         for beats in _search_order(wanted):
-            span = round(beats * period)
+            span = self.span_for_beats(beats)
             if span < min_ms or span > max_ms:
                 continue
             if abs(span - target_ms) > limit:
                 continue
-            return int(span)
-        return clamped
+            return beats
+        return None
+
+    def snap_span_ms(self, target_ms: int, *, min_ms: int, max_ms: int) -> int:
+        """A single clip length quantised to whole beats, or the clamped target.
+
+        A convenience over ``snap_beats`` for callers placing exactly one span.
+        Anything laying out a *sequence* must use ``span_for_beats`` against a
+        running beat count instead, or it will accumulate the rounding error
+        this method cannot avoid on its own.
+        """
+        beats = self.snap_beats(target_ms, min_ms=min_ms, max_ms=max_ms)
+        if beats is None:
+            return max(min_ms, min(max_ms, target_ms))
+        return self.span_for_beats(beats)
 
     # --------------------------------------------------------- persistence
     def as_payload(self) -> dict[str, Any]:

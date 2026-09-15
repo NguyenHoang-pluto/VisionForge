@@ -23,21 +23,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
+from visionforge.domain.beats import BeatGrid
 from visionforge.domain.editplan import (
     MAX_SEGMENT_MS,
+    MIN_MUSIC_MS,
     MIN_SEGMENT_MS,
     AspectRatio,
     AudioMode,
     EditPlan,
     FitMode,
+    MusicCue,
     OutputSpec,
     QualityPreset,
     Segment,
     TransitionKind,
 )
-from visionforge.domain.ids import ProjectId
+from visionforge.domain.ids import MediaId, ProjectId
 from visionforge.domain.selection import (
     DEFAULT_SELECTION_WEIGHTS,
     Candidate,
@@ -94,6 +97,24 @@ class PlanRequest:
     #: it; the rules engine ignores it entirely rather than pattern-matching
     #: prose, which it would do badly.
     request_text: str | None = None
+
+    # --- music (Phase 7) ---
+    #: The track to lay under the edit, if the caller chose one. The planner
+    #: needs the id to write the cue; it never sees a path or a storage key.
+    music_media_id: MediaId | None = None
+    #: How long that track is, so the cue can be trimmed to something real.
+    music_duration_ms: int | None = None
+    #: Its beat grid, when one has been analysed. ``None`` means "plan as Phase
+    #: 4 did", and so does a grid the domain considers unreliable -- the planner
+    #: asks, it does not assume.
+    beats: BeatGrid | None = None
+    #: Whether to let those beats move the cuts. Off by default: adding music
+    #: and re-timing the edit are separate decisions, and a user who wanted a
+    #: bed under an edit they already liked should get that edit.
+    beat_sync: bool = False
+    music_gain: float = 0.7
+    music_fade_in_ms: int = 0
+    music_fade_out_ms: int = 1_500
 
     def __post_init__(self) -> None:
         if self.max_clips < self.min_clips:
@@ -182,12 +203,37 @@ class RulesEnginePlanner:
 
         chosen = self._order(list(selection.selected), request.order)
         per_clip_ms = self._per_clip_duration(request, len(chosen), profile)
+        grid, beats_per_clip = self._beat_sync(request, per_clip_ms, profile)
 
         segments: list[Segment] = []
+        # Beats placed so far, and the timeline position that corresponds to.
+        # Both are carried because the position is derived from the *total*
+        # beat count: see ``BeatGrid.span_for_beats`` for why a running sum of
+        # per-clip durations would drift off the grid.
+        placed_beats = 0
+        placed_ms = 0
+        window: tuple[int, int] | None
+
         for index, scored in enumerate(chosen):
-            window = self._trim_window(scored.candidate, per_clip_ms)
+            if grid is not None and beats_per_clip is not None:
+                fitted = self._beat_window(
+                    scored.candidate,
+                    grid,
+                    placed_beats=placed_beats,
+                    placed_ms=placed_ms,
+                    wanted_beats=beats_per_clip,
+                )
+                # Advancing the running totals only on a clip that was actually
+                # placed is what keeps the grid aligned across a dropped source.
+                window = None if fitted is None else fitted[0]
+                if fitted is not None:
+                    placed_beats, placed_ms = fitted[1], fitted[2]
+            else:
+                window = self._trim_window(scored.candidate, per_clip_ms)
+
             if window is None:
                 continue
+
             source_in, source_out = window
             segments.append(
                 Segment(
@@ -217,6 +263,9 @@ class RulesEnginePlanner:
             for i, s in enumerate(segments)
         ]
 
+        timeline_ms = sum(segment.duration_ms for segment in segments)
+        music = self._music_cue(request, grid, timeline_ms)
+
         plan = EditPlan(
             project_id=request.project_id,
             segments=tuple(segments),
@@ -229,10 +278,13 @@ class RulesEnginePlanner:
                 audio=request.audio,
                 quality=request.quality,
             ),
+            music=music,
             planner=self.name,
             planner_version=self.version,
             metadata={
-                "strategy": "even-split centre trim",
+                "strategy": (
+                    "beat-quantised even split" if grid is not None else "even-split centre trim"
+                ),
                 "style": request.style.value if request.style else None,
                 "order": request.order.value,
                 "target_duration_ms": request.target_duration_ms,
@@ -242,9 +294,169 @@ class RulesEnginePlanner:
                 "rejected": len(selection.rejected),
                 "duplicate_groups": len(selection.duplicate_groups),
                 "weights": weights_payload(self._weights),
+                # Why the cuts fall where they do, recorded rather than left to
+                # be inferred. A beat-synced edit that cannot say which tempo it
+                # was synced to is not reviewable.
+                "beat_sync": self._beat_sync_payload(request, grid, beats_per_clip),
             },
         )
         return PlanOutcome(plan=plan, selection=selection)
+
+    # ---------------------------------------------------------- beat sync
+    @staticmethod
+    def _beat_sync(
+        request: PlanRequest, per_clip_ms: int, profile: StyleProfile
+    ) -> tuple[BeatGrid | None, int | None]:
+        """The grid to cut against, and how many beats each clip gets.
+
+        Returns the integer beat count alongside the grid, because that integer
+        is the thing the rest of planning needs: it is what the running total is
+        kept in, and it is what the plan records. Deriving it back out of a
+        duration is what made a plan claim 10.999 beats per clip.
+
+        Four ways to get ``(None, None)``, deliberately indistinguishable
+        downstream: the caller did not ask, nothing was analysed, the analysis
+        is not trusted, or no whole number of beats fits between the style's
+        pacing and what is renderable. All four mean "plan the way Phase 4
+        planned", which is the graceful degradation this feature is required to
+        have -- a spoken-word bed must not silently re-time an edit, and neither
+        must a tempo so slow that one beat exceeds the segment ceiling.
+        """
+        if not request.beat_sync or request.beats is None:
+            return None, None
+        grid = request.beats
+        if not grid.is_reliable():
+            return None, None
+
+        floor = max(MIN_SEGMENT_MS, profile.min_clip_ms if request.style else MIN_SEGMENT_MS)
+        ceiling = min(MAX_SEGMENT_MS, profile.max_clip_ms if request.style else MAX_SEGMENT_MS)
+        beats = grid.snap_beats(per_clip_ms, min_ms=floor, max_ms=ceiling)
+        if beats is None:
+            return None, None
+        return grid, beats
+
+    @staticmethod
+    def _beat_window(
+        candidate: Candidate,
+        grid: BeatGrid,
+        *,
+        placed_beats: int,
+        placed_ms: int,
+        wanted_beats: int,
+    ) -> tuple[tuple[int, int], int, int] | None:
+        """A centre trim whose length is a whole number of beats.
+
+        Returns the window plus the new running totals, or ``None`` when the
+        source cannot supply even one beat's worth of legal footage.
+
+        The length is measured as the *difference between two cumulative
+        positions* rather than as one beat count times a period. That is what
+        keeps cut number forty as close to its beat as cut number one: rounding
+        `placed + n` beats and subtracting the rounding of `placed` beats can
+        never drift, while adding up separately-rounded clip lengths drifts by
+        up to half a millisecond every time.
+
+        A source too short for the full allocation is given fewer whole beats
+        rather than a truncated one. Truncating is what Phase 6's
+        ``_trim_window`` does and it is right when nothing is quantised; here it
+        would put the clip -- and therefore every cut after it -- off the grid.
+        """
+        source = candidate.duration_ms or 0
+        if source < MIN_SEGMENT_MS:
+            return None
+
+        period = grid.period_ms
+        if period <= 0:
+            return None
+
+        # The most whole beats this source could supply, so a short clip is
+        # shortened *to a beat* instead of to an arbitrary length.
+        affordable = int(source // period)
+        beats = min(wanted_beats, affordable)
+
+        while beats >= 1:
+            end_ms = grid.span_for_beats(placed_beats + beats)
+            duration = end_ms - placed_ms
+            if MIN_SEGMENT_MS <= duration <= MAX_SEGMENT_MS and duration <= source:
+                start = max(0, (source - duration) // 2)
+                return (start, start + duration), placed_beats + beats, end_ms
+            beats -= 1
+        return None
+
+    # --------------------------------------------------------------- music
+
+    @staticmethod
+    def _music_cue(
+        request: PlanRequest, grid: BeatGrid | None, timeline_ms: int
+    ) -> MusicCue | None:
+        """The bed, trimmed to the cut it will play under.
+
+        When there is a usable grid the cue starts at its first beat rather than
+        at the head of the file, so the downbeat coincides with the first cut.
+        Without one it starts at zero, which is the only defensible guess.
+
+        The cue is taken slightly longer than the timeline where the track
+        allows, so the compiler has material to trim rather than silence to pad.
+        """
+        if request.music_media_id is None:
+            return None
+
+        start = grid.first_beat_ms if grid is not None else 0
+        available = request.music_duration_ms
+        if available is not None:
+            start = min(start, max(0, available - 1))
+            end = min(available, start + timeline_ms)
+        else:
+            end = start + timeline_ms
+
+        # A cue the validator would reject is worse than no cue: it would fail
+        # the whole plan over the bed rather than dropping it.
+        if end - start < MIN_MUSIC_MS:
+            return None
+
+        fade_out = min(request.music_fade_out_ms, max(0, (end - start) - request.music_fade_in_ms))
+        return MusicCue(
+            media_id=request.music_media_id,
+            source_in_ms=start,
+            source_out_ms=end,
+            timeline_start_ms=0,
+            gain=request.music_gain,
+            fade_in_ms=request.music_fade_in_ms,
+            fade_out_ms=fade_out,
+        )
+
+    @staticmethod
+    def _beat_sync_payload(
+        request: PlanRequest, grid: BeatGrid | None, beats_per_clip: int | None
+    ) -> dict[str, Any]:
+        """Why the cuts fall where they do.
+
+        ``beats_per_clip`` is the integer the planner chose, carried here rather
+        than recomputed from a duration. A plan that says "10.999 beats" is a
+        plan whose own account of itself cannot be checked.
+        """
+        if grid is None or beats_per_clip is None:
+            return {
+                "applied": False,
+                "reason": (
+                    "not_requested"
+                    if not request.beat_sync
+                    else "no_beats"
+                    if request.beats is None
+                    else "low_confidence"
+                    if not request.beats.is_reliable()
+                    else "no_fitting_span"
+                ),
+                "confidence": request.beats.confidence if request.beats else None,
+            }
+        return {
+            "applied": True,
+            "bpm": round(grid.bpm, 2),
+            "confidence": round(grid.confidence, 4),
+            "first_beat_ms": grid.first_beat_ms,
+            "beats_per_clip": beats_per_clip,
+            "beat_period_ms": round(grid.period_ms, 4),
+        }
 
     # ------------------------------------------------------------- internals
     @staticmethod
@@ -266,6 +478,10 @@ class RulesEnginePlanner:
         Two clamps, in order. The style bounds express what the pacing should
         be; the plan bounds express what is renderable at all, and they are
         applied last so no style can widen them.
+
+        Unchanged by Phase 7, and deliberately so: this is the unquantised
+        length, which is both the answer when there is no music and the target
+        that ``_beat_sync`` rounds to a whole number of beats.
         """
         raw = request.target_duration_ms // max(clip_count, 1)
         if request.style is not None:
