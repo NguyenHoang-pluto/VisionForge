@@ -195,6 +195,20 @@ def step_phash(ctx: JobContext) -> None:
     _run_analyzer(ctx, PerceptualHashAnalyzer())
 
 
+def step_beats(ctx: JobContext) -> None:
+    """Tempo and a beat grid, for audio assets.
+
+    On the CPU lane beside the other cheap signals rather than in a lane of its
+    own: detection is FFT arithmetic over a decoded mono stream, which costs a
+    second or two for a five-minute track and needs no GPU. Video comes back
+    ``unsupported`` from the analyzer, which is a stored answer and stops it
+    being retried on every pass.
+    """
+    from visionforge.infra.analysis import BeatAnalyzer
+
+    _run_analyzer(ctx, BeatAnalyzer())
+
+
 # -------------------------------------------------------------------- GPU steps
 def step_embed(ctx: JobContext) -> None:
     from visionforge.infra.ml import ClipEmbeddingAnalyzer
@@ -234,6 +248,7 @@ CPU_STEPS = {
     "QUALITY": step_quality,
     "SCENES": step_scenes,
     "PHASH": step_phash,
+    "BEATS": step_beats,
     "FINALIZE": step_finalize,
 }
 
@@ -246,7 +261,12 @@ GPU_STEPS = {
 
 #: Which analyzers each queue is responsible for. Used by the API to report what
 #: a project still has outstanding.
-CPU_ANALYZERS = (AnalyzerName.QUALITY, AnalyzerName.SCENES, AnalyzerName.PHASH)
+CPU_ANALYZERS = (
+    AnalyzerName.QUALITY,
+    AnalyzerName.SCENES,
+    AnalyzerName.PHASH,
+    AnalyzerName.BEATS,
+)
 GPU_ANALYZERS = (AnalyzerName.CLIP, AnalyzerName.FACES)
 
 __all__ = [

@@ -155,6 +155,7 @@ class TestAnalyzerIdentity:
             "phash",
             "clip",
             "faces",
+            "beats",
         }
 
     def test_analyzer_kinds_match_the_queues(self) -> None:
