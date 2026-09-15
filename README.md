@@ -874,7 +874,7 @@ style learning, and collaboration.
       readout with the confidence the planner actually uses
 - [x] 38 new message keys in English and Vietnamese (477, exact parity), the
       same tokens, themes, density and accent system as Phase 6
-- [x] 667 unit tests (+52) and 17 FFmpeg integration cases; no change to any
+- [x] 686 unit tests (+71) and 17 FFmpeg integration cases; no change to any
       Phase 1–6 contract
 
 Deliberately **not** in Phase 7: downloading music from anywhere, an online
