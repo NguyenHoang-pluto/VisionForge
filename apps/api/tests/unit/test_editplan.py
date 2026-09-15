@@ -8,6 +8,7 @@ planner's seat in Phase 5.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 
 import pytest
 
@@ -20,6 +21,7 @@ from visionforge.domain.editplan import (
     EditPlan,
     FitMode,
     MediaFact,
+    MusicCue,
     OutputSpec,
     PlanInvalidError,
     QualityPreset,
@@ -355,7 +357,8 @@ class TestHostilePlans:
         The field sets are pinned exactly, so *adding* a field to the plan is a
         deliberate act that fails this test until someone confirms the new field
         cannot carry a path or a command. Phase 5 added ``quality``, which is an
-        enum of three values.
+        enum of three values. Phase 7 added ``source_gain`` and the music cue,
+        which are numbers and one media id.
         """
         plan, _ = simple_plan(1)
         payload = plan.as_payload()
@@ -376,7 +379,55 @@ class TestHostilePlans:
             "fit",
             "audio",
             "quality",
+            "source_gain",
         }
+
+    def test_the_music_cue_has_no_field_for_a_path_or_a_command(self) -> None:
+        """The same guard, for the audio track.
+
+        An audio filter graph runs commands exactly as readily as a video one,
+        so the cue gets the identical treatment: a media id and six numbers,
+        pinned, with no free string anywhere in it.
+        """
+        plan, _ = simple_plan(1)
+        cue = MusicCue(
+            media_id=MediaId(uuid.uuid4()),
+            source_in_ms=0,
+            source_out_ms=8_000,
+            timeline_start_ms=0,
+            gain=0.8,
+            fade_in_ms=250,
+            fade_out_ms=750,
+        )
+        body = replace(plan, music=cue).as_payload()["music"]
+
+        assert set(body) == {
+            "media_id",
+            "source_in_ms",
+            "source_out_ms",
+            "timeline_start_ms",
+            "duration_ms",
+            "gain",
+            "fade_in_ms",
+            "fade_out_ms",
+        }
+        # One string, and it parses as a UUID or it is not a media id.
+        assert uuid.UUID(str(body["media_id"]))
+        for key, value in body.items():
+            if key != "media_id":
+                assert isinstance(value, int | float), f"{key} is not a number"
+
+    def test_a_music_media_id_must_be_a_uuid(self) -> None:
+        """A cue cannot name a path, for the same reason a segment cannot."""
+        plan, _ = simple_plan(1)
+        payload = plan.as_payload()
+        payload["music"] = {
+            "media_id": "../../etc/passwd",
+            "source_in_ms": 0,
+            "source_out_ms": 8_000,
+        }
+        with pytest.raises((ValueError, AttributeError, TypeError)):
+            plan_from_payload(payload)
 
     def test_every_plan_field_is_a_number_or_a_closed_enum(self) -> None:
         """The property behind the field list, checked rather than assumed.
@@ -399,7 +450,9 @@ class TestHostilePlans:
             if isinstance(value, str):
                 assert value in allowed[key], f"{key} is a free string, not a closed enum"
             else:
-                assert isinstance(value, int), f"{key} is neither an int nor a closed enum"
+                # Gains are fractional; everything else is a whole number. Both
+                # are numbers, which is the property that matters here.
+                assert isinstance(value, int | float), f"{key} is neither a number nor an enum"
 
 
 # ------------------------------------------------------------------ round trip
@@ -442,4 +495,4 @@ class TestAssertValid:
             assert_valid(bad, {media_id: fact(media_id)})
 
         payload = exc_info.value.violations[0].as_payload()
-        assert set(payload) == {"code", "message", "segment_order"}
+        assert set(payload) == {"code", "message", "segment_order", "is_music"}

@@ -45,6 +45,21 @@ MAX_DIMENSION = 3840
 MIN_FPS = 1
 MAX_FPS = 120
 
+# --- audio (Phase 7) ---
+#: Shortest usable music cue. Below half a second a "bed" is a click.
+MIN_MUSIC_MS = 500
+#: A cue may be as long as the longest renderable output; anything past the end
+#: of the video is trimmed by the compiler rather than rejected here.
+MAX_MUSIC_MS = MAX_OUTPUT_MS
+#: Linear gain, where 1.0 is unity. The ceiling is 2.0 rather than unbounded
+#: because there is no limiter in the graph: a plan that asks for 8x would
+#: simply clip, and a plan that cannot be rendered cleanly is not a plan.
+MIN_GAIN = 0.0
+MAX_GAIN = 2.0
+#: A fade longer than this is a structural choice the cue vocabulary does not
+#: express; it is also longer than most of the edits this system produces.
+MAX_FADE_MS = 30_000
+
 
 class AspectRatio(StrEnum):
     """Supported output shapes. A closed set, so no arbitrary geometry."""
@@ -115,6 +130,14 @@ class OutputSpec:
     #: before this field existed re-renders to the same bytes.
     quality: QualityPreset = QualityPreset.BALANCED
 
+    #: Linear gain applied to the clips' own audio, independent of any music.
+    #: Separate from ``audio`` because "keep the source audio" and "how loud"
+    #: are different decisions: ducking dialogue under a music bed is the
+    #: common case and it must not require turning the source off.
+    #: ``1.0`` is unity, so a plan written before this field existed sounds
+    #: identical.
+    source_gain: float = 1.0
+
 
 @dataclass(frozen=True, slots=True)
 class Segment:
@@ -138,6 +161,57 @@ class Segment:
 
 
 @dataclass(frozen=True, slots=True)
+class MusicCue:
+    """One piece of music laid under the edit.
+
+    A closed vocabulary of seven numbers and an id. There is no filter field, no
+    filename and no place to put an FFmpeg argument -- the same structural
+    guarantee ``Segment`` gives the video track, applied to audio, because audio
+    filters are exactly as capable of running a command as video ones.
+
+    One cue, not a list. A montage with two beds and a crossfade between them is
+    a real edit, but it is a *different* edit: it needs overlap rules, relative
+    ordering and a mix policy, all of which the video track deliberately does not
+    have either. Phase 7 ships the case that covers a highlight reel, and leaves
+    the vocabulary extendable rather than pre-emptively general.
+
+    ``timeline_start_ms`` is where the cue begins in the *output*, and
+    ``source_in_ms``/``source_out_ms`` are a trim within the *music file*. The
+    two coordinate systems are kept apart for the same reason ``TimelineClip``
+    keeps them apart: conflating them is how audio drifts against picture.
+    """
+
+    media_id: MediaId
+    source_in_ms: int
+    source_out_ms: int
+    timeline_start_ms: int = 0
+    #: Linear, 1.0 = unity. Exposed to the user as a percentage.
+    gain: float = 1.0
+    fade_in_ms: int = 0
+    fade_out_ms: int = 0
+
+    @property
+    def duration_ms(self) -> int:
+        return self.source_out_ms - self.source_in_ms
+
+    @property
+    def timeline_end_ms(self) -> int:
+        return self.timeline_start_ms + self.duration_ms
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "media_id": str(self.media_id),
+            "source_in_ms": self.source_in_ms,
+            "source_out_ms": self.source_out_ms,
+            "timeline_start_ms": self.timeline_start_ms,
+            "duration_ms": self.duration_ms,
+            "gain": round(self.gain, 4),
+            "fade_in_ms": self.fade_in_ms,
+            "fade_out_ms": self.fade_out_ms,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class EditPlan:
     """A complete, declarative edit.
 
@@ -149,6 +223,11 @@ class EditPlan:
     project_id: ProjectId
     segments: tuple[Segment, ...]
     output: OutputSpec = field(default_factory=OutputSpec)
+    #: The music bed, if the edit has one. ``None`` is the Phase 4-6 plan
+    #: exactly -- which is why this is an optional field on the plan rather than
+    #: a new member of ``AudioMode``: a plan written before Phase 7 deserialises
+    #: to ``None`` and renders to the same bytes it always did.
+    music: MusicCue | None = None
     planner: str = "rules-engine"
     planner_version: str = "1"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -179,7 +258,9 @@ class EditPlan:
                 "fit": self.output.fit.value,
                 "audio": self.output.audio.value,
                 "quality": self.output.quality.value,
+                "source_gain": round(self.output.source_gain, 4),
             },
+            "music": self.music.as_payload() if self.music else None,
             "segments": [
                 {
                     "media_id": str(segment.media_id),
@@ -204,12 +285,16 @@ class PlanViolation:
     code: str
     message: str
     segment_order: int | None = None
+    #: True when the violation is about the music cue rather than a segment, so
+    #: an editor can point at the audio lane instead of guessing.
+    is_music: bool = False
 
     def as_payload(self) -> dict[str, Any]:
         return {
             "code": self.code,
             "message": self.message,
             "segment_order": self.segment_order,
+            "is_music": self.is_music,
         }
 
 
@@ -254,6 +339,11 @@ class MediaFact:
     duration_ms: int | None
     width: int | None = None
     height: int | None = None
+    #: Ready, and an audio asset in its own right. The one fact a music cue
+    #: needs, and deliberately not "has an audio stream": Phase 7 beds are
+    #: project-owned audio files, so pointing a cue at the soundtrack of a video
+    #: is a different feature and is refused here rather than half-working.
+    is_audio_asset: bool = False
 
 
 def validate_plan(plan: EditPlan, media_facts: dict[MediaId, MediaFact]) -> list[PlanViolation]:
@@ -327,6 +417,166 @@ def validate_plan(plan: EditPlan, media_facts: dict[MediaId, MediaFact]) -> list
             )
         )
 
+    # --- audio ---
+    if not MIN_GAIN <= out.source_gain <= MAX_GAIN:
+        violations.append(
+            PlanViolation(
+                "source_gain_range",
+                f"source gain {out.source_gain} outside {MIN_GAIN}-{MAX_GAIN}",
+            )
+        )
+    if plan.music is not None:
+        violations.extend(_validate_music(plan.music, plan, media_facts, total))
+
+    return violations
+
+
+def _validate_music(
+    cue: MusicCue,
+    plan: EditPlan,
+    media_facts: dict[MediaId, MediaFact],
+    timeline_ms: int,
+) -> list[PlanViolation]:
+    """Check the music cue against its own bounds and the asset it names.
+
+    Every check mirrors one the video track already has, for the same reason it
+    has it: a trim past the end of a source, a range that is not a range, or an
+    asset belonging to somebody else. The audio-specific ones are gain, fades
+    and whether the cue plays at all -- a bed that starts after the video ends
+    is silence the user asked for by mistake, and saying so is more useful than
+    rendering it.
+    """
+    violations: list[PlanViolation] = []
+
+    if cue.source_in_ms < 0:
+        violations.append(
+            PlanViolation(
+                "music_negative_in",
+                f"music source_in_ms {cue.source_in_ms} is negative",
+                is_music=True,
+            )
+        )
+    if cue.source_out_ms <= cue.source_in_ms:
+        violations.append(
+            PlanViolation(
+                "music_non_positive_duration",
+                f"music source_out_ms {cue.source_out_ms} must exceed "
+                f"source_in_ms {cue.source_in_ms}",
+                is_music=True,
+            )
+        )
+        # Every remaining check needs a sane range.
+        return violations
+
+    duration = cue.duration_ms
+    if duration < MIN_MUSIC_MS:
+        violations.append(
+            PlanViolation(
+                "music_too_short",
+                f"music cue {duration} ms below {MIN_MUSIC_MS} ms",
+                is_music=True,
+            )
+        )
+    if duration > MAX_MUSIC_MS:
+        violations.append(
+            PlanViolation(
+                "music_too_long",
+                f"music cue {duration} ms above {MAX_MUSIC_MS} ms",
+                is_music=True,
+            )
+        )
+
+    if cue.timeline_start_ms < 0:
+        violations.append(
+            PlanViolation(
+                "music_negative_start",
+                f"music timeline_start_ms {cue.timeline_start_ms} is negative",
+                is_music=True,
+            )
+        )
+    elif timeline_ms and cue.timeline_start_ms >= timeline_ms:
+        violations.append(
+            PlanViolation(
+                "music_starts_after_end",
+                f"music starts at {cue.timeline_start_ms} ms, after the "
+                f"{timeline_ms} ms timeline ends",
+                is_music=True,
+            )
+        )
+
+    if not MIN_GAIN <= cue.gain <= MAX_GAIN:
+        violations.append(
+            PlanViolation(
+                "music_gain_range",
+                f"music gain {cue.gain} outside {MIN_GAIN}-{MAX_GAIN}",
+                is_music=True,
+            )
+        )
+
+    for name, value in (("fade_in_ms", cue.fade_in_ms), ("fade_out_ms", cue.fade_out_ms)):
+        if value < 0:
+            violations.append(
+                PlanViolation(
+                    "music_negative_fade", f"music {name} {value} is negative", is_music=True
+                )
+            )
+        elif value > MAX_FADE_MS:
+            violations.append(
+                PlanViolation(
+                    "music_fade_too_long",
+                    f"music {name} {value} ms above {MAX_FADE_MS} ms",
+                    is_music=True,
+                )
+            )
+
+    # Overlapping fades would ask afade to ramp up and down over the same
+    # samples, which FFmpeg resolves by silently preferring one of them.
+    if cue.fade_in_ms >= 0 and cue.fade_out_ms >= 0 and cue.fade_in_ms + cue.fade_out_ms > duration:
+        violations.append(
+            PlanViolation(
+                "music_fades_overlap",
+                f"fades total {cue.fade_in_ms + cue.fade_out_ms} ms, longer than "
+                f"the {duration} ms cue",
+                is_music=True,
+            )
+        )
+
+    fact = media_facts.get(cue.media_id)
+    if fact is None:
+        violations.append(
+            PlanViolation(
+                "music_unknown_media",
+                f"music asset {cue.media_id} does not exist",
+                is_music=True,
+            )
+        )
+        return violations
+
+    if fact.project_id != plan.project_id:
+        violations.append(
+            PlanViolation(
+                "music_cross_project_media",
+                f"music asset {cue.media_id} belongs to another project",
+                is_music=True,
+            )
+        )
+    if not fact.is_audio_asset:
+        violations.append(
+            PlanViolation(
+                "music_not_audio",
+                f"media {cue.media_id} is not a ready audio asset",
+                is_music=True,
+            )
+        )
+    if fact.duration_ms is not None and cue.source_out_ms > fact.duration_ms:
+        violations.append(
+            PlanViolation(
+                "music_trim_past_end",
+                f"music source_out_ms {cue.source_out_ms} exceeds the track's "
+                f"{fact.duration_ms} ms",
+                is_music=True,
+            )
+        )
     return violations
 
 
@@ -435,6 +685,7 @@ def plan_from_cuts(
     project_id: ProjectId,
     cuts: Sequence[Cut],
     output: OutputSpec,
+    music: MusicCue | None = None,
     planner: str = "manual",
     planner_version: str = "1",
     metadata: dict[str, Any] | None = None,
@@ -460,6 +711,7 @@ def plan_from_cuts(
             for index, cut in enumerate(cuts)
         ),
         output=output,
+        music=music,
         planner=planner,
         planner_version=planner_version,
         metadata=dict(metadata or {}),
@@ -501,17 +753,41 @@ def plan_from_payload(payload: dict[str, Any]) -> EditPlan:
             # failing is correct here: the default *is* what those plans were
             # rendered with.
             quality=QualityPreset(output.get("quality", QualityPreset.BALANCED.value)),
+            # Absent before Phase 7. Unity is what those plans were rendered
+            # with, so defaulting reproduces them exactly.
+            source_gain=float(output.get("source_gain", 1.0)),
         ),
+        music=_music_from_payload(payload.get("music")),
         planner=str(payload.get("planner", "unknown")),
         planner_version=str(payload.get("planner_version", "0")),
         metadata=dict(payload.get("metadata", {})),
     )
 
 
+def _music_from_payload(raw: Any) -> MusicCue | None:
+    """Rebuild a cue from stored JSON. ``None`` and absent both mean no music."""
+    if not raw:
+        return None
+    return MusicCue(
+        media_id=media_id_from(raw["media_id"]),
+        source_in_ms=int(raw["source_in_ms"]),
+        source_out_ms=int(raw["source_out_ms"]),
+        timeline_start_ms=int(raw.get("timeline_start_ms", 0)),
+        gain=float(raw.get("gain", 1.0)),
+        fade_in_ms=int(raw.get("fade_in_ms", 0)),
+        fade_out_ms=int(raw.get("fade_out_ms", 0)),
+    )
+
+
 __all__ = [
+    "MAX_FADE_MS",
+    "MAX_GAIN",
+    "MAX_MUSIC_MS",
     "MAX_OUTPUT_MS",
     "MAX_SEGMENTS",
     "MAX_SEGMENT_MS",
+    "MIN_GAIN",
+    "MIN_MUSIC_MS",
     "MIN_OUTPUT_MS",
     "MIN_SEGMENT_MS",
     "AspectRatio",
@@ -520,6 +796,7 @@ __all__ = [
     "EditPlan",
     "FitMode",
     "MediaFact",
+    "MusicCue",
     "OutputSpec",
     "PlanInvalidError",
     "PlanViolation",
