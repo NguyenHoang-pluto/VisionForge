@@ -410,6 +410,85 @@ music cue is a media id and six numbers — there is no field in it for a filena
 a filter or an encoder setting, and the tests pin that field set and assert every
 word in the generated graph comes from an allow-list.
 
+### Reference style
+
+A reference video is a clip the user already owns, nominated as "cut mine like
+this". Phase 8 reads it with the analyzers that already exist and turns their
+rows into a small, versioned, entirely numeric description:
+
+```
+scenes  + beats  ->  shot length, quartiles, cut rate, beat-sync tendency
+quality          ->  luminance, contrast
+dynamics         ->  motion energy, saturation
+```
+
+`dynamics` is the one new analyzer, and it exists because nothing measured
+movement or palette: `quality` samples the HSV *value* channel rather than
+saturation, and five frames spread across a video say nothing about motion. At
+each of the deterministic sample points it decodes a *pair* of frames 120 ms
+apart and takes the mean absolute grayscale difference, plus the saturation of
+the first. No model, no weights, no GPU, no network -- one extra frame read per
+sample point.
+
+**Every feature carries its own confidence**, and a signal that was not analysed
+is *absent* rather than zero. "Measured, and it was still" and "nobody looked"
+are different claims, and the policy layer weights by exactly this difference. A
+single detected scene -- which is how the scene detector reports finding no cuts
+-- yields no pacing at all, because it cannot be told apart from a genuine single
+take.
+
+**Beat-sync tendency** is the fraction of the reference's own cuts that land
+within a tempo-proportional window of its own beats: the measurement behind
+"this was cut to the music". It needs three cuts and a trusted grid before it
+will say anything.
+
+The profile is **derived on read**, not stored. The derivation is deterministic,
+so recomputing it from the analysis rows costs a little arithmetic and buys a
+profile that can never be stale against a re-analysis.
+
+### Style strength
+
+`StyleProfile (named preset) + ReferenceProfile (measured) -> StylePolicy -> planner`
+
+Five stops: 0, 25, 50, 75, 100. Each measurement's own confidence multiplies the
+strength before it is applied, so a shot length read from three cuts moves the
+pacing about a third as far as one read from twenty -- asking for 100% is asking
+for as much of the reference as the reference actually supports.
+
+**Zero is exactly the Phase 4-7 behaviour**, for every style, and a test plans
+the same footage twice and compares segments, trims, totals and metadata to
+prove it. Style affinity is taken *out of* the existing selection weights rather
+than added on top, so a score stays a convex combination and is capped at a
+third: style decides between usable clips, it does not decide what usable means.
+
+The rules engine honours a reference with no model involved. When an LLM
+provider fails, the fallback produces the pacing the model was asked for rather
+than a generic cut.
+
+### The reference is never footage
+
+The rendered output contains only the user's *other* media. The nominated clip
+is removed from the candidate list where candidates are built, so neither
+planner can select what it was never handed, and the model is additionally never
+given a handle for it.
+
+This is not a formality. A professionally-cut reference outscores phone footage
+on every usability signal the ranker has, so a reference that was silently
+eligible would usually *win*. Detaching it makes the clip ordinary footage
+again -- the exclusion follows from being current, not from a mark on the asset.
+
+Which clip is the reference is project state, set through its own endpoint and
+resolved server-side. The plan request has no field naming one, so a caller
+cannot aim a request at another project's media and read its measurements out of
+the result. Nominating resolves the id through the project first, and a media id
+belonging to someone else gets the answer a nonexistent one gets.
+
+```
+PUT    /api/projects/{id}/reference   {"media_id": "..."}
+GET    /api/projects/{id}/reference
+DELETE /api/projects/{id}/reference
+```
+
 ### The edit lane
 
 ```
@@ -965,6 +1044,46 @@ capability, no change to any API contract: the same product, presented properly.
 Deliberately **not** in this pass: any backend change, a waveform (the API
 exposes no sample data and drawing one would be fiction), per-clip colour or
 transform controls, and anything belonging to Phase 8.
+
+---
+
+**Phase 8 — reference video style intelligence.**
+
+- [x] **`dynamics`** — motion energy and saturation, from a pair of frames at
+      each existing sample point. CPU only, no model, no weights, no network
+- [x] `BeatAnalyzer` widened to video, so a reference's cutting rhythm can be
+      read against its own music. A file with no audio stream is `unsupported`,
+      not a failure — which had broken every silent video until a real run
+      caught it
+- [x] **`ReferenceProfile`** — versioned, pure, derived on read from analysis
+      rows. Every feature carries its own confidence and an unmeasured signal is
+      absent rather than zero
+- [x] **Beat-sync tendency** — the fraction of a reference's own cuts landing on
+      its own beats, needing three cuts and a trusted grid before it will speak
+- [x] **`StylePolicy.blend`** at 0/25/50/75/100, each measurement scaled by its
+      own confidence; affinity taken out of the selection weights rather than
+      added to them, and capped at a third
+- [x] Zero is byte-identical to no reference, for every style, pinned by a test
+- [x] **The reference is never footage** — excluded where candidates are built,
+      so neither the rules engine nor a model can select it, and the model is
+      given no handle for it
+- [x] `projects.reference_media_id` with `ON DELETE SET NULL`; three
+      project-scoped routes; the plan request has no field naming a reference
+- [x] The model receives the profile as numbers, enums and nulls only, labelled
+      as data — a profile whose every string field is an injection reaches the
+      prompt as nothing
+- [x] Reference section in the AI Edit tab: the project's videos offered
+      directly, every measurement drawn with its confidence, unmeasured features
+      saying so, and the dial disabled above 0% while the profile is unusable
+- [x] 31 new message keys in English and Vietnamese (526, exact parity, none
+      unreferenced), same tokens, themes, density and accent system
+- [x] 830 unit tests and 150 integration tests; no change to any Phase 1–7
+      contract
+
+Deliberately **not** in Phase 8: transition-type detection (the detector reports
+cuts, not dissolves), composition analysis beyond face presence, colour grading,
+style transfer of any kind that would put the reference's own frames in the
+output, and any new model or downloaded weights.
 
 <details>
 <summary>Phase 5 — LLM planning behind the existing boundary</summary>
