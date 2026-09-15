@@ -35,6 +35,7 @@ const ANALYZER_LABEL: Record<AnalyzerName, MessageKey> = {
   phash: "analysis.analyzer.phash",
   clip: "analysis.analyzer.clip",
   faces: "analysis.analyzer.faces",
+  beats: "analysis.analyzer.beats",
 };
 
 /** The Laplacian variance below which the analyzer calls a frame blurry. */
@@ -225,6 +226,30 @@ function Embedding({
   );
 }
 
+function Beats({ p }: { p: Record<string, unknown> }) {
+    const t = useT();
+    const bpm = typeof p.bpm === "number" ? p.bpm : null;
+    const confidence = typeof p.confidence === "number" ? p.confidence : 0;
+    return (
+      <>
+        <Row
+          label={t("audio.bpm")}
+          value={bpm ? t("audio.bpmValue", { bpm: bpm.toFixed(1) }) : t("common.dash")}
+        />
+        <Row label={t("audio.confidence")} value={`${Math.round(confidence * 100)}%`} />
+        {/* A bar, because confidence has a meaningful range: the planner's
+            threshold sits inside it, so "is this enough" is a comparison the
+            reader can actually make. */}
+        <div className="pb-1 pt-0.5">
+          <Meter value={confidence} max={1} tone={confidence >= 0.35 ? "ok" : "warn"} />
+        </div>
+        <Row label={t("audio.beatCount")} value={int(p.beat_count)} />
+        <Row label={t("analysis.scenes.detector")} value={String(p.method ?? "—")} />
+      </>
+    );
+}
+
+
 function Faces({ p }: { p: Record<string, unknown> }) {
   const t = useT();
   return (
@@ -246,7 +271,7 @@ function Faces({ p }: { p: Record<string, unknown> }) {
   );
 }
 
-const ORDER: AnalyzerName[] = ["quality", "scenes", "phash", "clip", "faces"];
+const ORDER: AnalyzerName[] = ["quality", "scenes", "phash", "clip", "faces", "beats"];
 
 export function AnalysisPanel({
   projectId,
@@ -297,6 +322,7 @@ export function AnalysisPanel({
             {name === "phash" && <Hashes p={record.payload} />}
             {name === "clip" && <Embedding record={record} p={record.payload} />}
             {name === "faces" && <Faces p={record.payload} />}
+            {name === "beats" && <Beats p={record.payload} />}
           </Section>
         );
       })}

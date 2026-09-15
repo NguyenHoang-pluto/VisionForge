@@ -14,7 +14,7 @@ import {
   type QualityPreset,
 } from "@/lib/api";
 import { useT, type MessageKey } from "@/lib/i18n";
-import { toDraft } from "@/lib/timeline";
+import { toDraft, toMusicRequest } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import {
   Button,
@@ -74,6 +74,8 @@ export function AiEditPanel({
   const setOutput = useEditorStore((s) => s.setOutput);
   const setClips = useEditorStore((s) => s.setClips);
   const setPreviewSource = useEditorStore((s) => s.setPreviewSource);
+  const musicBed = useEditorStore((s) => s.music);
+  const beatSync = useEditorStore((s) => s.beatSync);
 
   const [mode, setMode] = useState<PlannerMode>("automatic");
   const [style, setStyle] = useState<EditStyle | "">("");
@@ -108,6 +110,10 @@ export function AiEditPanel({
         fps,
         quality,
         order,
+        // The planner needs the bed to align the cue to the first beat, and the
+        // flag to decide whether the tempo may move a cut at all.
+        music: toMusicRequest(musicBed),
+        beat_sync: beatSync,
       }),
     onSuccess: (plan) => {
       setError(null);
@@ -115,7 +121,10 @@ export function AiEditPanel({
       // can be trimmed, reordered and cut like one the user assembled, because
       // that is exactly what it now is.
       const draft = toDraft(plan);
-      setClips(draft.clips, plan.id);
+      // The plan may have chosen its own cue -- trimmed to the cut, started on
+      // the first beat. Accepting the plan takes that too, or the edit reviewed
+      // is not the edit produced.
+      setClips(draft.clips, plan.id, plan.id, draft.music);
       setPreviewSource("program");
       onPlanned(plan);
       void queryClient.invalidateQueries({ queryKey: ["edit-plans", projectId] });

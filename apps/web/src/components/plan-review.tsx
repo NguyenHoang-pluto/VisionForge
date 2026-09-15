@@ -90,7 +90,7 @@ export function PlanReview({
               tone="primary"
               onClick={() => {
                 const draft = toDraft(plan);
-                setClips(draft.clips, plan.id);
+                setClips(draft.clips, plan.id, plan.id, draft.music);
                 setInspectorTab("export");
                 onClose();
               }}

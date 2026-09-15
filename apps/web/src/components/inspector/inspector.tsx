@@ -6,20 +6,24 @@ import { useEditorStore, type InspectorTab } from "@/stores/editor-store";
 import { EmptyState, Panel, Tabs } from "@/components/ui";
 import { AiEditPanel } from "@/components/inspector/ai-edit-panel";
 import { AnalysisPanel } from "@/components/inspector/analysis-panel";
+import { AudioPanel } from "@/components/inspector/audio-panel";
 import { ClipProperties } from "@/components/inspector/clip-properties";
 import { ExportPanel } from "@/components/inspector/export-panel";
 
 /**
  * The inspector.
  *
- * Four tabs over one selection. AI lives here, as one tab among four, which is
+ * Five tabs over one selection. AI lives here, as one tab among five, which is
  * the honest weighting: it is a way of producing a first cut, not the point of
- * the application.
+ * the application. Audio joined them in Phase 7 rather than becoming a mode of
+ * its own, for the same reason -- a music bed is a property of the edit, not a
+ * separate activity.
  */
 const TABS: { value: InspectorTab; label: MessageKey }[] = [
   { value: "clip", label: "inspector.tab.clip" },
   { value: "analysis", label: "inspector.tab.analysis" },
   { value: "ai", label: "inspector.tab.ai" },
+  { value: "audio", label: "inspector.tab.audio" },
   { value: "export", label: "inspector.tab.export" },
 ];
 
@@ -85,6 +89,10 @@ export function Inspector({
 
         {tab === "ai" && (
           <AiEditPanel projectId={projectId} readyCount={readyCount} onPlanned={onPlanned} />
+        )}
+
+        {tab === "audio" && (
+          <AudioPanel projectId={projectId} media={media} mediaList={mediaList} />
         )}
 
         {tab === "export" && (

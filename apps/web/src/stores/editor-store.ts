@@ -2,6 +2,8 @@ import { create } from "zustand";
 
 import type { AspectRatio, MediaAsset, QualityPreset } from "@/lib/api";
 import {
+  bedFromMedia,
+  clampBed,
   clipFromMedia,
   clipId,
   clipDuration,
@@ -10,6 +12,7 @@ import {
   reorder as reorderClips,
   totalDuration,
   trimClip,
+  type MusicBed,
   type TimelineClip,
 } from "@/lib/timeline";
 
@@ -28,6 +31,7 @@ import {
  */
 
 export type PreviewSource = "source" | "program" | "render";
+export type InspectorTabName = "clip" | "analysis" | "ai" | "audio" | "export";
 /**
  * How the media browser draws the library.
  *
@@ -36,7 +40,7 @@ export type PreviewSource = "source" | "program" | "render";
  * because those are three different questions, not three densities of one.
  */
 export type BrowserView = "grid" | "list" | "compact";
-export type InspectorTab = "clip" | "analysis" | "ai" | "export";
+export type InspectorTab = InspectorTabName;
 
 interface EditorState {
   // --- project ---
@@ -64,7 +68,12 @@ interface EditorState {
   pxPerSecond: number;
   playing: boolean;
 
-  setClips: (clips: TimelineClip[], sourcePlanId: string | null, committed?: string | null) => void;
+  setClips: (
+    clips: TimelineClip[],
+    sourcePlanId: string | null,
+    committed?: string | null,
+    music?: MusicBed | null,
+  ) => void;
   addMedia: (assets: MediaAsset[]) => number;
   selectClip: (clipId: string | null) => void;
   removeClip: (clipId: string) => void;
@@ -73,6 +82,25 @@ interface EditorState {
   splitAtPlayhead: () => void;
   clearTimeline: () => void;
   markCommitted: (planId: string) => void;
+
+  // --- music ---
+  /**
+   * The bed under the timeline, or ``null``.
+   *
+   * One bed, matching what ``EditPlan`` can express. A second would need
+   * overlap rules and a mix policy that the plan has nowhere to put, so the
+   * editor does not offer one.
+   */
+  music: MusicBed | null;
+  /** Whether the next generated plan should cut to the track's beats. */
+  beatSync: boolean;
+  /** Whether the timeline draws detected beats on the music lane. */
+  showBeatMarkers: boolean;
+  setShowBeatMarkers: (show: boolean) => void;
+  setMusic: (asset: MediaAsset | null) => void;
+  updateMusic: (patch: Partial<MusicBed>, sourceDurationMs: number | null) => void;
+  clearMusic: () => void;
+  setBeatSync: (beatSync: boolean) => void;
 
   setPlayhead: (ms: number) => void;
   nudgePlayhead: (deltaMs: number) => void;
@@ -86,7 +114,13 @@ interface EditorState {
   fps: number;
   quality: QualityPreset;
   audio: "none" | "source";
-  setOutput: (patch: Partial<Pick<EditorState, "aspect" | "fps" | "quality" | "audio">>) => void;
+  /** Gain on the clips' own audio, so dialogue can sit under a bed. */
+  sourceGain: number;
+  setOutput: (
+    patch: Partial<
+      Pick<EditorState, "aspect" | "fps" | "quality" | "audio" | "sourceGain">
+    >,
+  ) => void;
 
   // --- panels ---
   previewSource: PreviewSource;
@@ -120,6 +154,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selectedMediaIds: [],
       activeMediaId: null,
       playing: false,
+      // A bed belongs to the project it was chosen in, for the same reason the
+      // clips do: carrying it across would reference media the new project has
+      // never heard of.
+      music: null,
     }),
 
   // ------------------------------------------------------------- browser
@@ -160,8 +198,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   pxPerSecond: 60,
   playing: false,
 
-  setClips: (clips, sourcePlanId, committed = sourcePlanId) =>
-    set({
+  setClips: (clips, sourcePlanId, committed = sourcePlanId, music) =>
+    set((state) => ({
       clips,
       sourcePlanId,
       committedPlanId: committed,
@@ -169,7 +207,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selectedClipId: clips[0]?.id ?? null,
       playheadMs: 0,
       playing: false,
-    }),
+      // `undefined` means the caller is not speaking about music; `null` means
+      // it is saying there is none. Accepting a plan replaces the bed with
+      // whatever that plan chose, including nothing.
+      music: music === undefined ? state.music : music,
+    })),
 
   addMedia: (assets) => {
     const state = get();
@@ -252,9 +294,36 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       dirty: false,
       playheadMs: 0,
       playing: false,
+      music: null,
     }),
 
   markCommitted: (planId) => set({ committedPlanId: planId, dirty: false }),
+
+  // ---------------------------------------------------------------- music
+  music: null,
+  beatSync: false,
+  showBeatMarkers: true,
+  setShowBeatMarkers: (showBeatMarkers) => set({ showBeatMarkers }),
+
+  setMusic: (asset) =>
+    set((state) => {
+      if (asset === null) return { music: null, dirty: true };
+      const bed = bedFromMedia(asset, totalDuration(state.clips));
+      // `bedFromMedia` refuses anything that is not ready audio, so a video
+      // dropped on the lane changes nothing rather than producing a cue the
+      // server would reject.
+      return bed ? { music: bed, dirty: true } : state;
+    }),
+
+  updateMusic: (patch, sourceDurationMs) =>
+    set((state) =>
+      state.music
+        ? { music: clampBed({ ...state.music, ...patch }, sourceDurationMs), dirty: true }
+        : state,
+    ),
+
+  clearMusic: () => set({ music: null, dirty: true }),
+  setBeatSync: (beatSync) => set({ beatSync }),
 
   setPlayhead: (ms) => set({ playheadMs: Math.max(0, ms) }),
   nudgePlayhead: (deltaMs) =>
@@ -284,7 +353,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   fps: DEFAULT_OUTPUT.fps,
   quality: DEFAULT_OUTPUT.quality,
   audio: DEFAULT_OUTPUT.audio,
-  setOutput: (patch) => set(patch),
+  sourceGain: DEFAULT_OUTPUT.sourceGain,
+  // Output intent is not the draft, so changing it does not dirty the
+  // timeline -- except that it does reach the stored plan, so it does.
+  setOutput: (patch) => set({ ...patch, dirty: true }),
 
   // -------------------------------------------------------------- panels
   previewSource: "program",

@@ -14,7 +14,7 @@ import {
 } from "@/lib/api";
 import { bytes, fps as formatFps, seconds, timecode } from "@/lib/format";
 import { useT, type MessageKey } from "@/lib/i18n";
-import { draftProblems, toManualCuts } from "@/lib/timeline";
+import { draftProblems, toManualCuts, toMusicRequest } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import {
   Badge,
@@ -87,6 +87,8 @@ export function ExportPanel({
   const fps = useEditorStore((s) => s.fps);
   const quality = useEditorStore((s) => s.quality);
   const audio = useEditorStore((s) => s.audio);
+  const sourceGain = useEditorStore((s) => s.sourceGain);
+  const musicBed = useEditorStore((s) => s.music);
   const setOutput = useEditorStore((s) => s.setOutput);
   const committedPlanId = useEditorStore((s) => s.committedPlanId);
   const sourcePlanId = useEditorStore((s) => s.sourcePlanId);
@@ -104,6 +106,7 @@ export function ExportPanel({
 
   const problems = draftProblems(clips, media);
   const timelineHasAudio = clips.some((clip) => Boolean(media.get(clip.mediaId)?.channels));
+  const musicAsset = musicBed ? media.get(musicBed.mediaId) : undefined;
 
   /**
    * Store the timeline, then render it.
@@ -122,6 +125,10 @@ export function ExportPanel({
           fps,
           quality,
           audio,
+          source_gain: sourceGain,
+          // The bed travels with the timeline it was placed under. The server
+          // validates it against the real media rows like everything else.
+          music: toMusicRequest(musicBed),
           derived_from_edit_plan_id: sourcePlanId,
         });
         planId = plan.id;
@@ -213,6 +220,18 @@ export function ExportPanel({
         </div>
 
         <p className="mt-1.5 text-2xs leading-snug text-dim">{t(QUALITY_NOTE[quality])}</p>
+
+        {/* What will actually be heard, stated where the render is started.
+            "Silent" plus a music bed is a contradiction worth not shipping. */}
+        {musicBed && (
+          <div className="mt-1.5">
+            <Row
+              label={t("audio.title")}
+              value={musicAsset?.original_filename ?? musicBed.mediaId.slice(0, 8)}
+              title={musicAsset?.original_filename}
+            />
+          </div>
+        )}
       </section>
 
       <section>

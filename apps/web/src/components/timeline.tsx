@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { MediaAsset } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+
+import { api, type BeatsPayload, type MediaAsset } from "@/lib/api";
 import { timecode } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import { useThumbnailUrl } from "@/lib/media-urls";
@@ -10,7 +12,9 @@ import {
   MAX_CLIP_MS,
   MIN_CLIP_MS,
   clipDuration,
+  musicDuration,
   place,
+  type MusicBed,
   type PlacedClip,
 } from "@/lib/timeline";
 import {
@@ -168,6 +172,110 @@ function Clip({
   );
 }
 
+// ------------------------------------------------------------------ the bed
+/**
+ * The music bed, drawn on its own lane.
+ *
+ * Positioned by its own start rather than by a sequence, because that is what
+ * it has: a bed is not the *n*th thing on a track, it is a block that begins at
+ * a time. Beat markers are drawn inside it in *source* coordinates offset by
+ * the trim, so a cue taken from 30 s into a track still shows that passage's
+ * beats in the right places.
+ */
+function MusicBlock({
+  bed,
+  asset,
+  pxPerSecond,
+  beats,
+  showBeats,
+  selected,
+  onSelect,
+}: {
+  bed: MusicBed;
+  asset: MediaAsset | undefined;
+  pxPerSecond: number;
+  beats: readonly number[];
+  showBeats: boolean;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const t = useT();
+  const length = musicDuration(bed);
+  const width = (length / 1000) * pxPerSecond;
+  const left = (bed.startMs / 1000) * pxPerSecond;
+  const name = asset?.original_filename ?? bed.mediaId.slice(0, 8);
+
+  // Only the beats inside the trimmed passage, rebased so that the cue's own
+  // start is x=0. Capped: a five-minute track at 200 BPM is a thousand markers,
+  // and past a few hundred they are a grey wash rather than information.
+  const visible = showBeats
+    ? beats
+        .filter((beat) => beat >= bed.inMs && beat < bed.outMs)
+        .slice(0, 400)
+        .map((beat) => ((beat - bed.inMs) / 1000) * pxPerSecond)
+    : [];
+
+  const fadeInPx = (bed.fadeInMs / 1000) * pxPerSecond;
+  const fadeOutPx = (bed.fadeOutMs / 1000) * pxPerSecond;
+
+  return (
+    <div
+      role="option"
+      aria-selected={selected}
+      aria-label={t("timeline.music.clip", { name, duration: timecode(length) })}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      style={{ left, width: Math.max(width, 3) }}
+      className={`absolute inset-y-[2px] cursor-default select-none overflow-hidden rounded-sm border transition-colors ${
+        selected
+          ? "border-accent-strong bg-track-audio ring-1 ring-inset ring-accent-strong/60"
+          : "border-line-strong/70 bg-track-audio hover:border-line-strong"
+      }`}
+    >
+      {/* Beat markers, behind the label. Hairlines rather than ticks: they are
+          a rhythm to read at a glance, not values to measure against. */}
+      {visible.map((x, index) => (
+        <span
+          key={index}
+          aria-hidden
+          className="absolute inset-y-0 w-px bg-fg/25"
+          style={{ left: x }}
+        />
+      ))}
+
+      {/* The envelope, drawn as the ramp it is. */}
+      {fadeInPx > 1 && (
+        <span
+          aria-hidden
+          className="absolute inset-y-0 left-0 bg-gradient-to-r from-ground/70 to-transparent"
+          style={{ width: Math.min(fadeInPx, width) }}
+        />
+      )}
+      {fadeOutPx > 1 && (
+        <span
+          aria-hidden
+          className="absolute inset-y-0 right-0 bg-gradient-to-l from-ground/70 to-transparent"
+          style={{ width: Math.min(fadeOutPx, width) }}
+        />
+      )}
+
+      {width > 40 && (
+        <span className="pointer-events-none absolute inset-y-0 left-1 flex items-center gap-1 truncate font-mono text-2xs text-fg/85">
+          <Glyph name="audio" size={9} />
+          {width > 90 && name}
+        </span>
+      )}
+    </div>
+  );
+}
+
+
 // --------------------------------------------------------------- track header
 function TrackLabel({
   glyph,
@@ -212,6 +320,9 @@ export function Timeline({
   const [viewportWidth, setViewportWidth] = useState(0);
 
   const clips = useEditorStore((s) => s.clips);
+  const music = useEditorStore((s) => s.music);
+  const showBeatMarkers = useEditorStore((s) => s.showBeatMarkers);
+  const setInspectorTab = useEditorStore((s) => s.setInspectorTab);
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
   const selectClip = useEditorStore((s) => s.selectClip);
   const removeClip = useEditorStore((s) => s.removeClip);
@@ -224,6 +335,20 @@ export function Timeline({
   const setPxPerSecond = useEditorStore((s) => s.setPxPerSecond);
   const zoom = useEditorStore((s) => s.zoom);
   const dirty = useEditorStore((s) => s.dirty);
+
+  // The bed's beats. Same query key as the audio panel's, so the two share one
+  // request rather than each asking.
+  const beatAnalysis = useQuery({
+    queryKey: ["analysis", music?.mediaId],
+    queryFn: () => api.mediaAnalysis(projectId, music!.mediaId),
+    enabled: Boolean(music?.mediaId),
+    staleTime: 60_000,
+  });
+  const beats = useMemo(() => {
+    const record = beatAnalysis.data?.items.find((item) => item.analyzer === "beats");
+    if (!record || record.status !== "ok") return [] as number[];
+    return (record.payload as unknown as BeatsPayload).beats_ms ?? [];
+  }, [beatAnalysis.data]);
 
   const placed = useMemo(() => place(clips), [clips]);
   const totalMs = placed.length > 0 ? placed[placed.length - 1].endMs : 0;
@@ -510,6 +635,12 @@ export function Timeline({
             detail=""
             height="var(--h-track-audio)"
           />
+          <TrackLabel
+            glyph="audio"
+            name={t("timeline.track.musicShort")}
+            detail={music ? timecode(musicDuration(music), false) : ""}
+            height="var(--h-track-audio)"
+          />
         </div>
 
         <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
@@ -648,6 +779,35 @@ export function Timeline({
                   </div>
                 );
               })}
+            </div>
+
+            {/* ---- music track ----
+                Its own lane rather than a second audio row: a bed has a start
+                and an envelope that the clips' audio does not, and drawing
+                them on one lane would mean one of the two lying about what it
+                is. */}
+            <div
+              aria-label={t("timeline.track.music")}
+              style={{ height: "var(--h-track-audio)" }}
+              className="relative border-t border-line bg-lane/40"
+            >
+              {music ? (
+                <MusicBlock
+                  bed={music}
+                  asset={media.get(music.mediaId)}
+                  pxPerSecond={pxPerSecond}
+                  beats={beats}
+                  showBeats={showBeatMarkers}
+                  selected={false}
+                  onSelect={() => setInspectorTab("audio")}
+                />
+              ) : (
+                clips.length > 0 && (
+                  <p className="pointer-events-none absolute inset-0 flex items-center pl-3 text-2xs text-dim">
+                    {t("timeline.music.empty")}
+                  </p>
+                )
+              )}
             </div>
 
             {/* ---- playhead ----

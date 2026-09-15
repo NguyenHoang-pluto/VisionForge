@@ -14,7 +14,14 @@
  * until the server has accepted it as a plan.
  */
 
-import type { AspectRatio, EditPlan, ManualCut, MediaAsset, QualityPreset } from "@/lib/api";
+import type {
+  AspectRatio,
+  EditPlan,
+  ManualCut,
+  MediaAsset,
+  MusicRequest,
+  QualityPreset,
+} from "@/lib/api";
 
 /**
  * The bounds a drag is clamped against.
@@ -31,6 +38,12 @@ export let MAX_CLIPS = 40;
 export let MIN_TIMELINE_MS = 1_000;
 export let MAX_TIMELINE_MS = 10 * 60 * 1000;
 
+/** Audio bounds, same story: defaults until `/planner/capabilities` answers. */
+export let MIN_GAIN = 0;
+export let MAX_GAIN = 2;
+export let MIN_MUSIC_MS = 500;
+export let MAX_FADE_MS = 30_000;
+
 /** Adopt the bounds the server declared. Called once, when capabilities load. */
 export function applyBounds(bounds: {
   min_clip_ms: number;
@@ -46,6 +59,19 @@ export function applyBounds(bounds: {
   MAX_TIMELINE_MS = bounds.max_total_ms;
 }
 
+/** Adopt the audio bounds the server declared. */
+export function applyAudioBounds(bounds: {
+  min_gain: number;
+  max_gain: number;
+  min_music_ms: number;
+  max_fade_ms: number;
+}): void {
+  MIN_GAIN = bounds.min_gain;
+  MAX_GAIN = bounds.max_gain;
+  MIN_MUSIC_MS = bounds.min_music_ms;
+  MAX_FADE_MS = bounds.max_fade_ms;
+}
+
 /** One clip on the timeline. `id` is local and never reaches the server. */
 export interface TimelineClip {
   id: string;
@@ -54,10 +80,111 @@ export interface TimelineClip {
   outMs: number;
 }
 
+/**
+ * The music bed on the editor's timeline.
+ *
+ * The same shape the API takes, with a local `id` so the lane can have a
+ * selection like the video lane does. Deliberately *not* a `TimelineClip`: a
+ * clip has no gain and no envelope, and a bed has no position in a sequence,
+ * so one type carrying both would be two types with half its fields ignored.
+ */
+export interface MusicBed {
+  mediaId: string;
+  /** Trim within the track. */
+  inMs: number;
+  outMs: number;
+  /** Where the bed starts in the output. */
+  startMs: number;
+  /** Linear gain; 1 is unity. */
+  gain: number;
+  fadeInMs: number;
+  fadeOutMs: number;
+}
+
 export interface TimelineDraft {
   clips: TimelineClip[];
   /** The plan this draft was seeded from, if any. Travels back as provenance. */
   sourcePlanId: string | null;
+  music: MusicBed | null;
+}
+
+export function musicDuration(bed: MusicBed): number {
+  return bed.outMs - bed.inMs;
+}
+
+/**
+ * A bed from a freshly chosen track.
+ *
+ * Takes the whole track up to the timeline's length, so dropping a five-minute
+ * song under a twenty-second cut produces twenty seconds of music rather than a
+ * cue the server would trim anyway.
+ */
+export function bedFromMedia(
+  asset: MediaAsset,
+  timelineMs: number,
+  defaults: { gain?: number; fadeInMs?: number; fadeOutMs?: number } = {},
+): MusicBed | null {
+  const duration = asset.duration_ms;
+  if (asset.kind !== "audio" || asset.status !== "ready" || !duration) return null;
+
+  const wanted = Math.max(MIN_MUSIC_MS, timelineMs || MIN_MUSIC_MS);
+  const outMs = Math.min(duration, wanted);
+  if (outMs < MIN_MUSIC_MS) return null;
+
+  const fadeOutMs = Math.min(defaults.fadeOutMs ?? 1500, Math.max(0, outMs - 1));
+  return {
+    mediaId: asset.id,
+    inMs: 0,
+    outMs: Math.round(outMs),
+    startMs: 0,
+    gain: defaults.gain ?? 0.7,
+    fadeInMs: defaults.fadeInMs ?? 0,
+    fadeOutMs: Math.round(fadeOutMs),
+  };
+}
+
+/** The wire form of the bed. `gain` is called `volume` on the API. */
+export function toMusicRequest(bed: MusicBed | null): MusicRequest | null {
+  if (!bed) return null;
+  return {
+    media_id: bed.mediaId,
+    source_in_ms: Math.round(bed.inMs),
+    source_out_ms: Math.round(bed.outMs),
+    timeline_start_ms: Math.round(bed.startMs),
+    volume: bed.gain,
+    fade_in_ms: Math.round(bed.fadeInMs),
+    fade_out_ms: Math.round(bed.fadeOutMs),
+  };
+}
+
+/**
+ * Keep a bed inside what the server will accept.
+ *
+ * Applied on every edit rather than on save, so a slider cannot be dragged into
+ * a state the render would refuse -- the same reason a trim handle is clamped
+ * while the pointer moves.
+ */
+export function clampBed(bed: MusicBed, sourceDurationMs: number | null): MusicBed {
+  const limit = sourceDurationMs ?? Number.MAX_SAFE_INTEGER;
+  const inMs = Math.max(0, Math.min(bed.inMs, Math.max(0, limit - MIN_MUSIC_MS)));
+  const outMs = Math.max(inMs + MIN_MUSIC_MS, Math.min(bed.outMs, limit));
+  const length = outMs - inMs;
+
+  const fadeInMs = Math.max(0, Math.min(bed.fadeInMs, Math.min(MAX_FADE_MS, length)));
+  const fadeOutMs = Math.max(
+    0,
+    Math.min(bed.fadeOutMs, Math.min(MAX_FADE_MS, length - fadeInMs)),
+  );
+
+  return {
+    ...bed,
+    inMs: Math.round(inMs),
+    outMs: Math.round(outMs),
+    startMs: Math.max(0, Math.round(bed.startMs)),
+    gain: Math.max(MIN_GAIN, Math.min(MAX_GAIN, bed.gain)),
+    fadeInMs: Math.round(fadeInMs),
+    fadeOutMs: Math.round(fadeOutMs),
+  };
 }
 
 let counter = 0;
@@ -118,6 +245,7 @@ export function clipAt(
 /** Seed an editable timeline from a plan the server produced. */
 export function toDraft(plan: EditPlan): TimelineDraft {
   const segments = [...(plan.plan?.segments ?? [])].sort((a, b) => a.order - b.order);
+  const music = plan.plan?.music ?? null;
   return {
     sourcePlanId: plan.id,
     clips: segments.map((segment) => ({
@@ -126,6 +254,20 @@ export function toDraft(plan: EditPlan): TimelineDraft {
       inMs: segment.source_in_ms,
       outMs: segment.source_out_ms,
     })),
+    // A generated plan may have chosen a bed and aligned it to the first beat.
+    // Accepting the plan has to bring that with it, or the edit the user
+    // reviewed is not the edit they get.
+    music: music
+      ? {
+          mediaId: music.media_id,
+          inMs: music.source_in_ms,
+          outMs: music.source_out_ms,
+          startMs: music.timeline_start_ms,
+          gain: music.gain,
+          fadeInMs: music.fade_in_ms,
+          fadeOutMs: music.fade_out_ms,
+        }
+      : null,
   };
 }
 
@@ -249,6 +391,8 @@ export interface OutputIntent {
   fps: number;
   quality: QualityPreset;
   audio: "none" | "source";
+  /** Linear gain on the clips' own audio. Unity is the Phase 6 behaviour. */
+  sourceGain: number;
 }
 
 export const DEFAULT_OUTPUT: OutputIntent = {
@@ -256,4 +400,5 @@ export const DEFAULT_OUTPUT: OutputIntent = {
   fps: 30,
   quality: "balanced",
   audio: "none",
+  sourceGain: 1,
 };

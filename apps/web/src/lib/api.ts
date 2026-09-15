@@ -111,7 +111,7 @@ export interface Job {
   steps: JobStep[];
 }
 
-export type AnalyzerName = "quality" | "scenes" | "phash" | "clip" | "faces";
+export type AnalyzerName = "quality" | "scenes" | "phash" | "clip" | "faces" | "beats";
 export type AnalysisStatus = "ok" | "unsupported" | "failed";
 
 /** Analyzer-specific. Deliberately loose: each analyzer reports a different shape. */
@@ -204,6 +204,69 @@ export interface PlannerCapabilities {
     min_total_ms: number;
     max_total_ms: number;
   };
+
+  /**
+   * The same declaration for audio.
+   *
+   * A volume slider and two fade handles need clamping while the pointer is
+   * moving, for exactly the reason a trim handle does -- and a copy of the
+   * numbers in the browser would drift out of agreement with the validator
+   * that actually enforces them.
+   */
+  audio_bounds: {
+    min_gain: number;
+    max_gain: number;
+    min_music_ms: number;
+    max_music_ms: number;
+    max_fade_ms: number;
+  };
+
+  /**
+   * What beat detection reports, and when the planner will act on it.
+   *
+   * The confidence floor is here so the editor can explain a grid the server
+   * has decided not to trust, rather than offering a toggle that silently does
+   * nothing.
+   */
+  beat_sync: {
+    analyzer: AnalyzerName;
+    min_bpm: number;
+    max_bpm: number;
+    min_confidence: number;
+  };
+}
+
+/**
+ * A music bed, as the API takes it.
+ *
+ * Note what is absent, and note that it is the same list absent from every
+ * other request type here: no path, no storage key, no codec, no filter. A cue
+ * is a media id the project already owns plus six numbers.
+ */
+export interface MusicRequest {
+  media_id: string;
+  source_in_ms: number;
+  source_out_ms: number;
+  timeline_start_ms: number;
+  /** Linear; 1.0 is unity. Shown to the user as a percentage. */
+  volume: number;
+  fade_in_ms: number;
+  fade_out_ms: number;
+}
+
+/** The cue as it comes back on a stored plan. Carries its derived duration. */
+export interface PlanMusic extends MusicRequest {
+  duration_ms: number;
+  gain: number;
+}
+
+/** Tempo and beat positions, from the `beats` analyzer. */
+export interface BeatsPayload {
+  bpm: number;
+  confidence: number;
+  beat_count: number;
+  beats_ms: number[];
+  source_duration_ms: number | null;
 }
 
 /** Which planner ran, and why. Present on every plan. */
@@ -250,7 +313,9 @@ export interface PlanDocument {
     fit: string;
     audio: string;
     quality: QualityPreset;
+    source_gain: number;
   };
+  music: PlanMusic | null;
   segments: PlanSegment[];
   total_duration_ms: number;
   metadata: Record<string, unknown>;
@@ -315,6 +380,10 @@ export interface ManualPlanOptions {
   fps?: number;
   quality?: QualityPreset;
   audio?: "none" | "source";
+  /** Gain on the clips' own audio, independent of the bed. */
+  source_gain?: number;
+  /** The bed the editor placed, if any. */
+  music?: MusicRequest | null;
   derived_from_edit_plan_id?: string | null;
 }
 
@@ -330,6 +399,10 @@ export interface PlanOptions {
   fps?: number;
   order?: ClipOrder;
   quality?: QualityPreset;
+  source_gain?: number;
+  music?: MusicRequest | null;
+  /** Let the track's detected beats decide clip length. */
+  beat_sync?: boolean;
 }
 
 /** One planning call, successful or not. */

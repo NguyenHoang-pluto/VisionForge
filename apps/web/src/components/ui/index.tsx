@@ -345,6 +345,15 @@ export function ToolGroup({
   );
 }
 
+/**
+ * A tab strip that stays one row tall.
+ *
+ * `whitespace-nowrap` with `truncate` rather than letting labels wrap: a strip
+ * whose height depends on the longest translation is a strip that changes the
+ * panel's geometry when the language changes, and every panel below it would
+ * shift. Five tabs at this width fit both languages; a sixth would not, and
+ * clipping says so honestly rather than silently reflowing the inspector.
+ */
 export function Tabs<T extends string>({
   value,
   onChange,
@@ -366,8 +375,12 @@ export function Tabs<T extends string>({
             type="button"
             role="tab"
             aria-selected={selected}
+            // The label may be clipped -- a five-tab strip cannot fit every
+            // translation -- so the full text is always available on hover,
+            // the same rule every other truncated string in the app follows.
+            title={tab.label}
             onClick={() => onChange(tab.value)}
-            className={`relative h-full flex-1 px-1.5 text-2xs font-medium uppercase tracking-wider transition-colors ${
+            className={`relative h-full min-w-0 flex-1 truncate whitespace-nowrap px-1 text-2xs font-medium uppercase tracking-wide transition-colors ${
               selected
                 ? "bg-panel text-fg"
                 : "bg-raised text-dim hover:bg-raised hover:text-muted"

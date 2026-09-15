@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, APP_VERSION, type EditPlan, type Job, type MediaAsset } from "@/lib/api";
 import { useT, type MessageKey } from "@/lib/i18n";
-import { applyBounds, draftProblems } from "@/lib/timeline";
+import { applyAudioBounds, applyBounds, draftProblems } from "@/lib/timeline";
 import { useEditorStore, type InspectorTab } from "@/stores/editor-store";
 import { Button, Dialog, KeyCap, useShortcuts } from "@/components/ui";
 import { Inspector } from "@/components/inspector/inspector";
@@ -106,6 +106,11 @@ export function Workstation() {
   useEffect(() => {
     if (bounds) applyBounds(bounds);
   }, [bounds]);
+
+  const audioBounds = capabilities.data?.audio_bounds;
+  useEffect(() => {
+    if (audioBounds) applyAudioBounds(audioBounds);
+  }, [audioBounds]);
 
   const media = useQuery({
     queryKey: ["media", projectId],
