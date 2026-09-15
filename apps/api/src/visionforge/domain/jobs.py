@@ -149,6 +149,7 @@ MEDIA_ANALYZE_CPU_STEPS: tuple[str, ...] = (
     "SCENES",
     "PHASH",
     "BEATS",
+    "DYNAMICS",
     "FINALIZE",
 )
 

@@ -6,12 +6,14 @@ depend on the ``Analyzer`` port in the domain. Enforced by the
 """
 
 from visionforge.infra.analysis.beats import BeatAnalyzer
+from visionforge.infra.analysis.dynamics import DynamicsAnalyzer
 from visionforge.infra.analysis.phash import PerceptualHashAnalyzer, cluster_by_hash
 from visionforge.infra.analysis.quality import QualityAnalyzer
 from visionforge.infra.analysis.scenes import SceneAnalyzer
 
 __all__ = [
     "BeatAnalyzer",
+    "DynamicsAnalyzer",
     "PerceptualHashAnalyzer",
     "QualityAnalyzer",
     "SceneAnalyzer",

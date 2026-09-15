@@ -41,6 +41,7 @@ from visionforge.domain.editplan import (
     TransitionKind,
 )
 from visionforge.domain.ids import MediaId, ProjectId
+from visionforge.domain.policy import StylePolicy, policy_for
 from visionforge.domain.selection import (
     DEFAULT_SELECTION_WEIGHTS,
     Candidate,
@@ -50,7 +51,7 @@ from visionforge.domain.selection import (
     select,
     weights_payload,
 )
-from visionforge.domain.style import EditStyle, StyleProfile, profile_for
+from visionforge.domain.style import EditStyle
 
 
 class ClipOrder(StrEnum):
@@ -97,6 +98,13 @@ class PlanRequest:
     #: it; the rules engine ignores it entirely rather than pattern-matching
     #: prose, which it would do badly.
     request_text: str | None = None
+
+    # --- reference style (Phase 8) ---
+    #: The named style blended with whatever a reference video measured, at the
+    #: strength the user chose. ``None`` means "build one from the style alone",
+    #: which is what every caller before Phase 8 effectively asked for and what
+    #: keeps their plans identical.
+    style_policy: StylePolicy | None = None
 
     # --- music (Phase 7) ---
     #: The track to lay under the edit, if the caller chose one. The planner
@@ -188,12 +196,22 @@ class RulesEnginePlanner:
         self._weights = weights
 
     def plan(self, request: PlanRequest, candidates: list[Candidate]) -> PlanOutcome:
-        profile = profile_for(request.style)
-        # A requested style overrides the injected weights; with no style the
-        # weights given at construction win, so Phase 4 behaviour is untouched
-        # and an explicitly-weighted planner still means what it says.
-        weights = profile.weights if request.style is not None else self._weights
-        selection = select(candidates, limit=request.max_clips, weights=weights)
+        policy = request.style_policy or policy_for(request.style)
+        # A requested style, or a reference that actually moved something,
+        # overrides the injected weights; with neither, the weights given at
+        # construction win, so Phase 4 behaviour is untouched and an
+        # explicitly-weighted planner still means what it says.
+        styled = request.style is not None or policy.is_styled
+        weights = policy.weights if styled else self._weights
+        selection = select(
+            candidates,
+            limit=request.max_clips,
+            weights=weights,
+            # The look vector only matters when it was given weight to act
+            # through, and passing it otherwise would compute a component
+            # nothing multiplies.
+            target=policy.target if weights.affinity > 0 else None,
+        )
 
         if len(selection.selected) < request.min_clips:
             raise NoUsableMediaError(
@@ -202,8 +220,8 @@ class RulesEnginePlanner:
             )
 
         chosen = self._order(list(selection.selected), request.order)
-        per_clip_ms = self._per_clip_duration(request, len(chosen), profile)
-        grid, beats_per_clip = self._beat_sync(request, per_clip_ms, profile)
+        per_clip_ms = self._per_clip_duration(request, len(chosen), policy, styled)
+        grid, beats_per_clip = self._beat_sync(request, per_clip_ms, policy, styled)
 
         segments: list[Segment] = []
         # Beats placed so far, and the timeline position that corresponds to.
@@ -293,7 +311,11 @@ class RulesEnginePlanner:
                 "selected": len(segments),
                 "rejected": len(selection.rejected),
                 "duplicate_groups": len(selection.duplicate_groups),
-                "weights": weights_payload(self._weights),
+                "weights": weights_payload(weights),
+                # What the reference was allowed to do, recorded on the plan.
+                # An edit that cannot say which measurements moved its pacing is
+                # not reviewable, and "style strength 75" alone does not say it.
+                "style_policy": policy.as_payload() if policy.is_styled else None,
                 # Why the cuts fall where they do, recorded rather than left to
                 # be inferred. A beat-synced edit that cannot say which tempo it
                 # was synced to is not reviewable.
@@ -305,7 +327,7 @@ class RulesEnginePlanner:
     # ---------------------------------------------------------- beat sync
     @staticmethod
     def _beat_sync(
-        request: PlanRequest, per_clip_ms: int, profile: StyleProfile
+        request: PlanRequest, per_clip_ms: int, policy: StylePolicy, styled: bool
     ) -> tuple[BeatGrid | None, int | None]:
         """The grid to cut against, and how many beats each clip gets.
 
@@ -328,8 +350,8 @@ class RulesEnginePlanner:
         if not grid.is_reliable():
             return None, None
 
-        floor = max(MIN_SEGMENT_MS, profile.min_clip_ms if request.style else MIN_SEGMENT_MS)
-        ceiling = min(MAX_SEGMENT_MS, profile.max_clip_ms if request.style else MAX_SEGMENT_MS)
+        floor = max(MIN_SEGMENT_MS, policy.min_clip_ms if styled else MIN_SEGMENT_MS)
+        ceiling = min(MAX_SEGMENT_MS, policy.max_clip_ms if styled else MAX_SEGMENT_MS)
         beats = grid.snap_beats(per_clip_ms, min_ms=floor, max_ms=ceiling)
         if beats is None:
             return None, None
@@ -467,7 +489,9 @@ class RulesEnginePlanner:
         return sorted(chosen, key=lambda s: (-s.score, s.candidate.sequence))
 
     @staticmethod
-    def _per_clip_duration(request: PlanRequest, clip_count: int, profile: StyleProfile) -> int:
+    def _per_clip_duration(
+        request: PlanRequest, clip_count: int, policy: StylePolicy, styled: bool
+    ) -> int:
         """Target duration split evenly, clamped to the style then the plan.
 
         Clamping can make the total miss the target -- with two clips and a
@@ -476,16 +500,17 @@ class RulesEnginePlanner:
         entire edit.
 
         Two clamps, in order. The style bounds express what the pacing should
-        be; the plan bounds express what is renderable at all, and they are
-        applied last so no style can widen them.
+        be -- as of Phase 8 they are the style blended with whatever a reference
+        video measured -- and the plan bounds express what is renderable at all,
+        applied last so neither a style nor a reference can widen them.
 
         Unchanged by Phase 7, and deliberately so: this is the unquantised
         length, which is both the answer when there is no music and the target
         that ``_beat_sync`` rounds to a whole number of beats.
         """
         raw = request.target_duration_ms // max(clip_count, 1)
-        if request.style is not None:
-            raw = profile.clamp_clip_ms(raw)
+        if styled:
+            raw = policy.clamp_clip_ms(raw)
         return max(MIN_SEGMENT_MS, min(MAX_SEGMENT_MS, raw))
 
     @staticmethod

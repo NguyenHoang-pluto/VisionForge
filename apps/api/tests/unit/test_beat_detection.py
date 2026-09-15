@@ -218,20 +218,28 @@ class TestFeedsTheDomain:
 
 # ------------------------------------------------------------------- analyzer
 class TestAnalyzerContract:
-    def test_it_is_an_audio_analyzer(self) -> None:
+    def test_it_analyses_anything_with_a_soundtrack(self) -> None:
+        """Audio and video, not images.
+
+        Phase 7 restricted this to audio because a music bed was the only thing
+        a tempo was wanted for. Phase 8 reads a reference video's cutting
+        rhythm, which is only interpretable against the music that video was cut
+        to -- so the grid has to exist for the video itself. FFmpeg pulls the
+        audio stream out of the container either way.
+        """
         analyzer = BeatAnalyzer()
         assert analyzer.supports(MediaKind.AUDIO)
-        assert not analyzer.supports(MediaKind.VIDEO)
+        assert analyzer.supports(MediaKind.VIDEO)
         assert not analyzer.supports(MediaKind.IMAGE)
 
-    def test_video_is_unsupported_rather_than_failed(self) -> None:
-        """A video having no tempo is a fact about the medium, not an error --
+    def test_images_are_unsupported_rather_than_failed(self) -> None:
+        """A still having no tempo is a fact about the medium, not an error --
         and an 'unsupported' row is what stops it being retried forever."""
         outcome = BeatAnalyzer().analyze(
             AnalysisSource(
                 media_id=MediaId(uuid.uuid4()),
-                kind=MediaKind.VIDEO,
-                local_path="/does/not/matter.mp4",
+                kind=MediaKind.IMAGE,
+                local_path="/does/not/matter.png",
                 used_proxy=False,
             )
         )

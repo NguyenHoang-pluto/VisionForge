@@ -384,7 +384,12 @@ class BeatAnalyzer:
     kind = AnalyzerKind.CPU
 
     def supports(self, media_kind: MediaKind) -> bool:
-        return media_kind is MediaKind.AUDIO
+        # Video as well as audio, as of Phase 8: a reference video's cutting
+        # rhythm can only be read against the music it was cut to, so the grid
+        # has to exist for the video itself. FFmpeg decodes the audio stream out
+        # of the container either way, and a video with no audio stream yields
+        # the same empty result silence already does.
+        return media_kind in (MediaKind.AUDIO, MediaKind.VIDEO)
 
     def analyze(self, source: AnalysisSource) -> AnalysisOutcome:
         if not self.supports(source.kind):

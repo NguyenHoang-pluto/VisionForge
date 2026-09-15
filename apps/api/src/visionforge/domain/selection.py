@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from visionforge.domain.analysis import (
     PHASH_DUPLICATE_MAX_DISTANCE,
@@ -55,6 +55,12 @@ class SelectionWeights:
     contrast: float = 0.20
     resolution: float = 0.10
     duration: float = 0.05
+    #: How much a candidate's resemblance to a reference video's look counts
+    #: (Phase 8). Zero by default, and zero unless a style policy puts something
+    #: here, so every edit planned before references existed scores identically.
+    #: When it is non-zero the five components above have been scaled down to
+    #: make room, so the total is still one.
+    affinity: float = 0.0
 
     # --- usability floor: below these a candidate is rejected outright ---
     min_blur_score: float = 40.0
@@ -75,9 +81,23 @@ class SelectionWeights:
     resolution_reference_pixels: int = 1920 * 1080
 
     def __post_init__(self) -> None:
-        total = self.sharpness + self.exposure + self.contrast + self.resolution + self.duration
+        # A convex combination, so a score is always in 0..1 and two clips are
+        # comparable across projects. Affinity is inside the sum rather than
+        # added to it: a style reference redistributes the weight, it does not
+        # get to inflate the total and quietly raise every styled clip's score
+        # above every unstyled one's.
+        total = (
+            self.sharpness
+            + self.exposure
+            + self.contrast
+            + self.resolution
+            + self.duration
+            + self.affinity
+        )
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"selection weights must sum to 1.0, got {total}")
+        if not 0.0 <= self.affinity <= 1.0:
+            raise ValueError("affinity weight must be between 0 and 1")
         if self.sharpness_reference <= 0 or self.resolution_reference_pixels <= 0:
             raise ValueError("normalisation references must be positive")
 
@@ -111,6 +131,13 @@ class Candidate:
 
     # --- from the scene analyzer ---
     scene_count: int | None = None
+
+    # --- from the dynamics analyzer (Phase 8) ---
+    #: Motion energy, 0..1. ``None`` for a clip that has not been analysed, or
+    #: for a still, which cannot have any.
+    motion: float | None = None
+    #: Mean saturation, 0..1.
+    saturation: float | None = None
 
     # --- from the face analyzer ---
     #: Whether anyone appears on screen. A count, reduced to a boolean, and no
@@ -169,6 +196,18 @@ class SelectionResult:
 
 
 # --------------------------------------------------------------------- scoring
+@runtime_checkable
+class StyleAffinity(Protocol):
+    """Anything that can say how close a set of look values is to its own.
+
+    Stated as a protocol rather than imported, because the concrete type lives
+    in ``domain.policy``, which imports this module -- and a cycle inside the
+    domain is exactly what the architecture contract exists to prevent.
+    """
+
+    def affinity(self, **measured: float | None) -> float | None: ...
+
+
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
@@ -226,8 +265,30 @@ def duration_component(candidate: Candidate, weights: SelectionWeights) -> float
     return _clamp(candidate.duration_ms / 10_000.0)
 
 
+def affinity_component(candidate: Candidate, target: StyleAffinity | None) -> float | None:
+    """How much this candidate looks like the reference. ``None`` when unknown.
+
+    The comparison is made on the axes the two have in common. A candidate with
+    no dynamics row still has luminance and contrast from the quality analyzer,
+    so it is compared on those rather than being excluded -- footage should not
+    rank lower because an analyzer had not reached it yet.
+    """
+    if target is None:
+        return None
+    return target.affinity(
+        luminance=(candidate.mean_luminance / 255.0)
+        if candidate.mean_luminance is not None
+        else None,
+        contrast=min(1.0, candidate.contrast / 128.0) if candidate.contrast is not None else None,
+        saturation=candidate.saturation,
+        motion=candidate.motion,
+    )
+
+
 def score_candidate(
-    candidate: Candidate, weights: SelectionWeights = DEFAULT_SELECTION_WEIGHTS
+    candidate: Candidate,
+    weights: SelectionWeights = DEFAULT_SELECTION_WEIGHTS,
+    target: StyleAffinity | None = None,
 ) -> ScoredCandidate:
     """Weighted sum of the normalised components. Always in 0..1."""
     components = {
@@ -244,6 +305,16 @@ def score_candidate(
         + components["resolution"] * weights.resolution
         + components["duration"] * weights.duration
     )
+
+    # The style term, when there is one. A candidate the target cannot be
+    # compared against keeps its share of the weight rather than forfeiting it:
+    # the alternative silently ranks unanalysed footage last.
+    if weights.affinity > 0:
+        affinity = affinity_component(candidate, target)
+        if affinity is None:
+            affinity = 1.0
+        components["affinity"] = affinity
+        score += affinity * weights.affinity
     return ScoredCandidate(
         candidate=candidate,
         score=round(score, 6),
@@ -348,6 +419,7 @@ def select(
     *,
     limit: int,
     weights: SelectionWeights = DEFAULT_SELECTION_WEIGHTS,
+    target: StyleAffinity | None = None,
 ) -> SelectionResult:
     """Rank, deduplicate and take the best ``limit`` candidates.
 
@@ -369,7 +441,7 @@ def select(
         else:
             usable.append(candidate)
 
-    scored = {c.media_id: score_candidate(c, weights) for c in usable}
+    scored = {c.media_id: score_candidate(c, weights, target) for c in usable}
     groups = group_duplicates(usable, max_distance=weights.duplicate_max_distance)
 
     # Keep the best-scoring member of each duplicate group; reject the rest.
