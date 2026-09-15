@@ -60,11 +60,17 @@ def step(title: str) -> None:
 # ---------------------------------------------------------------------- inputs
 #: Four distinguishable 8-second clips. Long enough that a trim has somewhere to
 #: go, and visually distinct so a wrong order is observable in the output.
+#:
+#: 1080p, not 720p: a proxy is only made for video *taller* than the proxy height
+#: (``MediaMetadata.needs_proxy``), so 720p sources would skip the proxy step and
+#: the checks below would be asserting against a path that never ran. It also
+#: keeps "the server chose the geometry" honest -- the 1280x720 output is then a
+#: preset the server applied, not the input size passed through.
 CLIP_SPECS: list[tuple[str, str]] = [
-    ("edit_bars.mp4", "smptebars=size=1280x720:rate=25:duration=8"),
-    ("edit_test.mp4", "testsrc=size=1280x720:rate=25:duration=8"),
-    ("edit_test2.mp4", "testsrc2=size=1280x720:rate=25:duration=8"),
-    ("edit_rgb.mp4", "rgbtestsrc=size=1280x720:rate=25:duration=8"),
+    ("edit_bars.mp4", "smptebars=size=1920x1080:rate=25:duration=8"),
+    ("edit_test.mp4", "testsrc=size=1920x1080:rate=25:duration=8"),
+    ("edit_test2.mp4", "testsrc2=size=1920x1080:rate=25:duration=8"),
+    ("edit_rgb.mp4", "rgbtestsrc=size=1920x1080:rate=25:duration=8"),
 ]
 
 
