@@ -26,6 +26,7 @@ from visionforge.domain.editplan import (
 )
 from visionforge.domain.llm_planner import PlannerMode
 from visionforge.domain.planner import ClipOrder
+from visionforge.domain.policy import StyleStrength
 from visionforge.domain.style import FPS_PRESETS, EditStyle
 
 
@@ -113,6 +114,17 @@ class PlanCreateRequest(BaseModel):
     #: Gain on the clips' own audio, independent of the bed. Ducking dialogue
     #: under music is the common case and must not require muting it.
     source_gain: float = Field(default=1.0, ge=MIN_GAIN, le=MAX_GAIN)
+
+    # --- reference style (Phase 8) ---
+    #: How much of the project's reference video to apply. A closed set, and
+    #: ``"0"`` by default: a project with a reference attached plans exactly as
+    #: it did before Phase 8 until the user turns the dial up.
+    #:
+    #: There is no field here for the reference itself. Which clip is the
+    #: reference is project state, set through its own endpoint and resolved
+    #: server-side, so a caller cannot point one request at another project's
+    #: media and read its measurements back out of the plan.
+    style_strength: StyleStrength = StyleStrength.ZERO
 
     # --- music (Phase 7) ---
     #: The track to lay under the edit. ``None`` is a silent or source-audio
@@ -288,3 +300,68 @@ class RenderResponse(BaseModel):
 class RenderListResponse(BaseModel):
     items: list[RenderResponse]
     total: int
+
+
+# ------------------------------------------------------------- reference (P8)
+class ReferenceRequest(BaseModel):
+    """Nominate a clip as the project's style reference.
+
+    One field, and it is an id of media in this project. Nothing about the
+    reference is described by the client: what it measures as is read from the
+    analysers, not asserted by the caller.
+    """
+
+    media_id: UUID
+
+
+class MeasurementResponse(BaseModel):
+    """A measured value and how far it should be trusted."""
+
+    value: float
+    confidence: float
+
+
+class ReferenceProfileResponse(BaseModel):
+    """What the reference measured as.
+
+    Every field is nullable and every null means "not measured" -- not "zero",
+    not "average". A client showing this must distinguish the two, which is why
+    the confidence travels beside the value rather than being folded into it.
+    """
+
+    media_id: UUID
+    version: str
+    duration_ms: int
+    #: Mean confidence over the features that were actually measured.
+    confidence: float
+    #: Whether this profile is allowed to influence an edit at all.
+    usable: bool
+
+    pacing: str | None = None
+    scene_count: int | None = None
+    shot_ms: MeasurementResponse | None = None
+    shot_ms_p25: int | None = None
+    shot_ms_p75: int | None = None
+    cut_rate: MeasurementResponse | None = None
+
+    luminance: MeasurementResponse | None = None
+    contrast: MeasurementResponse | None = None
+    saturation: MeasurementResponse | None = None
+    motion: MeasurementResponse | None = None
+
+    bpm: float | None = None
+    beat_confidence: float | None = None
+    beat_sync: MeasurementResponse | None = None
+    #: True when the reference's own cuts land on its own beats often enough to
+    #: be worth offering. Advisory: the server never switches beat sync on.
+    suggests_beat_sync: bool = False
+
+
+class ReferenceResponse(BaseModel):
+    """The project's current reference, and its profile if it has been analysed."""
+
+    media_id: UUID | None = None
+    #: What the analysers still owe this reference, so a client can say "analyse
+    #: it" rather than showing an empty profile with no explanation.
+    pending_analyzers: list[str] = Field(default_factory=list)
+    profile: ReferenceProfileResponse | None = None

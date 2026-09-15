@@ -106,6 +106,14 @@ class PlanRequest:
     #: keeps their plans identical.
     style_policy: StylePolicy | None = None
 
+    #: The reference this project is styled after, recorded so the plan can say
+    #: so. The planner never resolves it and never selects it -- the candidate
+    #: list it is handed has already had it removed (see
+    #: ``domain.reference.without_reference``). It is here for provenance, and
+    #: because a request that mentions a reference should be able to prove which
+    #: one without the plan carrying a media id into the renderer.
+    reference_media_id: MediaId | None = None
+
     # --- music (Phase 7) ---
     #: The track to lay under the edit, if the caller chose one. The planner
     #: needs the id to write the cue; it never sees a path or a storage key.

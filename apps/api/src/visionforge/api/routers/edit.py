@@ -27,6 +27,7 @@ from visionforge.api.dependencies import (
     get_llm_run_repo,
     get_media_repo,
     get_media_service,
+    get_project_repo,
     get_session,
     require_project,
 )
@@ -35,9 +36,13 @@ from visionforge.api.schemas.edit import (
     EditPlanListResponse,
     EditPlanSummary,
     ManualPlanCreateRequest,
+    MeasurementResponse,
     MusicRequest,
     PlanCreateRequest,
     PlannerCapabilities,
+    ReferenceProfileResponse,
+    ReferenceRequest,
+    ReferenceResponse,
     RenderCreateRequest,
     RenderListResponse,
     RenderResponse,
@@ -46,6 +51,7 @@ from visionforge.api.serializers import serialize_edit_plan, serialize_render
 from visionforge.application.edit_service import EditService
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import DOWNLOAD_URL_TTL_S, MediaService
+from visionforge.application.reference_service import PROFILE_ANALYZERS, ReferenceService
 from visionforge.domain.analysis import AnalyzerName
 from visionforge.domain.beats import (
     MAX_BPM,
@@ -81,7 +87,9 @@ from visionforge.domain.jobs import JobType
 from visionforge.domain.llm import LlmProvider
 from visionforge.domain.llm_planner import PlannerMode
 from visionforge.domain.planner import ClipOrder, PlanRequest
+from visionforge.domain.policy import StyleStrength, blend
 from visionforge.domain.prompts import PROMPT_VERSION
+from visionforge.domain.reference import Measurement, ReferenceProfile
 from visionforge.domain.render import RenderStatus
 from visionforge.domain.style import FPS_PRESETS, STYLE_PROFILES, QualityPreset, profile_for
 from visionforge.infra.db.models import Project
@@ -89,6 +97,7 @@ from visionforge.infra.db.repositories import (
     EditPlanRepository,
     LlmRunRepository,
     MediaRepository,
+    ProjectRepository,
 )
 from visionforge.infra.llm import describe_capabilities
 
@@ -179,6 +188,7 @@ async def create_edit_plan(
     project: Project = Depends(require_project),
     factory: EditServiceFactory = Depends(get_edit_service_factory),
     repo: MediaRepository = Depends(get_media_repo),
+    projects: ProjectRepository = Depends(get_project_repo),
 ) -> EditPlanDetail:
     """Generate and persist an edit plan from the project's analysed media.
 
@@ -194,6 +204,13 @@ async def create_edit_plan(
     left to be inferred later from which planner's name it carries.
     """
     profile = profile_for(body.style)
+
+    # The reference is read from the project, never from the request: which clip
+    # is the reference is server state, so a caller cannot aim one plan at
+    # another project's media and read its measurements out of the result.
+    reference = ReferenceService(projects, repo)
+    reference_profile = await reference.profile_for_project(project)
+    policy = blend(profile, reference_profile, body.style_strength)
 
     # A style supplies defaults only where the caller stated nothing. An
     # explicit value always wins, including one that happens to equal the
@@ -229,6 +246,8 @@ async def create_edit_plan(
         quality=body.quality,
         style=body.style,
         request_text=body.request_text,
+        style_policy=policy,
+        reference_media_id=ReferenceService.reference_id(project),
         music_media_id=media_id_from(body.music.media_id) if body.music else None,
         music_duration_ms=music_duration_ms,
         beats=beats,
@@ -515,3 +534,119 @@ def _as_str(value: object) -> str | None:
 
 
 __all__ = ["PRESET_DIMENSIONS", "AudioMode", "ClipOrder", "FitMode", "router"]
+
+
+# ----------------------------------------------------------- reference (P8)
+def _profile_response(
+    media_id: UUID, profile: ReferenceProfile, suggests_beat_sync: bool
+) -> ReferenceProfileResponse:
+    """Serialise a profile. Nulls stay null; nothing is defaulted on the way out."""
+
+    def measured(value: Measurement | None) -> MeasurementResponse | None:
+        return (
+            MeasurementResponse(value=round(value.value, 4), confidence=round(value.confidence, 3))
+            if value
+            else None
+        )
+
+    return ReferenceProfileResponse(
+        media_id=media_id,
+        version=profile.version,
+        duration_ms=profile.source_duration_ms,
+        confidence=profile.confidence,
+        usable=profile.is_usable,
+        pacing=profile.pacing.value if profile.pacing else None,
+        scene_count=profile.scene_count,
+        shot_ms=measured(profile.shot_ms),
+        shot_ms_p25=profile.shot_ms_p25,
+        shot_ms_p75=profile.shot_ms_p75,
+        cut_rate=measured(profile.cut_rate),
+        luminance=measured(profile.luminance),
+        contrast=measured(profile.contrast),
+        saturation=measured(profile.saturation),
+        motion=measured(profile.motion),
+        bpm=profile.bpm,
+        beat_confidence=profile.beat_confidence,
+        beat_sync=measured(profile.beat_sync),
+        suggests_beat_sync=suggests_beat_sync,
+    )
+
+
+async def _reference_response(
+    service: ReferenceService, project: Project, repo: MediaRepository
+) -> ReferenceResponse:
+    media_id = ReferenceService.reference_id(project)
+    if media_id is None:
+        return ReferenceResponse()
+
+    profile = await service.profile_for_project(project)
+    if profile is None:
+        return ReferenceResponse(
+            media_id=media_id,
+            pending_analyzers=[a.value for a in PROFILE_ANALYZERS],
+        )
+
+    # What is still missing, so a client can say "analyse it" instead of showing
+    # an empty profile and leaving the user to guess why.
+    present = await repo.analysis_payloads(media_id, PROFILE_ANALYZERS)
+    pending = [a.value for a in PROFILE_ANALYZERS if a not in present]
+
+    suggests = blend(profile_for(None), profile, StyleStrength.FULL).suggests_beat_sync
+    return ReferenceResponse(
+        media_id=media_id,
+        pending_analyzers=pending,
+        profile=_profile_response(media_id, profile, suggests),
+    )
+
+
+@router.get("/projects/{project_id}/reference", response_model=ReferenceResponse)
+async def get_reference(
+    project: Project = Depends(require_project),
+    projects: ProjectRepository = Depends(get_project_repo),
+    repo: MediaRepository = Depends(get_media_repo),
+) -> ReferenceResponse:
+    """The project's reference clip and what it measures as.
+
+    The profile is recomputed here from the reference's analysis rows rather
+    than stored, so it can never be stale against a re-analysis.
+    """
+    return await _reference_response(ReferenceService(projects, repo), project, repo)
+
+
+@router.put("/projects/{project_id}/reference", response_model=ReferenceResponse)
+async def set_reference(
+    body: ReferenceRequest,
+    project: Project = Depends(require_project),
+    projects: ProjectRepository = Depends(get_project_repo),
+    repo: MediaRepository = Depends(get_media_repo),
+    session: AsyncSession = Depends(get_session),
+) -> ReferenceResponse:
+    """Nominate a clip in this project as the style reference.
+
+    The id is resolved through the project before it is written, so a media id
+    belonging to someone else is a 404 -- the same answer a nonexistent id gets,
+    because a distinct "not yours" would confirm the id exists.
+    """
+    service = ReferenceService(projects, repo)
+    await service.set_reference(project, media_id_from(body.media_id))
+    await session.commit()
+    return await _reference_response(service, project, repo)
+
+
+@router.delete("/projects/{project_id}/reference", response_model=ReferenceResponse)
+async def clear_reference(
+    project: Project = Depends(require_project),
+    projects: ProjectRepository = Depends(get_project_repo),
+    repo: MediaRepository = Depends(get_media_repo),
+    session: AsyncSession = Depends(get_session),
+) -> ReferenceResponse:
+    """Stop styling this project after anything. The clip itself is untouched.
+
+    Returns the resulting state rather than 204, which is what GET and PUT on
+    this path return: a client that has just cleared the reference wants to
+    render the empty state, and making all three shapes identical means it can
+    do that from one response handler.
+    """
+    await ReferenceService(projects, repo).clear_reference(project)
+    await session.commit()
+    return ReferenceResponse()

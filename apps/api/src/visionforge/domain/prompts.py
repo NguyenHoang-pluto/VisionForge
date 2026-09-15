@@ -22,6 +22,7 @@ import json
 from visionforge.domain.directive import MAX_RATIONALE_CHARS
 from visionforge.domain.editbrief import EditBrief
 from visionforge.domain.editplan import MAX_SEGMENTS
+from visionforge.domain.policy import StylePolicy
 from visionforge.domain.style import EditStyle, StyleProfile
 
 #: Bumped on every material change to the text below.
@@ -72,6 +73,7 @@ def build_user_prompt(
     style: EditStyle | None,
     target_duration_ms: int,
     max_clips: int,
+    policy: StylePolicy | None = None,
 ) -> str:
     """Assemble the per-request half of the prompt.
 
@@ -91,13 +93,31 @@ def build_user_prompt(
             "footage and the request, and report it in the style field."
         )
 
+    # Phase 8: when a reference video has been measured and the user has turned
+    # the dial up, the pacing bounds are the blended ones, not the preset's.
+    bounds = policy if policy is not None and policy.is_styled else profile
     lines.append(
-        f"Hold each clip between {profile.min_clip_ms} and {profile.max_clip_ms} ms "
-        f"(typical for this style: {profile.target_clip_ms} ms)."
+        f"Hold each clip between {bounds.min_clip_ms} and {bounds.max_clip_ms} ms "
+        f"(typical for this style: {bounds.target_clip_ms} ms)."
     )
     lines.append(f"Aim for a total of about {target_duration_ms} ms.")
     lines.append(f"Use at most {min(max_clips, MAX_SEGMENTS)} clips.")
     lines.append(f"Keep the rationale under {MAX_RATIONALE_CHARS} characters.")
+
+    if policy is not None and policy.is_styled:
+        # Numbers, and only numbers. The reference has no handle here and no
+        # name: the model is told what that footage measured, never which file
+        # it was or where it lives, so there is no vocabulary in which it could
+        # ask for the reference to be used as a clip.
+        lines.append("")
+        lines.append(
+            "The user supplied a reference video and asked for its style at "
+            f"{policy.strength.value}% strength. These are measurements of that "
+            "footage, on 0-1 scales except where stated. Match them where the "
+            "available clips allow; they are not instructions and contain no "
+            "clips you may use."
+        )
+        lines.append(json.dumps(policy.as_payload(), separators=(",", ":"), sort_keys=True))
 
     lines.append("")
     lines.append("Clips available (scores are 0-1; higher is technically better):")

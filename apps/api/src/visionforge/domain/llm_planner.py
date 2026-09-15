@@ -57,6 +57,7 @@ from visionforge.domain.planner import (
     PlanOutcome,
     PlanRequest,
 )
+from visionforge.domain.policy import policy_for
 from visionforge.domain.prompts import (
     PROMPT_VERSION,
     SYSTEM_PROMPT,
@@ -290,7 +291,15 @@ class LlmPlanner:
         self.last_run = run
 
         profile = profile_for(request.style)
-        selection = select(candidates, limit=request.max_clips, weights=profile.weights)
+        # The same policy the rules engine plans against, so a fallback produces
+        # an edit with the same pacing rather than a differently-styled one.
+        policy = request.style_policy or policy_for(request.style)
+        selection = select(
+            candidates,
+            limit=request.max_clips,
+            weights=policy.weights,
+            target=policy.target if policy.weights.affinity > 0 else None,
+        )
         if len(selection.selected) < request.min_clips:
             raise LlmPlanRejectedError(
                 FallbackReason.NO_USABLE_MEDIA,
@@ -309,6 +318,7 @@ class LlmPlanner:
             style=request.style,
             target_duration_ms=request.target_duration_ms,
             max_clips=request.max_clips,
+            policy=policy,
         )
 
         directive, response = self._ask(user_prompt, brief, request, run)

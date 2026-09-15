@@ -72,6 +72,18 @@ class ProjectRepository:
         )
         return result.scalar_one_or_none()
 
+    async def set_reference(self, project: Project, media_id: UUID | None) -> None:
+        """Nominate, or clear, the clip this project is styled after.
+
+        Takes an already-owned ``Project`` rather than an id, so the ownership
+        check cannot be skipped by calling this instead of ``get_owned``. The
+        media id must have been resolved through ``get_in_project`` by the
+        caller for the same reason -- this method cannot tell a media id of the
+        user's from anyone else's, and does not pretend to.
+        """
+        project.reference_media_id = media_id
+        await self._session.flush()
+
     async def list_for_user(self, user_id: UUID, *, limit: int = 50) -> Sequence[Project]:
         result = await self._session.execute(
             select(Project)
@@ -99,6 +111,21 @@ class MediaRepository:
             .where(MediaAsset.id == media_id, MediaAsset.project_id == project_id)
         )
         return result.scalar_one_or_none()
+
+    async def analysis_payloads(
+        self, media_id: UUID, analyzers: Sequence[AnalyzerName]
+    ) -> dict[AnalyzerName, dict[str, Any]]:
+        """Several analyzers' newest successful payloads, in one round trip.
+
+        Building a reference profile needs four of them, and four sequential
+        awaits is three more than the work requires.
+        """
+        found: dict[AnalyzerName, dict[str, Any]] = {}
+        for analyzer in analyzers:
+            payload = await self.analysis_payload(media_id, analyzer)
+            if payload is not None:
+                found[analyzer] = payload
+        return found
 
     async def analysis_payload(
         self, media_id: UUID, analyzer: AnalyzerName

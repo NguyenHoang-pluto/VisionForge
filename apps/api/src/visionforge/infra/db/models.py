@@ -101,6 +101,18 @@ class Project(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     settings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
+    #: The clip this project is being styled after, if the user nominated one
+    #: (Phase 8). ``ON DELETE SET NULL``: deleting the media must clear the
+    #: pointer rather than leave an id that resolves to nothing.
+    #:
+    #: The profile derived from it is *not* stored. It is recomputed from the
+    #: reference's analysis rows on read, which is only safe because the
+    #: derivation is deterministic -- and being derived means it can never go
+    #: stale against a re-analysis.
+    reference_media_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="SET NULL"), nullable=True
+    )
+
     owner: Mapped[User] = relationship(back_populates="projects")
     media: Mapped[list[MediaAsset]] = relationship(
         back_populates="project", cascade="all, delete-orphan"

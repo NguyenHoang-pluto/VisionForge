@@ -44,6 +44,7 @@ from visionforge.domain.planner import (
     PlanOutcome,
     PlanRequest,
 )
+from visionforge.domain.reference import without_reference
 from visionforge.domain.selection import Candidate, SelectionResult
 
 logger = logging.getLogger(__name__)
@@ -190,7 +191,13 @@ class EditService:
                 hint="Upload media and run analysis before generating an edit.",
             )
 
-        candidates = [build_candidate(record) for record in records]
+        # The reference is the user's own media, and it is still not footage
+        # for this edit: see ``without_reference``. Removed here, where
+        # candidates are built, so every planner is covered by one line.
+        candidates = without_reference(
+            [build_candidate(record) for record in records],
+            request.reference_media_id,
+        )
 
         try:
             # On a worker thread: the rules engine does not need it, but an LLM

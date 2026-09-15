@@ -38,6 +38,7 @@ from typing import Any
 
 from visionforge.domain.beats import MIN_BEAT_CONFIDENCE, BeatGrid
 from visionforge.domain.ids import MediaId
+from visionforge.domain.selection import Candidate
 
 #: Bumped whenever the meaning of a field changes, so a stored or cached profile
 #: from an older build is recognisable rather than silently misread. The profile
@@ -432,6 +433,26 @@ def profile_from(
     )
 
 
+def without_reference(
+    candidates: list[Candidate], reference_media_id: MediaId | None
+) -> list[Candidate]:
+    """Drop the reference from the footage a plan may choose from.
+
+    Style transfer here means "cut my clips the way that clip was cut". It has
+    never meant "put that clip in my edit", and a reference that was silently
+    eligible for selection would do exactly that -- most often winning, since a
+    professionally-cut reference outscores a user's phone footage on every
+    usability signal the ranker has.
+
+    Applied where candidates are built, so it covers the rules engine and the
+    model alike: neither can select what it was never handed, and the model is
+    additionally never given a handle for it.
+    """
+    if reference_media_id is None:
+        return candidates
+    return [c for c in candidates if c.media_id != reference_media_id]
+
+
 __all__ = [
     "MIN_BEAT_CONFIDENCE",
     "MIN_CUTS_FOR_BEAT_TENDENCY",
@@ -443,4 +464,5 @@ __all__ = [
     "beat_sync_tendency",
     "pacing_for",
     "profile_from",
+    "without_reference",
 ]
