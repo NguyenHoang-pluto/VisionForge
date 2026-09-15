@@ -339,7 +339,13 @@ def scenario_plan(project_id: str, track_id: str, beats: dict) -> dict:
     )
 
     # The claim, checked on the finished plan: every cut lands on a beat.
-    period_ms = 60_000.0 / float(sync.get("bpm", TRACK_BPM))
+    #
+    # Against the period the plan *publishes*, not one recomputed from its BPM.
+    # The reported BPM is rounded to two decimals for readability, and at 120 BPM
+    # that is a 0.02 ms error per beat -- invisible on one cut and 0.8 ms after
+    # forty, which is the tolerance itself. The planner works in the exact
+    # period, so the check has to as well.
+    period_ms = float(sync.get("beat_period_ms") or 60_000.0 / float(sync.get("bpm", TRACK_BPM)))
     cursor = 0
     worst = 0.0
     for segment in sorted(document["segments"], key=lambda s: s["order"]):
