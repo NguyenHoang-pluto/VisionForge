@@ -31,6 +31,7 @@ from uuid import UUID
 
 from visionforge.domain.errors import PermanentError
 from visionforge.domain.ids import MediaId, ProjectId
+from visionforge.domain.media import MediaKind, MediaStatus
 
 # --------------------------------------------------------------------- limits
 #: Bounds every plan is checked against. These are product limits, not guesses:
@@ -234,7 +235,24 @@ class EditPlan:
 
     @property
     def source_media_ids(self) -> tuple[MediaId, ...]:
+        """The video sources, in segment order. Unchanged by Phase 7."""
         return tuple(segment.media_id for segment in self.segments)
+
+    @property
+    def referenced_media_ids(self) -> tuple[MediaId, ...]:
+        """Every asset this plan names, deduplicated, order preserved.
+
+        What the render worker must resolve and download -- which is the video
+        sources *and* the music bed. Separate from ``source_media_ids`` because
+        that one means "the clips", and several callers reasonably want only
+        those; a worker fetching bytes wants all of them, and the difference is
+        exactly the bug where the music file is validated and then never
+        downloaded.
+        """
+        ids = list(dict.fromkeys(self.source_media_ids))
+        if self.music is not None and self.music.media_id not in ids:
+            ids.append(self.music.media_id)
+        return tuple(ids)
 
     @property
     def total_duration_ms(self) -> int:
@@ -344,6 +362,43 @@ class MediaFact:
     #: project-owned audio files, so pointing a cue at the soundtrack of a video
     #: is a different feature and is refused here rather than half-working.
     is_audio_asset: bool = False
+
+    @classmethod
+    def from_media(
+        cls,
+        *,
+        media_id: MediaId,
+        project_id: ProjectId,
+        kind: MediaKind,
+        status: MediaStatus,
+        duration_ms: int | None,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> MediaFact:
+        """The one place an asset's kind and status become planning facts.
+
+        Both the planner's service and the render worker need this mapping, and
+        before Phase 7 both wrote it out inline. That was survivable with one
+        derived flag; with two it is a guarantee that they will disagree the
+        first time a third is added -- and the two callers sit on opposite sides
+        of the validation gate, so a disagreement would mean a plan that
+        validates at creation and fails at render.
+
+        Note what "usable" means on each axis. A video is renderable when it is
+        ready; an audio file is a music source when it is ready. A video with an
+        audio stream is neither a music source nor an error -- it is simply not
+        what a cue may point at.
+        """
+        ready = status is MediaStatus.READY
+        return cls(
+            media_id=media_id,
+            project_id=project_id,
+            is_renderable=ready and kind is MediaKind.VIDEO,
+            duration_ms=duration_ms,
+            width=width,
+            height=height,
+            is_audio_asset=ready and kind is MediaKind.AUDIO,
+        )
 
 
 def validate_plan(plan: EditPlan, media_facts: dict[MediaId, MediaFact]) -> list[PlanViolation]:

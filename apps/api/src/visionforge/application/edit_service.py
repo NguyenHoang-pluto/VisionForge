@@ -28,6 +28,7 @@ from visionforge.domain.analysis import AnalysisStatus, AnalyzerName
 from visionforge.domain.editplan import (
     Cut,
     MediaFact,
+    MusicCue,
     OutputSpec,
     PlanInvalidError,
     plan_from_cuts,
@@ -264,6 +265,7 @@ class EditService:
         project_id: ProjectId,
         cuts: Sequence[Cut],
         output: OutputSpec,
+        music: MusicCue | None = None,
         derived_from: UUID | None = None,
     ) -> Any:
         """Persist an edit the user assembled themselves.
@@ -291,6 +293,9 @@ class EditService:
             project_id=project_id,
             cuts=cuts,
             output=output,
+            # A hand-placed bed goes through the same validator as a planned
+            # one: the gate does not care who chose the numbers.
+            music=music,
             metadata={
                 "source": "manual",
                 # Which automatic plan this was cut from, when it was cut from
@@ -355,10 +360,11 @@ def _media_facts(project_id: ProjectId, records: Sequence[MediaRecord]) -> dict[
     planner produced.
     """
     return {
-        record.media_id: MediaFact(
+        record.media_id: MediaFact.from_media(
             media_id=record.media_id,
             project_id=project_id,
-            is_renderable=(record.status is MediaStatus.READY and record.kind is MediaKind.VIDEO),
+            kind=record.kind,
+            status=record.status,
             duration_ms=record.duration_ms,
             width=record.width,
             height=record.height,

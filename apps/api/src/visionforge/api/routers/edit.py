@@ -25,6 +25,7 @@ from visionforge.api.dependencies import (
     get_job_dispatcher,
     get_llm_provider,
     get_llm_run_repo,
+    get_media_repo,
     get_media_service,
     get_session,
     require_project,
@@ -34,6 +35,7 @@ from visionforge.api.schemas.edit import (
     EditPlanListResponse,
     EditPlanSummary,
     ManualPlanCreateRequest,
+    MusicRequest,
     PlanCreateRequest,
     PlannerCapabilities,
     RenderCreateRequest,
@@ -44,17 +46,31 @@ from visionforge.api.serializers import serialize_edit_plan, serialize_render
 from visionforge.application.edit_service import EditService
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import DOWNLOAD_URL_TTL_S, MediaService
+from visionforge.domain.analysis import AnalyzerName
+from visionforge.domain.beats import (
+    MAX_BPM,
+    MIN_BEAT_CONFIDENCE,
+    MIN_BPM,
+    BeatGrid,
+    grid_from_payload,
+)
 from visionforge.domain.editbrief import MAX_REQUEST_CHARS
 from visionforge.domain.editplan import (
+    MAX_FADE_MS,
+    MAX_GAIN,
+    MAX_MUSIC_MS,
     MAX_OUTPUT_MS,
     MAX_SEGMENT_MS,
     MAX_SEGMENTS,
+    MIN_GAIN,
+    MIN_MUSIC_MS,
     MIN_OUTPUT_MS,
     MIN_SEGMENT_MS,
     AspectRatio,
     AudioMode,
     Cut,
     FitMode,
+    MusicCue,
     OutputSpec,
     PlanInvalidError,
     media_id_from,
@@ -69,7 +85,11 @@ from visionforge.domain.prompts import PROMPT_VERSION
 from visionforge.domain.render import RenderStatus
 from visionforge.domain.style import FPS_PRESETS, STYLE_PROFILES, QualityPreset, profile_for
 from visionforge.infra.db.models import Project
-from visionforge.infra.db.repositories import EditPlanRepository, LlmRunRepository
+from visionforge.infra.db.repositories import (
+    EditPlanRepository,
+    LlmRunRepository,
+    MediaRepository,
+)
 from visionforge.infra.llm import describe_capabilities
 
 logger = logging.getLogger(__name__)
@@ -133,6 +153,19 @@ async def planner_capabilities(
             "min_total_ms": MIN_OUTPUT_MS,
             "max_total_ms": MAX_OUTPUT_MS,
         },
+        audio_bounds={
+            "min_gain": MIN_GAIN,
+            "max_gain": MAX_GAIN,
+            "min_music_ms": MIN_MUSIC_MS,
+            "max_music_ms": MAX_MUSIC_MS,
+            "max_fade_ms": MAX_FADE_MS,
+        },
+        beat_sync={
+            "analyzer": AnalyzerName.BEATS.value,
+            "min_bpm": MIN_BPM,
+            "max_bpm": MAX_BPM,
+            "min_confidence": MIN_BEAT_CONFIDENCE,
+        },
     )
 
 
@@ -145,6 +178,7 @@ async def create_edit_plan(
     body: PlanCreateRequest,
     project: Project = Depends(require_project),
     factory: EditServiceFactory = Depends(get_edit_service_factory),
+    repo: MediaRepository = Depends(get_media_repo),
 ) -> EditPlanDetail:
     """Generate and persist an edit plan from the project's analysed media.
 
@@ -170,6 +204,16 @@ async def create_edit_plan(
         ClipOrder.SEQUENCE if profile.prefer_sequence_order else ClipOrder.SCORE_DESC
     )
 
+    # The track's own facts -- its length and its analysed beat grid -- are read
+    # here from the database rather than taken from the request. The client
+    # names a track it owns; everything the planner then knows about that track
+    # comes from the server.
+    music_duration_ms, beats = (
+        await _music_facts(repo, ProjectId(project.id), body.music.media_id)
+        if body.music is not None
+        else (None, None)
+    )
+
     request = PlanRequest(
         project_id=ProjectId(project.id),
         target_duration_ms=body.target_duration_ms or profile.default_duration_ms,
@@ -185,6 +229,13 @@ async def create_edit_plan(
         quality=body.quality,
         style=body.style,
         request_text=body.request_text,
+        music_media_id=media_id_from(body.music.media_id) if body.music else None,
+        music_duration_ms=music_duration_ms,
+        beats=beats,
+        beat_sync=body.beat_sync,
+        music_gain=body.music.volume if body.music else 0.7,
+        music_fade_in_ms=body.music.fade_in_ms if body.music else 0,
+        music_fade_out_ms=body.music.fade_out_ms if body.music else 1_500,
     )
 
     service, _selection = factory.for_request(
@@ -242,6 +293,7 @@ async def create_manual_edit_plan(
         fit=body.fit,
         audio=body.audio,
         quality=body.quality,
+        source_gain=body.source_gain,
     )
     cuts = [
         Cut(
@@ -258,6 +310,7 @@ async def create_manual_edit_plan(
             project_id=ProjectId(project.id),
             cuts=cuts,
             output=output,
+            music=_cue_from(body.music),
             derived_from=body.derived_from_edit_plan_id,
         )
     except PlanInvalidError as exc:
@@ -410,6 +463,51 @@ async def list_llm_runs(
         ],
         "total": len(rows),
     }
+
+
+def _cue_from(body: MusicRequest | None) -> MusicCue | None:
+    """The request's music block as a domain cue.
+
+    A field-by-field copy with no defaulting and no inference: the route's job
+    is to translate, and anything it decided for the caller here would be a
+    second place where an edit gets its character.
+    """
+    if body is None:
+        return None
+    return MusicCue(
+        media_id=media_id_from(body.media_id),
+        source_in_ms=body.source_in_ms,
+        source_out_ms=body.source_out_ms,
+        timeline_start_ms=body.timeline_start_ms,
+        gain=body.volume,
+        fade_in_ms=body.fade_in_ms,
+        fade_out_ms=body.fade_out_ms,
+    )
+
+
+async def _music_facts(
+    repo: MediaRepository, project_id: ProjectId, media_id: UUID
+) -> tuple[int | None, BeatGrid | None]:
+    """How long the chosen track is, and what its beats were measured to be.
+
+    Read from the database, never from the request. A client that could state
+    its own track length could state one longer than the file, and a client that
+    could state its own beat grid could make the planner cut to a tempo nothing
+    in the audio has.
+
+    Missing analysis returns ``None``, which the planner treats exactly as it
+    treats an untrusted grid: plan the way Phase 4 planned. A track that has not
+    been analysed yet is a reason to skip beat-syncing, not to refuse the edit.
+    """
+    row = await repo.get_in_project(media_id, project_id)
+    if row is None:
+        # Not this project's, or not a media id at all. Left to the plan
+        # validator, which reports it as a violation the editor can show rather
+        # than a bare 404 from a field the user never filled in.
+        return None, None
+
+    payload = await repo.analysis_payload(media_id, AnalyzerName.BEATS)
+    return row.duration_ms, grid_from_payload(payload)
 
 
 def _as_str(value: object) -> str | None:

@@ -108,6 +108,17 @@ def step_prepare(ctx: JobContext) -> None:
     render.status = RenderStatus.RENDERING
 
 
+#: Fallback extension when a storage key carries none, by kind. FFmpeg sniffs
+#: content rather than trusting a name, but a *wrong* extension is worse than a
+#: missing one -- handing it ``track.mp4`` for an MP3 makes the demuxer's first
+#: guess the wrong one.
+_DEFAULT_SUFFIX: dict[MediaKind, str] = {
+    MediaKind.VIDEO: ".mp4",
+    MediaKind.AUDIO: ".mp3",
+    MediaKind.IMAGE: ".jpg",
+}
+
+
 def _resolve_media(
     ctx: JobContext, plan: EditPlan
 ) -> tuple[dict[MediaId, MediaFact], dict[MediaId, tuple[str, str]]]:
@@ -115,9 +126,16 @@ def _resolve_media(
 
     Returns the facts the validator needs and, separately, the storage key to
     download. Keeping them apart matters: the validator must never see a storage
-    key, or a future check could start depending on one.
+    key, or a future check could start depending on one -- and the plan, which a
+    client can influence, never carries either.
+
+    Covers the music bed as well as the clips (``referenced_media_ids``). The
+    ownership check is still the validator's: the rows are fetched by id, the
+    project each one actually belongs to becomes a ``MediaFact``, and
+    ``assert_valid`` rejects a cue pointing at another project *before* this
+    worker downloads a byte of it.
     """
-    media_ids = list(dict.fromkeys(plan.source_media_ids))
+    media_ids = list(plan.referenced_media_ids)
     rows = (
         ctx.session.execute(select(MediaAsset).where(MediaAsset.id.in_(media_ids))).scalars().all()
     )
@@ -131,22 +149,28 @@ def _resolve_media(
         if row is None:
             continue  # validate_plan reports this as unknown_media
 
-        proxy = ctx.session.execute(
-            select(MediaDerivative).where(
-                MediaDerivative.media_id == row.id,
-                MediaDerivative.kind == DerivativeKind.PROXY,
-            )
-        ).scalar_one_or_none()
+        kind = MediaKind(row.kind)
 
-        key = proxy.storage_key if proxy is not None else row.storage_key
-        sources[media_id] = (key, Path(key).suffix or ".mp4")
-        facts[media_id] = MediaFact(
+        # Proxy-first, for video only. Ingest never makes one for audio, so the
+        # lookup would always miss -- but asking explicitly says why, and stops
+        # a future audio derivative from silently becoming the render source.
+        key = row.storage_key
+        if kind is MediaKind.VIDEO:
+            proxy = ctx.session.execute(
+                select(MediaDerivative).where(
+                    MediaDerivative.media_id == row.id,
+                    MediaDerivative.kind == DerivativeKind.PROXY,
+                )
+            ).scalar_one_or_none()
+            if proxy is not None:
+                key = proxy.storage_key
+
+        sources[media_id] = (key, Path(key).suffix or _DEFAULT_SUFFIX.get(kind, ".mp4"))
+        facts[media_id] = MediaFact.from_media(
             media_id=media_id,
             project_id=ProjectId(row.project_id),
-            is_renderable=(
-                MediaStatus(row.status) is MediaStatus.READY
-                and MediaKind(row.kind) is MediaKind.VIDEO
-            ),
+            kind=kind,
+            status=MediaStatus(row.status),
             duration_ms=row.duration_ms,
             width=row.width,
             height=row.height,

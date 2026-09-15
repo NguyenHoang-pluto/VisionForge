@@ -6,12 +6,17 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from visionforge.domain.editbrief import MAX_REQUEST_CHARS
 from visionforge.domain.editplan import (
+    MAX_FADE_MS,
+    MAX_GAIN,
+    MAX_MUSIC_MS,
     MAX_OUTPUT_MS,
     MAX_SEGMENTS,
+    MIN_GAIN,
+    MIN_MUSIC_MS,
     MIN_OUTPUT_MS,
     AspectRatio,
     AudioMode,
@@ -22,6 +27,52 @@ from visionforge.domain.editplan import (
 from visionforge.domain.llm_planner import PlannerMode
 from visionforge.domain.planner import ClipOrder
 from visionforge.domain.style import FPS_PRESETS, EditStyle
+
+
+class MusicRequest(BaseModel):
+    """A music bed, as *intent*.
+
+    Note what is absent, and note that it is the same list absent from every
+    other request model in this API: no path, no storage key, no codec, no
+    filter string, no FFmpeg argument. A cue is a media id the caller already
+    owns plus six numbers. There is nowhere in this schema to put a token, which
+    is a stronger guarantee than sanitising one after the fact -- and it has to
+    be, because an audio filter graph runs commands exactly as readily as a
+    video one.
+
+    The bounds here are the *client-facing* ones. They deliberately repeat what
+    ``domain.editplan`` enforces rather than replacing it: this layer produces a
+    422 with a field path, which is a better error, but the plan validator still
+    runs against the real media rows and remains the authority. A value that
+    slipped past Pydantic would still be refused before anything is stored.
+    """
+
+    media_id: UUID
+    source_in_ms: int = Field(default=0, ge=0, le=MAX_MUSIC_MS)
+    source_out_ms: int = Field(gt=0, le=MAX_MUSIC_MS)
+    #: Where the bed starts in the *output*, not in the track.
+    timeline_start_ms: int = Field(default=0, ge=0, le=MAX_OUTPUT_MS)
+    #: Linear gain; 1.0 is unity. The UI shows it as a percentage.
+    volume: float = Field(default=0.7, ge=MIN_GAIN, le=MAX_GAIN)
+    fade_in_ms: int = Field(default=0, ge=0, le=MAX_FADE_MS)
+    fade_out_ms: int = Field(default=1_500, ge=0, le=MAX_FADE_MS)
+
+    @model_validator(mode="after")
+    def _range_is_a_range(self) -> MusicRequest:
+        """Cheap structural checks, so the common mistakes get a field error.
+
+        Everything that needs the *database* -- does this track exist, is it
+        audio, is it yours, is it long enough -- stays in the plan validator
+        where the media rows are. This only rejects what is wrong on its face.
+        """
+        if self.source_out_ms <= self.source_in_ms:
+            raise ValueError("source_out_ms must be greater than source_in_ms")
+        length = self.source_out_ms - self.source_in_ms
+        if length < MIN_MUSIC_MS:
+            raise ValueError(f"the cue is {length} ms; the minimum is {MIN_MUSIC_MS} ms")
+        if self.fade_in_ms + self.fade_out_ms > length:
+            raise ValueError("fade_in_ms and fade_out_ms together exceed the cue")
+        return self
 
 
 class PlanCreateRequest(BaseModel):
@@ -59,6 +110,18 @@ class PlanCreateRequest(BaseModel):
     audio: AudioMode | None = None
     order: ClipOrder | None = None
     quality: QualityPreset = QualityPreset.BALANCED
+    #: Gain on the clips' own audio, independent of the bed. Ducking dialogue
+    #: under music is the common case and must not require muting it.
+    source_gain: float = Field(default=1.0, ge=MIN_GAIN, le=MAX_GAIN)
+
+    # --- music (Phase 7) ---
+    #: The track to lay under the edit. ``None`` is a silent or source-audio
+    #: edit, which is every plan written before Phase 7.
+    music: MusicRequest | None = None
+    #: Let the track's detected beats decide clip length. Ignored when there is
+    #: no music, no analysis, or analysis the server does not trust -- in which
+    #: case the plan says so rather than pretending it applied.
+    beat_sync: bool = False
 
     @field_validator("fps")
     @classmethod
@@ -106,6 +169,11 @@ class ManualPlanCreateRequest(BaseModel):
     fit: FitMode = FitMode.COVER
     audio: AudioMode = AudioMode.NONE
     quality: QualityPreset = QualityPreset.BALANCED
+    source_gain: float = Field(default=1.0, ge=MIN_GAIN, le=MAX_GAIN)
+
+    #: The bed the editor placed, if any. Same schema as the automatic route's,
+    #: because a hand-placed cue gets no weaker a gate than a planned one.
+    music: MusicRequest | None = None
 
     #: The automatic plan this timeline was cut from, when there was one.
     derived_from_edit_plan_id: UUID | None = None
@@ -174,6 +242,15 @@ class PlannerCapabilities(BaseModel):
     #: from here is what stops a copy in the browser from silently drifting out
     #: of agreement with the validator that actually enforces them.
     segment_bounds: dict[str, int]
+
+    #: The same declaration for audio: gain range, fade ceiling, cue length.
+    #: A volume slider and two fade handles need clamping for exactly the same
+    #: reason a trim handle does.
+    audio_bounds: dict[str, float]
+    #: What beat detection reports and when the planner will act on it, so the
+    #: UI can explain a grid it has decided not to use rather than showing a
+    #: toggle that silently does nothing.
+    beat_sync: dict[str, Any]
 
 
 class EditPlanListResponse(BaseModel):

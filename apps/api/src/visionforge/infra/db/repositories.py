@@ -100,6 +100,32 @@ class MediaRepository:
         )
         return result.scalar_one_or_none()
 
+    async def analysis_payload(
+        self, media_id: UUID, analyzer: AnalyzerName
+    ) -> dict[str, Any] | None:
+        """The newest successful result from one analyzer, or ``None``.
+
+        Ordered by version so the latest wins, and filtered to ``OK`` so an
+        ``unsupported`` row -- which is a real stored answer, not a gap -- never
+        comes back as a payload a caller would try to read.
+
+        Scoped by media id alone on purpose: every caller has already resolved
+        that id through ``get_in_project``, and re-joining to projects here
+        would suggest this method is the ownership check when it is not.
+        """
+        result = await self._session.execute(
+            select(MediaAnalysis.payload)
+            .where(
+                MediaAnalysis.media_id == media_id,
+                MediaAnalysis.analyzer == analyzer,
+                MediaAnalysis.status == AnalysisStatus.OK,
+            )
+            .order_by(MediaAnalysis.analyzer_version.desc())
+            .limit(1)
+        )
+        payload = result.scalar_one_or_none()
+        return dict(payload) if payload else None
+
     async def find_by_sha256(self, project_id: UUID, sha256: str) -> MediaAsset | None:
         """Deduplication lookup, scoped to the project by the unique constraint."""
         result = await self._session.execute(
