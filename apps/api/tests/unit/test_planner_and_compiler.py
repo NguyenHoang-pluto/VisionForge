@@ -327,9 +327,33 @@ class TestFilterGraph:
         spec = TestRenderSpec()._spec(2, audio=AudioMode.SOURCE)
         graph = build_filter_graph(spec)
 
-        assert graph.count("atrim=") == 2
+        # Two per-segment trims, plus the one that cuts the finished audio to
+        # the video's length.
+        assert graph.count("atrim=") == 3
         assert "aformat=sample_rates=48000" in graph
-        assert "concat=n=2:v=1:a=1[vout][aout]" in graph
+
+    def test_video_and_audio_are_concatenated_separately(self) -> None:
+        """Phase 7 split what Phase 4 did in one filter.
+
+        A single ``concat=v=1:a=1`` emits both streams at once, which leaves
+        nowhere to mix a music bed in afterwards. Splitting them changes no
+        output when there is no music -- same segments, same order, same rate --
+        and is what makes the mix expressible when there is.
+        """
+        spec = TestRenderSpec()._spec(2, audio=AudioMode.SOURCE)
+        graph = build_filter_graph(spec)
+
+        assert "concat=n=2:v=1:a=0[vout]" in graph
+        assert "concat=n=2:v=0:a=1[asrc]" in graph
+        assert "v=1:a=1" not in graph
+
+    def test_the_video_graph_is_identical_with_and_without_source_audio(self) -> None:
+        """The regression that matters: adding audio must not move a frame."""
+        silent = build_filter_graph(TestRenderSpec()._spec(3))
+        with_audio = build_filter_graph(TestRenderSpec()._spec(3, audio=AudioMode.SOURCE))
+
+        video_only = [p for p in with_audio.split(";") if "[v" in p or "[vout]" in p]
+        assert silent.split(";") == video_only
 
     def test_trim_times_are_seconds_with_millisecond_precision(self) -> None:
         """FFmpeg takes seconds; explicit formatting avoids scientific notation."""

@@ -28,6 +28,7 @@ from visionforge.domain.editplan import (
     AudioMode,
     EditPlan,
     FitMode,
+    MusicCue,
     QualityPreset,
 )
 from visionforge.domain.ids import MediaId, ProjectId
@@ -35,7 +36,13 @@ from visionforge.domain.ids import MediaId, ProjectId
 
 class TrackKind(StrEnum):
     VIDEO = "video"
+    #: The clips' own audio, following the video cuts exactly.
     AUDIO = "audio"
+    #: An independent music bed. A separate kind rather than a second AUDIO
+    #: track because the two obey different rules: source audio is cut with the
+    #: picture and has no position of its own, while music has a start, a
+    #: length and an envelope that are unrelated to where the cuts fall.
+    MUSIC = "music"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,12 +70,89 @@ class TimelineClip:
 
 
 @dataclass(frozen=True, slots=True)
-class Track:
-    kind: TrackKind
-    clips: tuple[TimelineClip, ...]
+class MusicPlacement:
+    """The music cue, laid out in timeline coordinates.
+
+    The same shape as ``TimelineClip`` -- source range plus timeline position --
+    with the envelope that only audio has. Kept as its own type rather than
+    reusing ``TimelineClip`` with optional fields, because a gain of ``None`` on
+    a video clip is a field that exists to be ignored, and those accumulate.
+
+    Still FFmpeg-free: a gain is a number, a fade is a duration. Nothing here
+    knows what ``afade`` is called.
+    """
+
+    media_id: MediaId
+    source_in_ms: int
+    source_out_ms: int
+    timeline_start_ms: int
+    gain: float
+    fade_in_ms: int
+    fade_out_ms: int
 
     @property
     def duration_ms(self) -> int:
+        return self.source_out_ms - self.source_in_ms
+
+    @property
+    def timeline_end_ms(self) -> int:
+        return self.timeline_start_ms + self.duration_ms
+
+    def clipped_to(self, timeline_ms: int) -> MusicPlacement:
+        """The cue as it will actually sound, given a timeline of this length.
+
+        Music that outlasts the picture is normal and is accepted by the
+        validator; this is where it stops. Trimming in the timeline rather than
+        in the filter graph means the stored timeline shows what was heard, and
+        the compiler is handed a cue that already fits.
+
+        The fade-out is pulled back with the end, so a bed cut short still fades
+        rather than stopping abruptly -- and is shortened if the truncation
+        leaves no room for it.
+        """
+        if timeline_ms <= 0 or self.timeline_end_ms <= timeline_ms:
+            return self
+
+        audible = max(0, timeline_ms - self.timeline_start_ms)
+        source_out = self.source_in_ms + audible
+        fade_out = min(self.fade_out_ms, max(0, audible - self.fade_in_ms))
+        return MusicPlacement(
+            media_id=self.media_id,
+            source_in_ms=self.source_in_ms,
+            source_out_ms=source_out,
+            timeline_start_ms=self.timeline_start_ms,
+            gain=self.gain,
+            fade_in_ms=min(self.fade_in_ms, audible),
+            fade_out_ms=fade_out,
+        )
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "media_id": str(self.media_id),
+            "source_in_ms": self.source_in_ms,
+            "source_out_ms": self.source_out_ms,
+            "timeline_start_ms": self.timeline_start_ms,
+            "timeline_end_ms": self.timeline_end_ms,
+            "duration_ms": self.duration_ms,
+            "gain": round(self.gain, 4),
+            "fade_in_ms": self.fade_in_ms,
+            "fade_out_ms": self.fade_out_ms,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Track:
+    kind: TrackKind
+    clips: tuple[TimelineClip, ...]
+    #: Present only on a ``MUSIC`` track. A track carries either clips or a
+    #: cue, never both, which is what keeps "which track is this" answerable
+    #: from the kind alone.
+    music: MusicPlacement | None = None
+
+    @property
+    def duration_ms(self) -> int:
+        if self.music is not None:
+            return self.music.timeline_end_ms
         return max((clip.timeline_end_ms for clip in self.clips), default=0)
 
 
@@ -92,6 +176,9 @@ class Timeline:
     #: is an editorial intention, and only ``build_render_spec`` knows what it
     #: costs in CRF and preset. The timeline stays FFmpeg-free.
     quality: QualityPreset = QualityPreset.BALANCED
+    #: Gain on the clips' own audio. Still not an encoder setting: a number the
+    #: compiler turns into a filter, the way ``quality`` becomes a CRF.
+    source_gain: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -102,8 +189,27 @@ class Timeline:
         raise ValueError("timeline has no video track")
 
     @property
+    def music_track(self) -> Track | None:
+        for track in self.tracks:
+            if track.kind is TrackKind.MUSIC:
+                return track
+        return None
+
+    @property
+    def music(self) -> MusicPlacement | None:
+        track = self.music_track
+        return track.music if track else None
+
+    @property
     def duration_ms(self) -> int:
-        return max((track.duration_ms for track in self.tracks), default=0)
+        """How long the output is.
+
+        The **video** track decides, not the longest track. A music bed that
+        outlasts the picture does not extend the render -- there would be
+        nothing to show during it -- and ``MusicPlacement.clipped_to`` has
+        already cut the cue to this length by the time a timeline exists.
+        """
+        return self.video_track.duration_ms
 
     def as_payload(self) -> dict[str, Any]:
         return {
@@ -115,6 +221,7 @@ class Timeline:
             "fit": self.fit.value,
             "audio": self.audio.value,
             "duration_ms": self.duration_ms,
+            "source_gain": round(self.source_gain, 4),
             "tracks": [
                 {
                     "kind": track.kind.value,
@@ -130,6 +237,7 @@ class Timeline:
                         }
                         for clip in track.clips
                     ],
+                    "music": track.music.as_payload() if track.music else None,
                 }
                 for track in self.tracks
             ],
@@ -169,6 +277,19 @@ def compile_timeline(plan: EditPlan) -> Timeline:
         # video clips, so that independent audio editing is an extension later.
         tracks.append(Track(kind=TrackKind.AUDIO, clips=tuple(clips)))
 
+    # The extension that "later" turned into. Music is laid out against the
+    # finished video length rather than against the cuts, because it has a
+    # position of its own -- and is cut to that length here, so the timeline
+    # records what will be heard rather than what was asked for.
+    if plan.music is not None:
+        tracks.append(
+            Track(
+                kind=TrackKind.MUSIC,
+                clips=(),
+                music=_place_music(plan.music, timeline_ms=offset),
+            )
+        )
+
     return Timeline(
         project_id=plan.project_id,
         tracks=tuple(tracks),
@@ -179,12 +300,26 @@ def compile_timeline(plan: EditPlan) -> Timeline:
         fit=plan.output.fit,
         audio=plan.output.audio,
         quality=plan.output.quality,
+        source_gain=plan.output.source_gain,
         metadata={
             "planner": plan.planner,
             "planner_version": plan.planner_version,
             "segment_count": len(clips),
+            "has_music": plan.music is not None,
         },
     )
+
+
+def _place_music(cue: MusicCue, *, timeline_ms: int) -> MusicPlacement:
+    return MusicPlacement(
+        media_id=cue.media_id,
+        source_in_ms=cue.source_in_ms,
+        source_out_ms=cue.source_out_ms,
+        timeline_start_ms=cue.timeline_start_ms,
+        gain=cue.gain,
+        fade_in_ms=cue.fade_in_ms,
+        fade_out_ms=cue.fade_out_ms,
+    ).clipped_to(timeline_ms)
 
 
 # --------------------------------------------------------------- render spec
@@ -227,6 +362,29 @@ class RenderSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class RenderMusic:
+    """The music bed, resolved to an input index and a local file.
+
+    ``input_index`` points into ``RenderSpec.inputs``, so the music is an
+    ordinary FFmpeg input like any clip -- it just happens to be the only one
+    whose audio is used without its video. ``local_path`` is filled by the
+    worker from a storage key it derived itself, exactly as for a video source.
+    """
+
+    input_index: int
+    source_in_ms: int
+    source_out_ms: int
+    timeline_start_ms: int
+    gain: float
+    fade_in_ms: int
+    fade_out_ms: int
+
+    @property
+    def duration_ms(self) -> int:
+        return self.source_out_ms - self.source_in_ms
+
+
+@dataclass(frozen=True, slots=True)
 class RenderSpec:
     """Everything the encoder needs, and nothing it does not.
 
@@ -252,11 +410,22 @@ class RenderSpec:
     preset: str = "veryfast"
     pixel_format: str = "yuv420p"
     audio_bitrate_kbps: int = 128
+    #: Whether the clips' own audio is concatenated into the output.
     include_audio: bool = False
+    #: Gain applied to that source audio. Ignored when it is not included.
+    source_gain: float = 1.0
+    #: The music bed, if there is one. Independent of ``include_audio``: music
+    #: alone, source alone, both, or neither are all valid outputs.
+    music: RenderMusic | None = None
 
     @property
     def duration_ms(self) -> int:
         return sum(segment.duration_ms for segment in self.segments)
+
+    @property
+    def has_audio_output(self) -> bool:
+        """Whether the encode produces an audio stream at all."""
+        return self.include_audio or self.music is not None
 
     def as_payload(self) -> dict[str, Any]:
         """Operational summary. Local paths are omitted deliberately.
@@ -271,7 +440,7 @@ class RenderSpec:
             "fps": self.fps,
             "fit": self.fit.value,
             "video_codec": self.video_codec.value,
-            "audio_codec": self.audio_codec.value if self.include_audio else None,
+            "audio_codec": self.audio_codec.value if self.has_audio_output else None,
             "container": self.container.value,
             "crf": self.crf,
             "preset": self.preset,
@@ -279,6 +448,21 @@ class RenderSpec:
             "input_count": len(self.inputs),
             "segment_count": len(self.segments),
             "duration_ms": self.duration_ms,
+            "source_audio": self.include_audio,
+            "source_gain": round(self.source_gain, 4) if self.include_audio else None,
+            # What was mixed, not where it came from: a storage key is
+            # worker-local and is not something to hand out on a render row.
+            "music": (
+                {
+                    "duration_ms": self.music.duration_ms,
+                    "timeline_start_ms": self.music.timeline_start_ms,
+                    "gain": round(self.music.gain, 4),
+                    "fade_in_ms": self.music.fade_in_ms,
+                    "fade_out_ms": self.music.fade_out_ms,
+                }
+                if self.music
+                else None
+            ),
         }
 
 
@@ -298,7 +482,11 @@ def build_render_spec(
     two segments, so the file is decoded once.
     """
     clips = timeline.video_track.clips
-    missing = [clip.media_id for clip in clips if clip.media_id not in local_paths]
+    music = timeline.music
+    needed = [clip.media_id for clip in clips]
+    if music is not None:
+        needed.append(music.media_id)
+    missing = [media_id for media_id in needed if media_id not in local_paths]
     if missing:
         raise ValueError(f"no local path resolved for media: {missing}")
 
@@ -324,6 +512,30 @@ def build_render_spec(
         for clip in clips
     )
 
+    # The music file becomes an input like any other. If the same asset were
+    # somehow also a video source it would be decoded once and used twice,
+    # which is the same deduplication the clips get.
+    render_music: RenderMusic | None = None
+    if music is not None:
+        if music.media_id not in input_index:
+            input_index[music.media_id] = len(inputs)
+            inputs.append(
+                RenderInput(
+                    media_id=music.media_id,
+                    index=len(inputs),
+                    local_path=local_paths[music.media_id],
+                )
+            )
+        render_music = RenderMusic(
+            input_index=input_index[music.media_id],
+            source_in_ms=music.source_in_ms,
+            source_out_ms=music.source_out_ms,
+            timeline_start_ms=music.timeline_start_ms,
+            gain=music.gain,
+            fade_in_ms=music.fade_in_ms,
+            fade_out_ms=music.fade_out_ms,
+        )
+
     # The only place a quality *level* becomes encoder *settings*. Imported
     # here rather than at module scope because ``style`` imports ``editplan``,
     # and a top-level import would make the domain's dependency graph circular.
@@ -342,13 +554,17 @@ def build_render_spec(
         crf=crf,
         preset=preset,
         include_audio=timeline.audio is AudioMode.SOURCE,
+        source_gain=timeline.source_gain,
+        music=render_music,
     )
 
 
 __all__ = [
     "AudioCodec",
     "Container",
+    "MusicPlacement",
     "RenderInput",
+    "RenderMusic",
     "RenderSegment",
     "RenderSpec",
     "Timeline",
