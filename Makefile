@@ -7,14 +7,14 @@ WEB_DIR := apps/web
 
 .PHONY: help setup infra-up infra-down infra-reset infra-status migrate \
         api web worker-cpu worker-gpu worker-render \
-        e2e e2e-analysis e2e-edit e2e-llm e2e-editor \
+        e2e e2e-analysis e2e-edit e2e-llm e2e-editor e2e-music \
         test test-integration lint format typecheck \
         contracts web-lint web-build compose-check check
 
 help:
 	@echo "setup infra-up infra-down infra-reset infra-status migrate"
 	@echo "api web worker-cpu worker-gpu worker-render"
-	@echo "e2e e2e-analysis e2e-edit e2e-llm e2e-editor"
+	@echo "e2e e2e-analysis e2e-edit e2e-llm e2e-editor e2e-music"
 	@echo "check test test-integration lint format typecheck contracts"
 	@echo "web-lint web-build compose-check"
 
@@ -80,6 +80,12 @@ e2e-llm:        # Phase 5: same stack as e2e-edit
 # through the manual route, render that.
 e2e-editor:     # Phase 6: same stack as e2e-edit
 	$(PYTHON) scripts/e2e_editor.py
+
+# Phase 7: a scored edit -- beat detection, beat-synced cuts, an audio mix, and
+# an MP4 whose audio stream is verified independently. The music is generated
+# locally by FFmpeg; nothing is downloaded.
+e2e-music:      # Phase 7: same stack as e2e-edit
+	$(PYTHON) scripts/e2e_music.py
 
 test:
 	cd $(API_DIR) && $(PYTHON) -m pytest -m "not integration and not gpu"

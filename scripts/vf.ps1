@@ -12,7 +12,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('setup', 'infra-up', 'infra-down', 'infra-reset', 'infra-status',
                  'migrate', 'api', 'web', 'worker-cpu', 'worker-gpu', 'worker-render',
-                 'e2e', 'e2e-analysis', 'e2e-edit', 'e2e-llm', 'e2e-editor',
+                 'e2e', 'e2e-analysis', 'e2e-edit', 'e2e-llm', 'e2e-editor', 'e2e-music',
                  'test', 'test-integration', 'lint', 'format', 'typecheck',
                  'contracts', 'web-lint', 'web-build', 'compose-check', 'check', 'help')]
     [string]$Command = 'help'
@@ -112,6 +112,13 @@ switch ($Command) {
         # and verifies the file against what the timeline said.
         & $Python (Join-Path $Root 'scripts\e2e_editor.py')
     }
+
+    'e2e-music' {
+        # Phase 7. Same stack again: detects the tempo of a locally generated
+        # track, plans a beat-synced cut under it, mixes the audio and verifies
+        # the MP4's audio stream independently with ffprobe.
+        & $Python (Join-Path $Root 'scripts\e2e_music.py')
+    }
     'test'             { Invoke-Api { & $Python -m pytest -m 'not integration and not gpu' } }
     'test-integration' { Invoke-Api { & $Python -m pytest -m integration } }
     'lint' {
@@ -165,6 +172,7 @@ switch ($Command) {
         Write-Host "    e2e-edit           Phase 4 acceptance test (needs api + cpu and render workers)"
         Write-Host "    e2e-llm            Phase 5 acceptance test (run with LLM on and off)"
         Write-Host "    e2e-editor         Phase 6 acceptance test (timeline editing -> render)"
+        Write-Host "    e2e-music          Phase 7 acceptance test (beats, audio mix -> render)"
         Write-Host ""
         Write-Host "  Quality"
         Write-Host "    check              Run everything CI runs"

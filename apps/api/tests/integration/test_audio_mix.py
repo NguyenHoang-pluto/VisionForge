@@ -58,27 +58,65 @@ def audio_fixtures(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
 
     specs = {
         "clip_a.mp4": [
-            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=15:duration=6",
-            "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-shortest",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=15:duration=6",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=6",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
         ],
         "clip_b.mp4": [
-            "-f", "lavfi", "-i", "smptebars=size=320x240:rate=15:duration=6",
-            "-f", "lavfi", "-i", "sine=frequency=660:duration=6",
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-shortest",
+            "-f",
+            "lavfi",
+            "-i",
+            "smptebars=size=320x240:rate=15:duration=6",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=660:duration=6",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
         ],
         # Silent video: the case where "keep the source audio" has nothing to keep.
         "clip_silent.mp4": [
-            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=15:duration=6",
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-an",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=15:duration=6",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
         ],
         # A metronome at 120 BPM: a click every 500 ms for 30 s.
         "music.wav": [
-            "-f", "lavfi", "-i",
+            "-f",
+            "lavfi",
+            "-i",
             "aevalsrc='0.6*sin(3000*2*PI*t)*exp(-24*mod(t,0.5))':d=30:s=44100",
-            "-ac", "2",
+            "-ac",
+            "2",
         ],
     }
 
@@ -87,7 +125,9 @@ def audio_fixtures(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
         destination = directory / name
         subprocess.run(
             [ffmpeg, "-y", "-loglevel", "error", *args, str(destination)],
-            check=True, capture_output=True, timeout=180,
+            check=True,
+            capture_output=True,
+            timeout=180,
         )
         paths[name] = destination
     return paths
@@ -97,10 +137,19 @@ def probe(path: Path) -> dict:
     """Independent verification. Never the renderer's own account of itself."""
     result = subprocess.run(
         [
-            resolve_binary(FFPROBE), "-v", "error", "-print_format", "json",
-            "-show_format", "-show_streams", str(path),
+            resolve_binary(FFPROBE),
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
         ],
-        check=True, capture_output=True, text=True, timeout=60,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     return json.loads(result.stdout)
 
@@ -150,9 +199,7 @@ def render(
 
     args = compile_render_argv(spec)
     assert all(isinstance(a, str) for a in args), "argv must be a list of strings"
-    subprocess.run(
-        [resolve_binary(FFMPEG), *args], check=True, capture_output=True, timeout=300
-    )
+    subprocess.run([resolve_binary(FFMPEG), *args], check=True, capture_output=True, timeout=300)
     return output
 
 
@@ -197,9 +244,7 @@ class TestVideoOnlyIsUnchanged:
     ) -> None:
         """The regression that matters most: a bed must not move a frame."""
         silent = streams(probe(render(tmp_path, audio_fixtures)), "video")[0]
-        scored = streams(
-            probe(render(tmp_path, audio_fixtures, music=cue())), "video"
-        )[0]
+        scored = streams(probe(render(tmp_path, audio_fixtures, music=cue())), "video")[0]
         for key in ("width", "height", "codec_name", "pix_fmt", "nb_frames"):
             assert silent.get(key) == scored.get(key), key
 
@@ -256,32 +301,22 @@ class TestMusicBed:
         on with a black screen; `-shortest` would have decided by luck."""
         info = probe(render(tmp_path, audio_fixtures, music=cue(source_out_ms=20_000)))
         assert float(info["format"]["duration"]) == pytest.approx(EXPECTED_S, abs=0.35)
-        assert float(streams(info, "audio")[0]["duration"]) == pytest.approx(
-            EXPECTED_S, abs=0.35
-        )
+        assert float(streams(info, "audio")[0]["duration"]) == pytest.approx(EXPECTED_S, abs=0.35)
 
     def test_music_shorter_than_the_picture_is_padded(
         self, tmp_path: Path, audio_fixtures: dict[str, Path]
     ) -> None:
         """`apad` covers the tail, so the stream does not simply stop early."""
         info = probe(render(tmp_path, audio_fixtures, music=cue(source_out_ms=1_500)))
-        assert float(streams(info, "audio")[0]["duration"]) == pytest.approx(
-            EXPECTED_S, abs=0.35
-        )
+        assert float(streams(info, "audio")[0]["duration"]) == pytest.approx(EXPECTED_S, abs=0.35)
 
     def test_fades_render(self, tmp_path: Path, audio_fixtures: dict[str, Path]) -> None:
-        info = probe(
-            render(tmp_path, audio_fixtures, music=cue(fade_in_ms=800, fade_out_ms=1_200))
-        )
+        info = probe(render(tmp_path, audio_fixtures, music=cue(fade_in_ms=800, fade_out_ms=1_200)))
         assert len(streams(info, "audio")) == 1
 
-    def test_a_delayed_bed_renders(
-        self, tmp_path: Path, audio_fixtures: dict[str, Path]
-    ) -> None:
+    def test_a_delayed_bed_renders(self, tmp_path: Path, audio_fixtures: dict[str, Path]) -> None:
         info = probe(render(tmp_path, audio_fixtures, music=cue(timeline_start_ms=2_000)))
-        assert float(streams(info, "audio")[0]["duration"]) == pytest.approx(
-            EXPECTED_S, abs=0.35
-        )
+        assert float(streams(info, "audio")[0]["duration"]) == pytest.approx(EXPECTED_S, abs=0.35)
 
     def test_a_trimmed_passage_renders(
         self, tmp_path: Path, audio_fixtures: dict[str, Path]
@@ -342,8 +377,20 @@ class TestMix:
             music=cue(gain=0.7, fade_in_ms=400, fade_out_ms=800),
         )
         result = subprocess.run(
-            [resolve_binary(FFMPEG), "-v", "error", "-xerror", "-i", str(output), "-f", "null", "-"],
-            capture_output=True, text=True, timeout=300,
+            [
+                resolve_binary(FFMPEG),
+                "-v",
+                "error",
+                "-xerror",
+                "-i",
+                str(output),
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
         assert result.returncode == 0, result.stderr
         assert result.stderr.strip() == "", result.stderr

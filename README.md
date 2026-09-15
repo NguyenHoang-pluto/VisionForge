@@ -7,7 +7,7 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 6 — a real editing workstation.**
+> **Current phase: Phase 7 — music, beat synchronisation and the audio mix.**
 > A media browser, a preview viewer that plays the timeline, a timeline you can
 > trim, reorder, split and delete on, an inspector, and an export panel. The
 > automatic edit is now one tab inside the editor rather than the whole
@@ -321,6 +321,8 @@ so reported progress is measured rather than estimated.
                   contrast
         SCENES    PySceneDetect    FACES   YuNet, CPU, detection only
         PHASH     DCT + aHash
+        BEATS     tempo + grid
+                  (audio only)
             |                         |
             +---------- FINALIZE -----+
 ```
@@ -331,6 +333,82 @@ quality regression is visible instead of silent.
 
 Media types an analyzer does not apply to are recorded as `unsupported` with a
 reason — audio has no blur score, and that is a fact rather than a failure.
+
+### The audio lane
+
+```
+audio asset  ->  ingest (no thumbnail, no proxy)  ->  BEATS
+                                                        |
+                          decode to mono 22050 Hz PCM (FFmpeg, argv)
+                                                        |
+                          STFT -> spectral flux -> onset envelope
+                                                        |
+                          autocorrelation + tempo prior -> BPM
+                          exhaustive phase search       -> grid
+                                                        |
+                          media_analysis (analyzer="beats", versioned)
+```
+
+**Deterministic and local.** No model, no network, no music API: the tempo is
+measured from the waveform with numpy arithmetic, so the same file yields the
+same beats forever and a change in a beat-synced cut is attributable to a
+parameter rather than to chance. Nothing is ever downloaded — music is a
+project-owned asset the user uploaded, and the test fixtures *generate* theirs
+with FFmpeg.
+
+Confidence is periodicity times grid agreement, and both must hold. Silence,
+white noise and a sustained tone all score below the threshold, because
+autocorrelation alone would call an idling engine 128 BPM. Below the floor the
+grid is treated as absent, and "absent", "never analysed" and "not requested"
+are deliberately indistinguishable downstream: all three mean *plan the way
+Phase 4 planned*.
+
+What it assumes and where it fails — one steady tempo, no downbeats, no rubato,
+±23 ms precision, a 120 BPM prior — is set out in
+[ADR-0011](docs/adr/0011-audio-track-and-beats.md).
+
+### Beat-synced cutting
+
+The timeline is butt-joined: every clip starts where the last one ended. So if
+each clip is a whole number of beats long and the first starts on a beat, *every*
+cut lands on a beat — with no per-cut search, no drift, and no way to express a
+gap or an overlap, because the structure that would hold one does not exist.
+
+A clip's length is the difference of two cumulative beat positions, never one
+count times a period. At 128 BPM a beat is 468.75 ms, so rounding each clip
+separately and adding compounds the error at half a millisecond per cut; rounding
+the running total never exceeds half a millisecond however many cuts precede it.
+
+A source too short for its allocation gets *fewer whole beats*, not a truncated
+one. The plan records the integer beat count it chose, so it can say what it
+synced to.
+
+### The audio mix
+
+```
+[clips:v]  trim -> scale -> fps -> format -> concat            -> [vout]
+
+[clips:a]  atrim -> asetpts -> aformat  -> concat -> volume    -\
+                                                                 amix -> apad
+[music:a]  atrim -> asetpts -> aformat -> volume -> afade x2   -/    -> atrim
+                                              -> adelay                -> [aout]
+```
+
+Four shapes — silent, source only, music only, both — and the last step is the
+same in all of them: the audio is cut to exactly the video's length. `apad`
+covers a bed shorter than the picture, `atrim` cuts one longer than it. FFmpeg's
+`-shortest` was rejected because it decides by whichever stream ends first, which
+is the right answer only by luck.
+
+Source and music levels are independent, so dialogue can be ducked under a bed
+without being turned off. `amix` runs with `normalize=0`: with normalisation on
+it divides by the input count, so adding music would silently halve the dialogue
+by a gain nobody set.
+
+Every value reaching the filter graph is a number or a server-resolved path. The
+music cue is a media id and six numbers — there is no field in it for a filename,
+a filter or an encoder setting, and the tests pin that field set and assert every
+word in the generated graph comes from an allow-list.
 
 ### The edit lane
 
@@ -643,6 +721,12 @@ default run, because CI must stay green on a machine with no Docker.
 A `gpu` marker exists and is always excluded. CI never requires a GPU, an NVIDIA
 runtime, or downloaded model weights.
 
+Audio fixtures are generated by FFmpeg at test time — a sine wave, a decaying
+pulse train, a synthesised metronome at a known tempo. Nothing copyrighted is
+committed, downloaded, or sent over the wire, and a click track built at exactly
+120 BPM gives beat detection a right answer to be measured against rather than
+an opinion to be agreed with.
+
 ---
 
 ## Linting
@@ -753,6 +837,51 @@ Deliberately **not** in Phase 6: music and beat synchronisation, audio mixing,
 subtitles, transitions beyond a cut, multi-track video, keyframes, effects,
 style learning, and collaboration.
 
+---
+
+**Phase 7 — music, beats and the audio mix.**
+
+- [x] `MusicCue` on `EditPlan` — a media id and six numbers: a trim within the
+      track, a position on the output, a linear gain and two fades. Optional, so
+      a Phase 4-6 plan deserialises to `music=None` and re-renders to the same
+      bytes
+- [x] `OutputSpec.source_gain` — the clips' own level, independent of the bed, so
+      dialogue can be ducked without being turned off
+- [x] Validation mirrors the video track check for check, plus the audio-only
+      rules: gain bounds, fade bounds, overlapping fades, and a cue that starts
+      after the picture ends. Violations carry `is_music` so an editor can point
+      at the audio lane
+- [x] **Beat detection** — spectral flux, autocorrelation with a tempo prior,
+      parabolic refinement and an exhaustive phase search. NumPy only, no new
+      dependency, no model, no network. Versioned like every other analyzer
+- [x] Confidence is periodicity times grid agreement; silence, white noise and a
+      sustained tone are all rejected, and the planner then declines to move a cut
+- [x] **Beat-synced cutting** — clip *duration* is quantised to whole beats, and
+      because the timeline is butt-joined every cut then lands on a beat. Lengths
+      are differences of cumulative positions, so rounding never accumulates
+- [x] Graceful fallback: not requested, not analysed, not trusted, or no whole
+      beat count that fits are all indistinguishable downstream and all mean
+      "plan the way Phase 4 planned"
+- [x] **Audio mix** — source and music concatenated separately then mixed with
+      `normalize=0`, levels independent, fades and delay on the bed, and the
+      result `apad`/`atrim`ed to exactly the video's length rather than trusting
+      `-shortest`
+- [x] `MediaFact.from_media` — one mapping from a media row to planning facts,
+      shared by the planning service and the render worker, which sit on
+      opposite sides of the validation gate
+- [x] Music lane in the workstation with beat markers, a fifth inspector tab for
+      the bed, levels as percentages, fades, trim and placement, and the beat
+      readout with the confidence the planner actually uses
+- [x] 38 new message keys in English and Vietnamese (477, exact parity), the
+      same tokens, themes, density and accent system as Phase 6
+- [x] 667 unit tests (+52) and 17 FFmpeg integration cases; no change to any
+      Phase 1–6 contract
+
+Deliberately **not** in Phase 7: downloading music from anywhere, an online
+provider or catalogue, ducking automation, multi-track mixing, waveform display,
+per-clip audio gain, and any copyrighted asset in the repository. The fixtures
+and the acceptance script generate their own music with FFmpeg.
+
 <details>
 <summary>Phase 5 — LLM planning behind the existing boundary</summary>
 
@@ -831,8 +960,8 @@ style learning, and collaboration.
 | 3     | 4–6   | Media intelligence — quality, dedupe, scenes, CLIP, faces |
 | 4     | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI |
 | 5     | 9–10  | LLM planning behind the `EditPlan` boundary, styles, provider abstraction |
-| **6** | 11–12 | Editing workstation — media browser, preview, timeline, manual editing *(current)* |
-| 7     | 13–14 | Subtitles, authentication, super-resolution, frame interpolation |
+| 6     | 11–12 | Editing workstation — media browser, preview, timeline, manual editing |
+| **7** | 13–14 | Music, deterministic beat detection, beat-synced cutting, audio mixing *(current)* |
 | 8     | 15    | Evaluation loop, Asset Studio with license tracking, AWS deployment |
 
 The reasoning layer moved forward. It was planned for Phase 7, and was brought
@@ -841,7 +970,8 @@ into Phase 5 because Phase 4 had already built the boundary it has to sit behind
 smaller job than the original ordering assumed.
 
 Phase 6 then took the manual-editing half of its former slot and left the music
-half behind. Two features in one phase would have meant a timeline good enough to
+half behind, which Phase 7 has now picked up. Subtitles, authentication and the
+upscaling work move to Phase 8. Two features in one phase would have meant a timeline good enough to
 demonstrate beat synchronisation and not much else; the editor was the half that
 everything after it has to be built inside, so it got the whole phase. Music and
 beat synchronisation move to Phase 7, which now has a timeline to hang them on.

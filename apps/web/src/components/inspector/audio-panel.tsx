@@ -342,7 +342,10 @@ export function AudioPanel({
           </label>
           <p className="text-2xs leading-snug text-dim">{t("audio.beatSyncHint")}</p>
 
-          <label className="mt-1 flex items-center gap-2 text-xs text-muted">
+          <label
+            className="mt-1 flex items-center gap-2 text-xs text-muted"
+            title={t("audio.markersHint")}
+          >
             <input
               type="checkbox"
               checked={showBeats}
