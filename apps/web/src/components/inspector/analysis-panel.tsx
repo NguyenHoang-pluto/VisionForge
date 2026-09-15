@@ -150,7 +150,7 @@ function Scenes({ p }: { p: Record<string, unknown> }) {
       {/* Boundaries as a strip: where the cuts fall matters more than when. */}
       {scenes.length > 0 && total > 0 && (
         <div
-          className="mt-1.5 flex h-4 w-full overflow-hidden rounded-sm border border-subtle"
+          className="mt-1.5 flex h-4 w-full overflow-hidden rounded-full"
           title={t("analysis.scenes.strip", { count: scenes.length })}
         >
           {scenes.map((scene, index) => (
@@ -336,7 +336,7 @@ export function AnalysisPanel({
                 <button
                   type="button"
                   onClick={() => onSelectMedia(hit.media_id)}
-                  className="flex min-h-row w-full items-baseline justify-between gap-3 border-b border-subtle/60 py-[3px] text-left transition-colors last:border-b-0 hover:text-accent-strong"
+                  className="-mx-1.5 flex min-h-row w-[calc(100%+0.75rem)] items-baseline justify-between gap-3 rounded px-1.5 py-[3px] text-left transition-colors duration-fast hover:bg-hover hover:text-accent-strong"
                 >
                   <span className="truncate text-xs text-muted">
                     {hit.media_id.slice(0, 8)}

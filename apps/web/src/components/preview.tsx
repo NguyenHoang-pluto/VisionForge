@@ -249,9 +249,12 @@ export function Preview({
         : t("preview.empty.render");
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-ground" aria-label={t("preview.title")}>
+    <section
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-surface shadow-panel"
+      aria-label={t("preview.title")}
+    >
       {/* ---------------- viewer header ---------------- */}
-      <header className="flex h-header shrink-0 items-center gap-2 border-b border-subtle bg-elevated px-2">
+      <header className="flex h-header shrink-0 items-center gap-2.5 px-panel">
         <SegmentedControl
           label={t("preview.source")}
           value={source}
@@ -278,7 +281,7 @@ export function Preview({
           ]}
         />
 
-        <span className="min-w-0 truncate text-2xs text-faint" title={activeAsset?.original_filename}>
+        <span className="min-w-0 truncate text-xs text-muted" title={activeAsset?.original_filename}>
           {source === "source"
             ? (activeAsset?.original_filename ?? t("preview.nothingSelected"))
             : source === "render"
@@ -293,19 +296,24 @@ export function Preview({
         )}
 
         {/* The output shape, at the right, where an NLE puts it. */}
-        <span className="ml-auto shrink-0 font-mono text-2xs tabular-nums text-faint">
-          {source === "program" ? aspect : ""}
-        </span>
+        {/* The output shape, as a chip rather than loose text: it is a fact
+            about the canvas below, and it reads as one when it is attached to
+            something. */}
+        {source === "program" && (
+          <span className="ml-auto shrink-0 rounded-full bg-hover px-2 py-0.5 font-mono text-2xs tabular-nums text-muted">
+            {aspect}
+          </span>
+        )}
       </header>
 
       {/* ---------------- viewport ----------------
           The letterbox stays black in both themes: it is the surround for a
           picture, and a light grey one would lie about the black level of
           whatever is being graded inside it. */}
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
+      <div className="vf-mat flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4">
         <div
           ref={frameRef}
-          className={`relative flex max-h-full max-w-full items-center justify-center bg-black shadow-[0_0_0_1px_rgb(var(--border-strong))] ${
+          className={`group/canvas relative flex max-h-full max-w-full items-center justify-center overflow-hidden rounded-lg bg-black shadow-float ${
             source === "program" ? ASPECT_CLASS[aspect] : "aspect-video"
           }`}
           style={{ height: "100%" }}
@@ -331,13 +339,18 @@ export function Preview({
           />
 
           {empty && (
-            <p className="absolute inset-0 flex items-center justify-center px-8 text-center text-xs leading-relaxed text-white/45">
-              {emptyMessage}
-            </p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white/[0.07] text-white/40">
+                <Glyph name="film" size={22} />
+              </span>
+              <p className="max-w-[42ch] text-xs leading-relaxed text-white/50">
+                {emptyMessage}
+              </p>
+            </div>
           )}
 
           {stalled && !empty && (
-            <span className="absolute left-2 top-2 rounded-sm bg-black/70 px-1.5 py-0.5 font-mono text-2xs text-white/80">
+            <span className="absolute left-3 top-3 rounded-full bg-black/70 px-2.5 py-1 font-mono text-2xs text-white/85 backdrop-blur-sm">
               {t("preview.buffering")}
             </span>
           )}
@@ -345,7 +358,7 @@ export function Preview({
           {/* A burnt-in timecode, as a viewer in this category has. Over the
               picture rather than under it, because it belongs to the frame. */}
           {!empty && (
-            <span className="pointer-events-none absolute right-2 top-2 rounded-sm bg-black/65 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-white/85">
+            <span className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 font-mono text-2xs tabular-nums text-white/85 opacity-80 transition-opacity duration-base group-hover/canvas:opacity-100">
               {timecode(positionMs)}
             </span>
           )}
@@ -353,7 +366,7 @@ export function Preview({
           {/* Which source clip is on screen right now. The one thing that is
               invisible during program playback and matters most. */}
           {source === "program" && current && (
-            <span className="pointer-events-none absolute bottom-2 left-2 max-w-[70%] truncate rounded-sm bg-black/65 px-1.5 py-0.5 font-mono text-2xs text-white/85">
+            <span className="pointer-events-none absolute bottom-3 left-3 max-w-[70%] truncate rounded-full bg-black/55 px-2.5 py-1 font-mono text-2xs text-white/85 backdrop-blur-sm">
               {current.clip.index + 1}.{" "}
               {media.get(current.clip.mediaId)?.original_filename ??
                 current.clip.mediaId.slice(0, 8)}
@@ -363,7 +376,7 @@ export function Preview({
       </div>
 
       {/* ---------------- transport ---------------- */}
-      <div className="flex h-strip shrink-0 items-center gap-1 border-t border-subtle bg-elevated px-2">
+      <div className="flex h-strip shrink-0 items-center gap-1 px-panel">
         <IconButton label={t("preview.toStart")} size="sm" onClick={() => seek(0)}>
           <Glyph name="skip-back" size={12} />
         </IconButton>
@@ -384,7 +397,7 @@ export function Preview({
           aria-pressed={playing}
           disabled={empty}
           onClick={() => setPlaying(!playing)}
-          className="inline-flex h-control w-[30px] shrink-0 items-center justify-center rounded border border-strong bg-elevated text-fg transition-colors hover:bg-hover disabled:pointer-events-none disabled:opacity-35"
+          className="mx-0.5 inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-accent-strong text-accent-fg shadow-raised transition-[background-color,transform] duration-fast hover:bg-accent active:scale-[0.93] disabled:pointer-events-none disabled:bg-elevated disabled:text-faint disabled:shadow-none"
         >
           <Glyph name={playing ? "pause" : "play"} />
         </button>
@@ -426,7 +439,7 @@ export function Preview({
           aria-label={t("preview.seek")}
           disabled={empty}
           onChange={(event) => seek(Number(event.target.value))}
-          className="mx-2 min-w-[80px] flex-1"
+          className="mx-2.5 min-w-[80px] flex-1"
         />
 
         <select
@@ -434,7 +447,7 @@ export function Preview({
           onChange={(event) => setSpeed(Number(event.target.value))}
           aria-label={t("preview.speed")}
           title={t("preview.speed")}
-          className="h-control-sm shrink-0 rounded border border-strong bg-elevated px-1 font-mono text-2xs text-muted transition-colors hover:bg-hover focus:border-accent"
+          className="h-control-sm shrink-0 rounded-md bg-hover px-2 font-mono text-2xs text-muted transition-colors duration-fast hover:text-fg focus:outline-none focus:ring-2 focus:ring-accent/30"
         >
           {SPEEDS.map((value) => (
             <option key={value} value={value}>
@@ -464,7 +477,7 @@ export function Preview({
             setVolume(next);
             setMuted(next === 0);
           }}
-          className="w-14"
+          className="w-16"
         />
 
         <IconButton

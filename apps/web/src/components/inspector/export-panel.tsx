@@ -347,7 +347,7 @@ export function ExportPanel({
                 <a
                   href={render.playback_url}
                   download
-                  className="inline-flex h-control-sm items-center gap-1 rounded border border-strong bg-elevated px-2 text-2xs font-medium text-fg transition-colors hover:bg-hover"
+                  className="inline-flex h-control-sm items-center gap-1.5 rounded px-2.5 text-2xs font-medium text-fg shadow-raised transition-colors duration-fast bg-elevated hover:bg-hover"
                 >
                   <Glyph name="download" size={10} />
                   {t("export.download")}

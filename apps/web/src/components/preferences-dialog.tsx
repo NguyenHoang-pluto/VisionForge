@@ -42,7 +42,7 @@ function Setting({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-1.5">
+    <section className="flex flex-col gap-2">
       <SectionTitle>{label}</SectionTitle>
       {children}
       <p className="text-2xs leading-snug text-faint">{hint}</p>
@@ -109,8 +109,8 @@ export function PreferencesDialog({ open, onClose }: { open: boolean; onClose: (
                   title={t(ACCENT_LABEL[option])}
                   onClick={() => setAccent(option)}
                   data-accent={option}
-                  className={`flex h-7 flex-1 items-center justify-center rounded border transition-colors ${
-                    selected ? "border-fg" : "border-strong hover:border-strong"
+                  className={`flex h-9 flex-1 items-center justify-center rounded-lg shadow-raised transition-[box-shadow,transform] duration-fast hover:-translate-y-px hover:shadow-panel ${
+                    selected ? "ring-2 ring-fg ring-offset-2 ring-offset-surface" : ""
                   }`}
                   style={{ background: "rgb(var(--accent))" }}
                 >
@@ -139,7 +139,7 @@ export function PreferencesDialog({ open, onClose }: { open: boolean; onClose: (
           />
         </Setting>
 
-        <footer className="flex items-center gap-2 border-t border-subtle pt-2">
+        <footer className="mt-1 flex items-center gap-2">
           <p className="min-w-0 flex-1 text-2xs leading-snug text-faint">{t("prefs.stored")}</p>
           <Button size="sm" onClick={reset}>
             {t("prefs.reset")}

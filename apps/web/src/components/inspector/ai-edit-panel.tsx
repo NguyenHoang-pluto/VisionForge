@@ -25,7 +25,8 @@ import {
   SectionTitle,
   SegmentedControl,
   Select,
-  TextInput,
+  Spinner,
+  TextArea,
 } from "@/components/ui";
 
 /**
@@ -142,10 +143,59 @@ export function AiEditPanel({
   const activeNote = MODES.find((item) => item.value === mode)?.note;
 
   return (
-    <div className="flex flex-col gap-3 p-panel">
-      <SectionTitle>{t("ai.title")}</SectionTitle>
+    <div className="flex flex-col gap-panel-gap p-panel">
+      {/* ------------------------------------------------------ the brief ----
+          The prompt first, and given room. Everything under it narrows what the
+          planner may do with the brief; putting the six numeric controls above
+          it made the panel read as a settings form that happened to accept a
+          sentence. */}
+      <section>
+        <div className="mb-2 flex items-center gap-2">
+          <span
+            className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-soft text-accent-strong"
+            aria-hidden
+          >
+            <Glyph name="wand" size={14} />
+          </span>
+          <h3 className="text-xs font-semibold tracking-tight text-fg">{t("ai.title")}</h3>
+        </div>
 
-      <Field label={t("ai.mode")} hint={activeNote ? t(activeNote) : undefined}>
+        <TextArea
+          rows={4}
+          value={requestText}
+          maxLength={capabilities.data?.max_request_chars ?? 500}
+          placeholder={t("ai.request.placeholder")}
+          aria-label={t("ai.request.label")}
+          onChange={(event) => setRequestText(event.target.value)}
+        />
+        <p className="mt-1.5 text-2xs leading-snug text-faint">{t("ai.request.hint")}</p>
+
+        <Button
+          tone="primary"
+          size="lg"
+          className="mt-3 w-full"
+          disabled={readyCount === 0 || generate.isPending}
+          onClick={() => generate.mutate()}
+        >
+          {generate.isPending ? <Spinner size={13} /> : <Glyph name="spark" size={13} />}
+          {generate.isPending ? t("ai.generating") : t("ai.generate")}
+        </Button>
+
+        {error && (
+          <div className="mt-2">
+            <ErrorNote hint={error.hint}>{error.message}</ErrorNote>
+          </div>
+        )}
+        {readyCount === 0 && (
+          <p className="mt-2 text-2xs leading-snug text-warning">{t("ai.noMedia")}</p>
+        )}
+      </section>
+
+      {/* ----------------------------------------------------------- mode ---- */}
+      <section>
+        <SectionTitle description={activeNote ? t(activeNote) : undefined}>
+          {t("ai.mode")}
+        </SectionTitle>
         <SegmentedControl
           label={t("ai.mode.label")}
           value={mode}
@@ -159,136 +209,135 @@ export function AiEditPanel({
             disabled: item.value === "ai" && !aiAvailable,
           }))}
         />
-      </Field>
-      {activeNote && <p className="-mt-1.5 text-2xs leading-snug text-faint">{t(activeNote)}</p>}
+        {mode === "ai" && !aiAvailable && (
+          <p className="mt-2 text-2xs leading-snug text-warning">{t("ai.planner.willFallBack")}</p>
+        )}
+      </section>
 
-      <Field label={t("ai.style")} hint={selectedStyle?.description}>
-        <Select
-          value={style}
-          aria-label={t("ai.style.label")}
-          onChange={(event) => {
-            const next = event.target.value as EditStyle | "";
-            setStyle(next);
-            // A style carries its own sensible length and shape. Applying them
-            // as the control's visible value keeps the panel honest about what
-            // the server will actually do.
-            const profile = styles.find((item) => item.value === next);
-            if (profile) {
-              setTargetSeconds(Math.round(profile.default_duration_ms / 1000));
-              setOutput({ aspect: profile.default_aspect });
-            }
-          }}
-        >
-          <option value="">{t("ai.style.none")}</option>
-          {styles.map((item) => (
-            <option key={item.value} value={item.value}>
-              {item.label}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      {selectedStyle && (
-        <p className="-mt-1.5 text-2xs leading-snug text-faint">{selectedStyle.description}</p>
-      )}
+      {/* ---------------------------------------------------------- style ----
+          Chips rather than a dropdown. There are six of them, they are the most
+          consequential choice on the panel, and a dropdown hides five of six
+          options behind a click for no gain in space at this width. */}
+      <section>
+        <SectionTitle description={selectedStyle?.description}>{t("ai.style")}</SectionTitle>
 
-      <Field label={t("ai.request")} hint={t("ai.request.hint")}>
-        <TextInput
-          value={requestText}
-          maxLength={capabilities.data?.max_request_chars ?? 500}
-          placeholder={t("ai.request.placeholder")}
-          aria-label={t("ai.request.label")}
-          onChange={(event) => setRequestText(event.target.value)}
-        />
-      </Field>
+        <div role="radiogroup" aria-label={t("ai.style.label")} className="flex flex-wrap gap-1.5">
+          {[{ value: "" as const, label: t("ai.style.none"), description: "" }, ...styles].map(
+            (item) => {
+              const selected = style === item.value;
+              return (
+                <button
+                  key={item.value || "none"}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  title={item.description || undefined}
+                  onClick={() => {
+                    const next = item.value as EditStyle | "";
+                    setStyle(next);
+                    // A style carries its own sensible length and shape.
+                    // Applying them as the controls' visible values keeps the
+                    // panel honest about what the server will actually do.
+                    const profile = styles.find((entry) => entry.value === next);
+                    if (profile) {
+                      setTargetSeconds(Math.round(profile.default_duration_ms / 1000));
+                      setOutput({ aspect: profile.default_aspect });
+                    }
+                  }}
+                  className={`h-control-sm rounded-full px-3 text-2xs font-medium transition-[background-color,color,box-shadow] duration-fast ${
+                    selected
+                      ? "bg-accent-strong text-accent-fg shadow-raised"
+                      : "bg-hover text-muted hover:text-fg"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              );
+            },
+          )}
+        </div>
+      </section>
 
-      <div className="grid grid-cols-2 gap-2">
-        <Field label={t("ai.duration")}>
-          <NumberInput
-            min={2}
-            max={120}
-            value={targetSeconds}
-            aria-label={t("ai.duration.label")}
-            onChange={(event) => setTargetSeconds(Number(event.target.value))}
-          />
-        </Field>
-        <Field label={t("ai.maxClips")}>
-          <NumberInput
-            min={1}
-            max={20}
-            value={maxClips}
-            aria-label={t("ai.maxClips.label")}
-            onChange={(event) => setMaxClips(Number(event.target.value))}
-          />
-        </Field>
-        <Field label={t("ai.aspect")}>
-          <Select
-            value={aspect}
-            aria-label={t("ai.aspect.label")}
-            onChange={(event) => setOutput({ aspect: event.target.value as AspectRatio })}
-          >
-            {(capabilities.data?.aspect_ratios ?? []).map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.value} · {item.width}×{item.height}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label={t("ai.fps")}>
-          <Select
-            value={fps}
-            aria-label={t("ai.fps.label")}
-            onChange={(event) => setOutput({ fps: Number(event.target.value) })}
-          >
-            {fpsPresets.map((value) => (
-              <option key={value} value={value}>
-                {value} fps
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label={t("ai.quality")}>
-          <Select
-            value={quality}
-            aria-label={t("ai.quality.label")}
-            onChange={(event) => setOutput({ quality: event.target.value as QualityPreset })}
-          >
-            {QUALITIES.map((item) => (
-              <option key={item.value} value={item.value}>
-                {t(item.label)}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label={t("ai.order")}>
-          <Select
-            value={order}
-            aria-label={t("ai.order.label")}
-            onChange={(event) => setOrder(event.target.value as ClipOrder)}
-          >
-            {ORDERS.map((item) => (
-              <option key={item.value} value={item.value}>
-                {t(item.label)}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      </div>
+      {/* --------------------------------------------------------- target ---- */}
+      <section>
+        <SectionTitle>{t("ai.target")}</SectionTitle>
 
-      <Button
-        tone="primary"
-        disabled={readyCount === 0 || generate.isPending}
-        onClick={() => generate.mutate()}
-      >
-        <Glyph name="spark" size={11} />
-        {generate.isPending ? t("ai.generating") : t("ai.generate")}
-      </Button>
-
-      {error && <ErrorNote hint={error.hint}>{error.message}</ErrorNote>}
-
-      {readyCount === 0 && <p className="text-2xs leading-snug text-faint">{t("ai.noMedia")}</p>}
+        <div className="grid grid-cols-2 gap-2.5">
+          <Field label={t("ai.duration")}>
+            <NumberInput
+              min={2}
+              max={120}
+              value={targetSeconds}
+              aria-label={t("ai.duration.label")}
+              onChange={(event) => setTargetSeconds(Number(event.target.value))}
+            />
+          </Field>
+          <Field label={t("ai.maxClips")}>
+            <NumberInput
+              min={1}
+              max={20}
+              value={maxClips}
+              aria-label={t("ai.maxClips.label")}
+              onChange={(event) => setMaxClips(Number(event.target.value))}
+            />
+          </Field>
+          <Field label={t("ai.aspect")}>
+            <Select
+              value={aspect}
+              aria-label={t("ai.aspect.label")}
+              onChange={(event) => setOutput({ aspect: event.target.value as AspectRatio })}
+            >
+              {(capabilities.data?.aspect_ratios ?? []).map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.value} · {item.width}×{item.height}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label={t("ai.fps")}>
+            <Select
+              value={fps}
+              aria-label={t("ai.fps.label")}
+              onChange={(event) => setOutput({ fps: Number(event.target.value) })}
+            >
+              {fpsPresets.map((value) => (
+                <option key={value} value={value}>
+                  {value} fps
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label={t("ai.quality")}>
+            <Select
+              value={quality}
+              aria-label={t("ai.quality.label")}
+              onChange={(event) => setOutput({ quality: event.target.value as QualityPreset })}
+            >
+              {QUALITIES.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {t(item.label)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label={t("ai.order")}>
+            <Select
+              value={order}
+              aria-label={t("ai.order.label")}
+              onChange={(event) => setOrder(event.target.value as ClipOrder)}
+            >
+              {ORDERS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {t(item.label)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+      </section>
 
       {/* What this server actually has. No claim beyond it. */}
-      <p className="border-t border-subtle pt-2 font-mono text-2xs leading-snug text-faint">
+      <p className="font-mono text-2xs leading-snug text-faint">
         {aiAvailable
           ? capabilities.data?.is_stub
             ? t("ai.planner.stub", { provider: capabilities.data.provider ?? "—" })
@@ -298,9 +347,6 @@ export function AiEditPanel({
               })
           : t("ai.planner.rules")}
       </p>
-      {mode === "ai" && !aiAvailable && (
-        <p className="text-2xs leading-snug text-warning">{t("ai.planner.willFallBack")}</p>
-      )}
     </div>
   );
 }

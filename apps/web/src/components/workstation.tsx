@@ -18,7 +18,7 @@ import { NavRail } from "@/components/shell/nav-rail";
 import { ProjectBar } from "@/components/shell/project-bar";
 import { StatusBar } from "@/components/status-bar";
 import { Timeline } from "@/components/timeline";
-import { NewProjectDialog } from "@/components/top-bar";
+import { NewProjectDialog } from "@/components/shell/new-project-dialog";
 import { AudioWorkspace } from "@/components/views/audio-workspace";
 import { AssetsWorkspace } from "@/components/views/assets-workspace";
 import { ExportWorkspace } from "@/components/views/export-workspace";
@@ -56,7 +56,7 @@ const POLL_WHILE_WORKING_MS = 3000;
  * previous revision's because the type inside them is a step larger.
  */
 const BROWSER_WIDTH = { base: 244, md: 272, lg: 304 };
-const INSPECTOR_WIDTH = { base: 296, md: 320, lg: 348 };
+const INSPECTOR_WIDTH = { base: 308, md: 342, lg: 376 };
 
 /** Below this, the side panels stop being useful and start being in the way. */
 const NARROW_BREAKPOINT = 1180;
@@ -494,6 +494,7 @@ export function Workstation() {
                 projectId={projectId!}
                 media={byId}
                 mediaList={items}
+                render={render.data ?? null}
                 invalidClipIds={invalidClipIds}
               />
             )}

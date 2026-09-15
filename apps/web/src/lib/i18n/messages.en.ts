@@ -19,8 +19,6 @@
 export const en = {
   // ------------------------------------------------------------------- app
   "app.name": "VisionForge",
-  "app.tagline": "Video editing workstation",
-  "app.menu": "Application menu",
   "app.version": "Version {version}",
 
   // ------------------------------------------------------------ top bar
@@ -32,12 +30,10 @@ export const en = {
   "top.project.create": "Create",
   "top.project.mediaCount.one": "{count} item",
   "top.project.mediaCount.other": "{count} items",
-  "top.group.project": "Project",
   "top.group.edit": "Edit",
   "top.group.workspace": "Workspace",
 
   "top.analyse": "Analyse",
-  "top.analyse.all": "Analyse all media",
   "top.analyse.allHint": "Run every analyzer over the {count} ready assets in this project",
   "top.analyse.selection": "Analyse selection",
   "top.analyse.selectionHint": "Run every analyzer over the {count} selected assets",
@@ -54,22 +50,9 @@ export const en = {
   "top.view.browser.hide": "Hide media browser",
   "top.view.inspector.show": "Show inspector",
   "top.view.inspector.hide": "Hide inspector",
-  "top.shortcuts": "Keyboard shortcuts",
-  "top.settings": "Preferences",
-  "top.theme.toDark": "Switch to dark theme",
-  "top.theme.toLight": "Switch to light theme",
-  "top.language": "Language",
 
-  "top.menu.newProject": "New project…",
-  "top.menu.preferences": "Preferences…",
-  "top.menu.shortcuts": "Keyboard shortcuts",
 
   // ------------------------------------------------------------- welcome
-  "welcome.lead":
-    "VisionForge cuts video from footage you import. Open a project to pick up where you left off, or create one to start.",
-  "welcome.recent": "Projects",
-  "welcome.create": "New project",
-  "welcome.empty": "No projects yet.",
   "welcome.loading": "Loading projects…",
   "welcome.unreachable": "Cannot reach the API",
   "welcome.unreachableHint": "Start it with .\\scripts\\vf.ps1 api, then reload this page.",
@@ -295,7 +278,6 @@ export const en = {
   "ai.style": "Style",
   "ai.style.label": "Edit style",
   "ai.style.none": "None",
-  "ai.request": "Request",
   "ai.request.hint": "What you want, in your own words.",
   "ai.request.label": "Describe the edit",
   "ai.request.placeholder": "Fast 25 second football highlight, best moments",
@@ -489,7 +471,6 @@ export const en = {
   "audio.none.title": "No music",
   "audio.none.body": "Pick an audio asset from the media browser to lay a bed under this edit.",
   "audio.choose": "Use as music",
-  "audio.chooseHint": "Lay the selected audio asset under the timeline",
   "audio.remove": "Remove music",
   "audio.replace": "Replace",
   "audio.track": "Track",
@@ -520,7 +501,6 @@ export const en = {
   "audio.beatsUnreliable": "No steady tempo found in this track, so cuts will not be beat-matched.",
   "audio.beatsReady": "Beat-matched cuts are available for this track.",
   "audio.analysing": "Analysing the track…",
-  "audio.notAudio": "Select an audio asset first.",
   "audio.markers": "Beat markers",
   "audio.markersHint": "Show detected beats on the audio lane",
   "timeline.track.musicShort": "M1",
@@ -569,6 +549,9 @@ export const en = {
   "export.stage.publish": "Publishing — uploading the file",
   "export.stage.complete": "Complete",
   "export.stage.attempt": "Attempt {attempt}",
+
+  "ai.target": "Target",
+  "audio.none.pick": "Choose one of the project’s audio assets to lay under this edit.",
 
   // ---------------------------------------------------------------- common
   "common.close": "Close",

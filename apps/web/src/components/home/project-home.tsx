@@ -170,7 +170,7 @@ export function ProjectHome({
 
   return (
     <div className="vf-view min-h-0 flex-1 overflow-y-auto bg-ground">
-      <div className="mx-auto w-full max-w-[1180px] px-8 py-10">
+      <div className="mx-auto flex min-h-full w-full max-w-[1460px] flex-col px-8 py-10">
         {/* ------------------------------------------------------ masthead */}
         <header className="flex flex-wrap items-end justify-between gap-6">
           <div className="min-w-0">
@@ -206,7 +206,7 @@ export function ProjectHome({
         </header>
 
         {/* ------------------------------------------------------- projects */}
-        <section className="mt-9">
+        <section className="mt-9 flex-1">
           <div className="flex items-baseline justify-between gap-3">
             <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-faint">
               {t("home.recent")}
@@ -250,7 +250,7 @@ export function ProjectHome({
                 </EmptyState>
               </Card>
             ) : (
-              <ul className="grid grid-cols-2 gap-4 lg:grid-cols-3 2xl:grid-cols-4">
+              <ul className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                 {summaries.map((summary) => (
                   <li key={summary.project.id} className="min-w-0">
                     <ProjectTile summary={summary} onOpen={onOpen} />
@@ -262,7 +262,7 @@ export function ProjectHome({
         </section>
 
         {/* --------------------------------------------------- how it works */}
-        <section className="mt-12">
+        <section className="mt-12 shrink-0">
           <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-faint">
             {t("home.how")}
           </h2>

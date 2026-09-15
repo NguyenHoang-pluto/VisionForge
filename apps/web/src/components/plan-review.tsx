@@ -85,7 +85,7 @@ export function PlanReview({
           <Rejections plan={plan} media={media} />
           <Provenance plan={plan} />
 
-          <div className="flex gap-1 border-t border-subtle pt-2">
+          <div className="mt-1 flex gap-2">
             <Button
               tone="primary"
               onClick={() => {
@@ -151,7 +151,7 @@ function PlanSummary({ plan }: { plan: EditPlan }) {
 function Strip({ plan, media }: { plan: EditPlan; media: Map<string, MediaAsset> }) {
   const total = plan.total_duration_ms || 1;
   return (
-    <div className="flex h-6 w-full overflow-hidden rounded-sm border border-subtle">
+    <div className="flex h-7 w-full overflow-hidden rounded-lg">
       {plan.plan.segments.map((segment, index) => (
         <div
           key={`${segment.media_id}-${segment.order}`}
@@ -189,7 +189,7 @@ function Segments({ plan, media }: { plan: EditPlan; media: Map<string, MediaAss
           {plan.plan.segments.map((segment) => (
             <tr
               key={`${segment.media_id}-${segment.order}`}
-              className="border-b border-subtle/50 last:border-b-0"
+              className="rounded transition-colors duration-fast hover:bg-hover"
             >
               <td className="py-0.5 pr-2 text-faint">{segment.order + 1}</td>
               <td className="max-w-[12rem] truncate py-0.5 pr-2 text-fg">
@@ -277,7 +277,7 @@ function Provenance({ plan }: { plan: EditPlan }) {
   }
 
   return (
-    <section className="border-t border-subtle pt-2">
+    <section className="mt-1">
       <dl className="flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-2xs tabular-nums">
         {fields.map(([label, value]) => (
           <div key={label} className="flex gap-1.5">

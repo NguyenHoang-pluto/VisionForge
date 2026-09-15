@@ -241,7 +241,7 @@ export function ExportWorkspace({
       </Panel>
 
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[760px] py-panel">
+        <div className="w-full max-w-[880px] py-panel pl-panel pr-panel">
           {renderJob && <RenderProgress job={renderJob} />}
 
           <section className={renderJob ? "mt-panel-gap" : ""}>

@@ -540,24 +540,43 @@ policy must be set before uvicorn creates its loop
 ```
 
 The frontend is an editing workstation, not a page. It opens straight into a
-fixed viewport with independently scrolling panels:
+fixed viewport with independently scrolling panels, behind a navigation rail
+that names six places and keeps exactly one of them current:
 
 ```
-+---------------------------------- top bar ----------------------------------+
-| ◆ VisionForge ▾ | project ▾ + | analyse · generate · render | panels ⌨ EN ☀ ⚙ |
-+----------+---------------------------------------------+-------------------+
-| MEDIA    |                                             | INSPECTOR         |
-| BROWSER  |            PREVIEW                          | clip . analysis   |
-|          |   source / program / render                 | AI edit . export  |
-| grid     +---------------------------------------------+                   |
-| list     |            TIMELINE                         |                   |
-| compact  |  TC |0:00    |0:02    |0:04    |0:06         |                   |
-|          |  V1 [==clip==][==clip==][==clip==]           |                   |
-|          |  A1 [--------][--------][- - - -]           |                   |
-+----------+---------------------------------------------+-------------------+
-| jobs . progress . health                                                    |
-+-----------------------------------------------------------------------------+
++--+--------------------------- project bar ---------------------------------+
+|◆ | Phase 7 Music ▾ > Editor | analyse · generate · render |        panels ⌨ |
+|  +----------+---------------------------------------+--------------------+
+|⌂ | MEDIA    |                                       | INSPECTOR          |
+|▣ | BROWSER  |            PREVIEW                    | clip . analysis    |
+|▤ |          |   source / program / render           | AI edit . audio    |
+|∿ | grid     +---------------------------------------+ export             |
+|⇥ | list     |            TIMELINE                   |                    |
+|  | compact  |  TC |0:00    |0:02    |0:04    |0:06   |                    |
+|  |          |  V1 [==clip==][==clip==][==clip==]     |                    |
+|☀ |          |  A1 [--------][--------][- - - -]     |                    |
+|EN|          |  M1 [========= music bed ===========]  |                    |
+|⚙ +----------+---------------------------------------+--------------------+
+|  | jobs . progress . health                                               |
++--+------------------------------------------------------------------------+
 ```
+
+**Workspaces.** Home, Editor, Assets, Audio, Exports and Settings, on the rail
+and on the digit keys. They are all the same project and the same client state
+— switching to Assets does not unload the timeline — but each gives one activity
+the whole viewport when that is the activity you are doing. Picking twelve clips
+out of two hundred is a different job from trimming four of them, and a 260px
+column is the wrong size for the first and the right size for the second. The
+media browser grows from two tile columns to six; the music panel sits beside a
+full-width timeline and the picture; the export settings sit beside the real
+pipeline stages, walked from the render job's own step rows.
+
+**Home** is the only workspace that works without a project, and every figure on
+a project card — cover frame, footage duration, format, aspect, activity — is
+derived from that project's own media listing, because the projects endpoint
+carries none of it. Nothing is invented: a project with no ready footage shows
+no duration rather than a zero, and the timestamp reads "active", not "last
+edited", because nothing in the API records when a timeline was last touched.
 
 ### Design system
 
@@ -565,7 +584,7 @@ One palette, three switchable axes, all of them resolved in CSS on `<html>` so
 that changing one is a repaint rather than a re-render. The tokens live in
 [`globals.css`](apps/web/src/app/globals.css) and are reached only through the
 semantic Tailwind names in [`tailwind.config.ts`](apps/web/tailwind.config.ts):
-a component says `bg-panel`, `border-line`, `text-muted`, `h-control`, and
+a component says `bg-surface`, `border-subtle`, `text-muted`, `h-control`, and
 cannot spell a colour or a height of its own.
 
 | Axis | Attribute | Values |
@@ -574,12 +593,28 @@ cannot spell a colour or a height of its own.
 | Accent | `data-accent` | `azure` (default), `violet`, `teal`, `amber`, `crimson` |
 | Density | `data-density` | `comfortable` (default), `compact` |
 
-**Colour.** Four surface levels on a near-black charcoal ground, kept
-deliberately close together: an editor is looked at for hours, and panel edges
-should read as structure rather than as contrast. Depth comes from hairlines,
-never from shadow or glow. Light mode is not an inversion — it runs the
-luminance the other way, with panels lifted above a grey working ground and
-white controls on top of those.
+**Surfaces.** `background`, `surface`, `surface-elevated`, `surface-hover` and
+a `surface-sunken` well, on a warm graphite ground that is nowhere near black.
+The levels are spaced far enough apart to carry hierarchy on their own, which is
+what lets the layout drop almost every internal border it used to draw: depth
+comes from a change of level first, a soft shadow second, and a line only where
+two things genuinely abut.
+
+That ordering is a correction. An earlier revision built every boundary out of a
+hairline and said so proudly; the result was structurally correct and visually
+exhausting, forty outlined rectangles of near-identical value reading as a
+wiring diagram rather than as a place to work.
+
+Light mode is not an inversion and not a white page. It runs the luminance the
+other way — warm paper ground, panels lifted above it, controls lifted above
+those — and nothing in it is pure white or pure black, because #FFF panels
+beside #000 text is the combination that makes a light editor tiring within the
+hour.
+
+**Shape and motion.** The radius scale runs to 24px, far enough that a panel can
+be visibly softer than the control sitting on it. Motion is two durations and
+one ease-out curve, moving nothing but `transform` and `opacity`, and every bit
+of it is disabled under `prefers-reduced-motion`.
 
 One accent does three jobs and no more: the active state of a control, the
 current selection, and the single primary action on a surface. Anything needing
@@ -601,10 +636,12 @@ tool that becomes unreadable on its densest setting effectively has one setting.
 
 ### Preferences
 
-Language, theme, accent and density, reachable from the gear, from the
-VisionForge menu, or (for language and theme) directly from the top bar. They
-are stored in `localStorage` under `visionforge.preferences` and are never sent
-to the API — a second machine is entitled to a different answer.
+Language, theme, accent and density, reachable from the gear at the foot of
+the navigation rail, with theme and language also one click away on the rail
+itself — they are the two settings most likely to be wrong on first run, and the
+two whose wrongness makes everything else harder. They are stored in
+`localStorage` under `visionforge.preferences` and are never sent to the API — a
+second machine is entitled to a different answer.
 
 An inline script in `<head>` applies the three CSS axes before first paint, so
 the first frame is already in the right theme; the store rehydrates in a layout
@@ -613,7 +650,8 @@ browser paints, so there is neither a hydration mismatch nor a flash.
 
 ### Language
 
-English and Vietnamese, switchable live from the top bar. The dictionary lives
+English and Vietnamese, switchable live from the navigation rail. The
+dictionary lives
 in [`src/lib/i18n`](apps/web/src/lib/i18n): English is authoritative and its
 keys define the message set, and `vi` is typed as `Record<MessageKey, string>`
 so a missing translation is a build error rather than a stray English word in
@@ -625,10 +663,11 @@ languages inflect.
 
 ### Panels
 
-**Empty state** — with no project open, the workstation shows what it is, the
-three steps (create or open a project, import media, cut and render) and the
-actual list of projects to click, rather than a sentence in the middle of a
-black 1920×1080 viewport.
+**Project Home** — with no project open (and any time the rail is asked for
+it), a grid of project cards with cover frames, footage length, format and
+aspect, above the three steps and a note that everything runs locally. It
+replaced a column of text in a black viewport that was correct and
+indistinguishable from an error page.
 
 **Media browser** — three views over the same library, because the questions
 differ in kind: *grid* answers "which shot is this" (thumbnail, duration burnt
@@ -799,9 +838,10 @@ queue they consume. They ship as the same image with a different command.
 
 - [x] Workstation shell: top bar, media browser, preview, timeline, inspector
       and a job status bar in one fixed viewport with resizable panels
-- [x] Design system rebuilt on semantic tokens (`bg-panel`, `border-line`,
-      `text-muted`, `h-control`) — four surface levels, one accent, 11 px working
-      type. No component spells a colour or a height
+- [x] Design system rebuilt on semantic tokens — four surface levels, one
+      accent, one working type size. No component spells a colour or a height.
+      (The token *names* were replaced in the UI redesign below; the rule that a
+      component cannot invent a colour is unchanged)
 - [x] **Dark and light themes**, five accent presets and two interface
       densities, all three resolved as CSS on `<html>` so a change repaints
       rather than re-renders; applied before first paint, so no flash
@@ -881,6 +921,50 @@ Deliberately **not** in Phase 7: downloading music from anywhere, an online
 provider or catalogue, ducking automation, multi-track mixing, waveform display,
 per-clip audio gain, and any copyrighted asset in the repository. The fixtures
 and the acceptance script generate their own music with FFmpeg.
+
+---
+
+**UI redesign — a creative application rather than a dashboard.**
+
+A frontend-only pass over everything Phases 1–7 built. No backend change, no new
+capability, no change to any API contract: the same product, presented properly.
+
+- [x] **Token layer rebuilt.** Warm graphite dark and warm-paper light, neither
+      near black nor near white; four surface levels spaced far enough apart to
+      carry hierarchy without a border; a radius scale that runs to 24px; a type
+      scale raised a step throughout with display sizes above it; four shadow
+      steps; a motion system of two durations and one curve
+- [x] Vocabulary renamed to the semantic set it should always have used —
+      `background`, `surface`, `surface-elevated`, `surface-hover`,
+      `border-subtle`, `foreground`, `foreground-muted`, `accent`, `success`,
+      `warning`, `danger`, `info` — mechanically, across all 233 usages, so the
+      codebase has one set of names rather than two
+- [x] **Six named workspaces** behind a 56px navigation rail (Home, Editor,
+      Assets, Audio, Exports, Settings), on the digit keys. Switching never
+      touches the draft
+- [x] **Project Home** with cover frames and per-project facts, every one of
+      them derived from that project's own media listing because the projects
+      endpoint carries none of them. Nothing invented, nothing rounded up
+- [x] Assets, Audio and Exports are the existing panels given the viewport, not
+      reimplementations: the browser grows to six tile columns, the music panel
+      sits beside the picture and a full-width timeline, and export settings sit
+      beside the render's real pipeline stages, walked from its own step rows
+- [x] Softer shapes throughout — clips, tiles, cards, controls — with depth from
+      surface level and restrained shadow rather than from hairlines
+- [x] The music panel now offers the project's audio assets directly, instead of
+      telling the user to select one in a browser the Audio workspace does not
+      show
+- [x] `relativeTime` localised through `Intl.RelativeTimeFormat`: it was the one
+      place in the application that returned hard-coded English
+- [x] 495 message keys, exact English/Vietnamese parity, zero unreferenced — 19
+      orphaned by the deleted top bar and welcome screen were removed
+- [x] Verified at 1280×720, 1440×900 and 1920×1080 in both themes, both
+      languages, all five accents and both densities, with a scripted
+      horizontal-overflow audit on every combination
+
+Deliberately **not** in this pass: any backend change, a waveform (the API
+exposes no sample data and drawing one would be fiction), per-clip colour or
+transform controls, and anything belonging to Phase 8.
 
 <details>
 <summary>Phase 5 — LLM planning behind the existing boundary</summary>

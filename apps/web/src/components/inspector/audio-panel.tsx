@@ -96,9 +96,9 @@ export function AudioPanel({
 
   // ------------------------------------------------------------------ empty
   if (!music || !track) {
-    const audioCount = mediaList.filter(
+    const tracks = mediaList.filter(
       (asset) => asset.kind === "audio" && asset.status === "ready",
-    ).length;
+    );
 
     return (
       <div className="flex flex-col gap-panel-gap p-panel">
@@ -106,25 +106,58 @@ export function AudioPanel({
           icon="audio"
           title={t("audio.none.title")}
           action={
-            <Button
-              size="sm"
-              tone="primary"
-              disabled={!choosable}
-              title={choosable ? t("audio.chooseHint") : t("audio.notAudio")}
-              onClick={() => choosable && setMusic(choosable)}
-            >
-              <Glyph name="audio" size={10} />
-              {t("audio.choose")}
-            </Button>
+            choosable ? (
+              <Button size="sm" tone="primary" onClick={() => setMusic(choosable)}>
+                <Glyph name="audio" size={10} />
+                {t("audio.choose")}
+              </Button>
+            ) : undefined
           }
         >
-          {t("audio.none.body")}
+          {tracks.length > 0 ? t("audio.none.pick") : t("audio.none.body")}
         </EmptyState>
 
-        {audioCount > 0 && (
-          <p className="text-center font-mono text-2xs text-faint">
-            {t("media.filter.audio")}: {audioCount}
-          </p>
+        {/* The project's audio, offered here rather than described. The panel
+            is handed the whole media list already, and telling someone to go
+            and select something in a browser that this workspace does not show
+            is an instruction they cannot follow. */}
+        {tracks.length > 0 && (
+          <ul className="flex flex-col gap-1">
+            {tracks.map((asset) => (
+              <li key={asset.id}>
+                <button
+                  type="button"
+                  onClick={() => setMusic(asset)}
+                  title={asset.original_filename}
+                  className="group flex w-full items-center gap-2.5 rounded-lg bg-elevated px-2.5 py-2 text-left transition-[background-color,transform] duration-fast hover:bg-hover active:scale-[0.99]"
+                >
+                  <span
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-success/15 text-success"
+                    aria-hidden
+                  >
+                    <Glyph name="audio" size={13} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs text-fg">
+                      {asset.original_filename}
+                    </span>
+                    <span className="mt-0.5 block font-mono text-2xs tabular-nums text-faint">
+                      {shortDuration(asset.duration_ms)}
+                      {asset.channels
+                        ? ` · ${t("clip.audioValue", {
+                            channels: asset.channels,
+                            rate: asset.sample_rate ?? t("common.dash"),
+                          })}`
+                        : ""}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-faint transition-colors duration-fast group-hover:text-accent-strong">
+                    <Glyph name="chevron-right" size={12} />
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     );

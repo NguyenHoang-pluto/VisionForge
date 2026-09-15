@@ -16,8 +16,6 @@ import type { MessageKey } from "@/lib/i18n/messages.en";
 export const vi: Record<MessageKey, string> = {
   // ------------------------------------------------------------------- app
   "app.name": "VisionForge",
-  "app.tagline": "Trạm dựng video",
-  "app.menu": "Menu ứng dụng",
   "app.version": "Phiên bản {version}",
 
   // ------------------------------------------------------------ top bar
@@ -29,12 +27,10 @@ export const vi: Record<MessageKey, string> = {
   "top.project.create": "Tạo",
   "top.project.mediaCount.one": "{count} tệp",
   "top.project.mediaCount.other": "{count} tệp",
-  "top.group.project": "Dự án",
   "top.group.edit": "Dựng",
   "top.group.workspace": "Không gian làm việc",
 
   "top.analyse": "Phân tích",
-  "top.analyse.all": "Phân tích toàn bộ",
   "top.analyse.allHint": "Chạy mọi bộ phân tích trên {count} tệp đã sẵn sàng trong dự án",
   "top.analyse.selection": "Phân tích phần đã chọn",
   "top.analyse.selectionHint": "Chạy mọi bộ phân tích trên {count} tệp đang chọn",
@@ -51,22 +47,9 @@ export const vi: Record<MessageKey, string> = {
   "top.view.browser.hide": "Ẩn trình duyệt media",
   "top.view.inspector.show": "Hiện bảng thuộc tính",
   "top.view.inspector.hide": "Ẩn bảng thuộc tính",
-  "top.shortcuts": "Phím tắt",
-  "top.settings": "Tuỳ chọn",
-  "top.theme.toDark": "Chuyển sang giao diện tối",
-  "top.theme.toLight": "Chuyển sang giao diện sáng",
-  "top.language": "Ngôn ngữ",
 
-  "top.menu.newProject": "Dự án mới…",
-  "top.menu.preferences": "Tuỳ chọn…",
-  "top.menu.shortcuts": "Phím tắt",
 
   // ------------------------------------------------------------- welcome
-  "welcome.lead":
-    "VisionForge dựng video từ footage bạn nhập vào. Mở một dự án để làm tiếp, hoặc tạo dự án mới để bắt đầu.",
-  "welcome.recent": "Dự án",
-  "welcome.create": "Dự án mới",
-  "welcome.empty": "Chưa có dự án nào.",
   "welcome.loading": "Đang tải dự án…",
   "welcome.unreachable": "Không kết nối được API",
   "welcome.unreachableHint": "Khởi động bằng .\\scripts\\vf.ps1 api rồi tải lại trang này.",
@@ -292,7 +275,6 @@ export const vi: Record<MessageKey, string> = {
   "ai.style": "Phong cách",
   "ai.style.label": "Phong cách dựng",
   "ai.style.none": "Không",
-  "ai.request": "Yêu cầu",
   "ai.request.hint": "Mô tả điều bạn muốn, bằng lời của bạn.",
   "ai.request.label": "Mô tả bản dựng",
   "ai.request.placeholder": "Highlight bóng đá 25 giây, nhịp nhanh, chọn khoảnh khắc đẹp nhất",
@@ -486,7 +468,6 @@ export const vi: Record<MessageKey, string> = {
   "audio.none.title": "Chưa có nhạc nền",
   "audio.none.body": "Chọn một tệp âm thanh trong trình duyệt media để đặt làm nhạc nền cho bản dựng.",
   "audio.choose": "Dùng làm nhạc nền",
-  "audio.chooseHint": "Đặt tệp âm thanh đang chọn xuống dưới timeline",
   "audio.remove": "Bỏ nhạc nền",
   "audio.replace": "Đổi bài",
   "audio.track": "Bài nhạc",
@@ -517,7 +498,6 @@ export const vi: Record<MessageKey, string> = {
   "audio.beatsUnreliable": "Không tìm thấy nhịp ổn định trong bài này, nên các nhát cắt sẽ không khớp nhịp.",
   "audio.beatsReady": "Bài này có thể cắt khớp nhịp.",
   "audio.analysing": "Đang phân tích bài nhạc…",
-  "audio.notAudio": "Hãy chọn một tệp âm thanh trước.",
   "audio.markers": "Vạch nhịp",
   "audio.markersHint": "Hiện các nhịp phát hiện được trên track âm thanh",
   "timeline.track.musicShort": "M1",
@@ -566,6 +546,9 @@ export const vi: Record<MessageKey, string> = {
   "export.stage.publish": "Công bố — tải tệp lên",
   "export.stage.complete": "Hoàn tất",
   "export.stage.attempt": "Lần thử {attempt}",
+
+  "ai.target": "Mục tiêu",
+  "audio.none.pick": "Chọn một tệp âm thanh của dự án để lót dưới bản dựng này.",
 
   // ---------------------------------------------------------------- common
   "common.close": "Đóng",

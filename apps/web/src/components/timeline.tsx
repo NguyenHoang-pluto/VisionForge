@@ -41,7 +41,7 @@ import { Badge, Divider, Glyph, IconButton, Slider } from "@/components/ui";
  * leaves the element still tracks, and one that ends outside still commits.
  */
 
-const RULER_HEIGHT = 22;
+const RULER_HEIGHT = 26;
 const GUTTER = 76;
 const HANDLE_WIDTH = 8;
 
@@ -102,12 +102,12 @@ function Clip({
       tabIndex={0}
       onPointerDown={(event) => onPointerDown(event, "move")}
       style={{ left, width: Math.max(width, 3) }}
-      className={`group absolute inset-y-[3px] select-none overflow-hidden rounded-sm border transition-colors ${
+      className={`group absolute inset-y-[4px] select-none overflow-hidden rounded-md shadow-raised transition-[box-shadow,background-color] duration-fast ${
         invalid
-          ? "border-danger bg-danger/25"
+          ? "bg-danger/25 ring-1 ring-danger"
           : selected
-            ? "border-accent-strong bg-track-video-selected ring-1 ring-inset ring-accent-strong/60"
-            : "border-strong bg-track-video hover:border-strong"
+            ? "bg-track-video-selected ring-2 ring-inset ring-accent-strong"
+            : "bg-track-video ring-1 ring-inset ring-black/15 hover:shadow-panel"
       }`}
     >
       {/* The filmstrip: one thumbnail tiled along the clip. A texture that says
@@ -126,7 +126,7 @@ function Clip({
         <div className="pointer-events-none absolute inset-0 flex flex-col justify-between px-1.5 py-0.5">
           {/* A name band rather than bare text on the strip: at 30% opacity a
               thumbnail still eats 11px type without it. */}
-          <span className="truncate rounded-sm bg-black/35 px-1 text-2xs font-medium leading-[13px] text-white/95">
+          <span className="truncate rounded bg-black/35 px-1.5 text-2xs font-medium leading-[16px] text-white/95">
             {compact ? clip.index + 1 : name}
           </span>
           {!compact && (
@@ -156,13 +156,13 @@ function Clip({
             onPointerDown(event, "trim", edge);
           }}
           style={{ width: HANDLE_WIDTH }}
-          className={`absolute inset-y-0 flex cursor-ew-resize items-center justify-center bg-transparent transition-colors hover:bg-accent-strong/80 ${
-            edge === "in" ? "left-0" : "right-0"
+          className={`absolute inset-y-0 flex cursor-ew-resize items-center justify-center bg-transparent transition-colors duration-fast hover:bg-accent-strong/70 ${
+            edge === "in" ? "left-0 rounded-l-md" : "right-0 rounded-r-md"
           }`}
         >
           <span
             aria-hidden
-            className={`h-3 w-[2px] rounded-full bg-white/70 transition-opacity ${
+            className={`h-4 w-[2px] rounded-full bg-white/80 transition-opacity duration-fast ${
               selected ? "opacity-60" : "opacity-0"
             } group-hover:opacity-80`}
           />
@@ -232,10 +232,10 @@ function MusicBlock({
         }
       }}
       style={{ left, width: Math.max(width, 3) }}
-      className={`absolute inset-y-[2px] cursor-default select-none overflow-hidden rounded-sm border transition-colors ${
+      className={`absolute inset-y-[3px] cursor-default select-none overflow-hidden rounded-md shadow-raised transition-[box-shadow,background-color] duration-fast ${
         selected
-          ? "border-accent-strong bg-track-audio ring-1 ring-inset ring-accent-strong/60"
-          : "border-strong/70 bg-track-audio hover:border-strong"
+          ? "bg-track-audio-selected ring-2 ring-inset ring-accent-strong"
+          : "bg-track-audio ring-1 ring-inset ring-black/12 hover:shadow-panel"
       }`}
     >
       {/* Beat markers, behind the label. Hairlines rather than ticks: they are
@@ -244,7 +244,7 @@ function MusicBlock({
         <span
           key={index}
           aria-hidden
-          className="absolute inset-y-0 w-px bg-fg/25"
+          className="absolute inset-y-1 w-px bg-black/25"
           style={{ left: x }}
         />
       ))}
@@ -266,8 +266,8 @@ function MusicBlock({
       )}
 
       {width > 40 && (
-        <span className="pointer-events-none absolute inset-y-0 left-1 flex items-center gap-1 truncate font-mono text-2xs text-fg/85">
-          <Glyph name="audio" size={9} />
+        <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center gap-1.5 truncate font-mono text-2xs text-fg/85">
+          <Glyph name="audio" size={10} />
           {width > 90 && name}
         </span>
       )}
@@ -291,12 +291,12 @@ function TrackLabel({
   return (
     <div
       style={{ height }}
-      className="flex items-center gap-1.5 border-b border-subtle px-2 last:border-b-0"
+      className="flex items-center gap-2 px-panel"
     >
       <span className="text-faint">
-        <Glyph name={glyph} size={11} />
+        <Glyph name={glyph} size={12} />
       </span>
-      <span className="font-mono text-2xs font-medium text-muted">{name}</span>
+      <span className="text-2xs font-medium text-muted">{name}</span>
       <span className="ml-auto truncate font-mono text-2xs tabular-nums text-faint">{detail}</span>
     </div>
   );
@@ -544,10 +544,13 @@ export function Timeline({
   const playheadX = (playheadMs / 1000) * pxPerSecond;
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-surface" aria-label={t("timeline.title")}>
+    <section
+      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-surface shadow-panel"
+      aria-label={t("timeline.title")}
+    >
       {/* ---------------- toolbar ---------------- */}
-      <header className="flex h-header shrink-0 items-center gap-1.5 border-b border-subtle bg-elevated px-2">
-        <h2 className="select-none font-mono text-2xs font-medium uppercase tracking-wider text-faint">
+      <header className="flex h-header shrink-0 items-center gap-1.5 px-panel">
+        <h2 className="select-none text-xs font-semibold tracking-tight text-fg">
           {t("timeline.title")}
         </h2>
         {dirty && (
@@ -603,21 +606,21 @@ export function Timeline({
 
         {/* The current time, at the size an editor actually reads it. */}
         <span className="ml-auto flex items-center gap-2.5 font-mono text-2xs tabular-nums text-faint">
-          <span className="text-sm text-fg">{timecode(playheadMs)}</span>
-          <span>/ {timecode(totalMs)}</span>
-          <span className="border-l border-subtle pl-2.5">
-            {t.plural("timeline.clipCount", clips.length)}
+          <span className="rounded-md bg-sunken/70 px-2 py-0.5 text-sm text-fg">
+            {timecode(playheadMs)}
           </span>
+          <span>/ {timecode(totalMs)}</span>
+          <span>{t.plural("timeline.clipCount", clips.length)}</span>
         </span>
       </header>
 
       {/* ---------------- tracks ---------------- */}
       <div className="flex min-h-0 flex-1">
         {/* Track headers stay put while the lanes scroll. */}
-        <div className="shrink-0 border-r border-subtle bg-elevated" style={{ width: GUTTER }}>
+        <div className="shrink-0 bg-surface" style={{ width: GUTTER }}>
           <div
             style={{ height: RULER_HEIGHT }}
-            className="flex items-center border-b border-subtle px-2 font-mono text-2xs uppercase tracking-wider text-faint"
+            className="flex items-center px-panel font-mono text-2xs uppercase tracking-wider text-faint"
           >
             {/* The ruler's own column heading: what the numbers to the right
                 are. Better than an empty box the eye has to explain to itself. */}
@@ -667,17 +670,17 @@ export function Timeline({
                 if (event.key === "End") setPlayhead(totalMs);
               }}
               style={{ height: RULER_HEIGHT }}
-              className="relative cursor-pointer select-none border-b border-subtle bg-ruler"
+              className="relative cursor-pointer select-none bg-ruler"
             >
               {ticks.map((second) => (
                 <div key={second}>
                   <span
                     aria-hidden
-                    className="absolute bottom-0 top-0 w-px bg-strong"
+                    className="absolute bottom-0 top-1.5 w-px bg-strong/70"
                     style={{ left: second * pxPerSecond }}
                   />
                   <span
-                    className="absolute top-[3px] ml-1 font-mono text-2xs tabular-nums text-faint"
+                    className="absolute top-[4px] ml-1.5 font-mono text-2xs tabular-nums text-faint"
                     style={{ left: second * pxPerSecond }}
                   >
                     {timecode(second * 1000, false)}
@@ -687,7 +690,7 @@ export function Timeline({
                       <span
                         key={n}
                         aria-hidden
-                        className="absolute bottom-0 h-[5px] w-px bg-strong/60"
+                        className="absolute bottom-0 h-[5px] w-px bg-strong/50"
                         style={{ left: (second + n * minorStep) * pxPerSecond }}
                       />
                     ))}
@@ -701,7 +704,7 @@ export function Timeline({
               aria-label={t("timeline.track.video")}
               onPointerDown={onLanePointerDown}
               style={{ height: "var(--h-track)" }}
-              className="relative border-b border-subtle bg-lane"
+              className="relative bg-lane"
             >
               {placed.map((clip) => (
                 <Clip
@@ -721,7 +724,7 @@ export function Timeline({
               {dropIndex !== null && (
                 <div
                   aria-hidden
-                  className="pointer-events-none absolute inset-y-0 z-20 w-0.5 bg-accent-strong"
+                  className="pointer-events-none absolute inset-y-1 z-20 w-[3px] rounded-full bg-accent-strong shadow-raised"
                   style={{
                     left:
                       ((dropIndex < placed.length ? placed[dropIndex].startMs : totalMs) / 1000) *
@@ -764,10 +767,10 @@ export function Timeline({
                       left: (clip.startMs / 1000) * pxPerSecond,
                       width: Math.max((clipDuration(clip) / 1000) * pxPerSecond, 3),
                     }}
-                    className={`absolute inset-y-[2px] overflow-hidden rounded-sm border ${
+                    className={`absolute inset-y-[3px] overflow-hidden rounded ${
                       hasAudio
-                        ? "border-strong/70 bg-track-audio"
-                        : "border-dashed border-strong/50 bg-transparent"
+                        ? "bg-track-audio/80 ring-1 ring-inset ring-black/10"
+                        : "border border-dashed border-strong/50 bg-transparent"
                     }`}
                   >
                     {hasAudio && (
@@ -789,7 +792,7 @@ export function Timeline({
             <div
               aria-label={t("timeline.track.music")}
               style={{ height: "var(--h-track-audio)" }}
-              className="relative border-t border-subtle bg-lane/40"
+              className="relative bg-lane/50"
             >
               {music ? (
                 <MusicBlock
@@ -816,17 +819,20 @@ export function Timeline({
                 frame it is looking at. */}
             <div
               aria-hidden
-              className="pointer-events-none absolute bottom-0 top-0 z-30 w-px bg-playhead"
+              className="pointer-events-none absolute bottom-0 top-0 z-30 w-[2px] -translate-x-[0.5px] bg-playhead"
               style={{ left: playheadX }}
             >
-              <span className="absolute -left-[5px] top-0 h-0 w-0 border-x-[5px] border-t-[7px] border-x-transparent border-t-playhead" />
+              {/* A rounded head rather than a triangle: it reads as a handle,
+                  and it is the one shape in the timeline allowed to be sharp
+                  about where it is. */}
+              <span className="absolute -left-[5px] top-0 h-3 w-3 rounded-b-full rounded-t-sm bg-playhead shadow-raised" />
             </div>
           </div>
         </div>
       </div>
 
       {/* ---------------- selected clip readout ---------------- */}
-      <footer className="flex h-row shrink-0 items-center gap-3 border-t border-subtle bg-elevated px-2 font-mono text-2xs tabular-nums text-faint">
+      <footer className="flex h-row shrink-0 items-center gap-3 px-panel pb-1 font-mono text-2xs tabular-nums text-faint">
         {selected ? (
           <>
             <span className="truncate text-muted">
@@ -841,7 +847,7 @@ export function Timeline({
             <span className="text-fg" title={t("timeline.duration")}>
               {timecode(clipDuration(selected))}
             </span>
-            <span className="ml-auto hidden truncate xl:inline">{t("timeline.hint")}</span>
+            <span className="ml-auto hidden truncate 2xl:inline">{t("timeline.hint")}</span>
           </>
         ) : (
           <span className="ml-auto truncate">

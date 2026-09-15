@@ -121,7 +121,7 @@ export function NavRail({
   return (
     <nav
       aria-label={t("nav.title")}
-      className="flex w-rail shrink-0 flex-col items-center gap-1 bg-ground px-2 py-3"
+      className="flex w-rail shrink-0 flex-col items-center gap-1 bg-sunken/60 px-2 py-3"
     >
       <button
         type="button"
@@ -146,8 +146,8 @@ export function NavRail({
       {/* ---- global chrome ---- */}
       <button
         type="button"
-        title={t(theme === "dark" ? "prefs.theme.light" : "prefs.theme.dark")}
-        aria-label={t(theme === "dark" ? "prefs.theme.light" : "prefs.theme.dark")}
+        title={t(theme === "dark" ? "nav.theme.toLight" : "nav.theme.toDark")}
+        aria-label={t(theme === "dark" ? "nav.theme.toLight" : "nav.theme.toDark")}
         onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         className="flex h-[38px] w-[38px] items-center justify-center rounded-lg text-muted transition-[background-color,color,transform] duration-fast hover:bg-hover hover:text-fg active:scale-[0.94]"
       >

@@ -327,7 +327,7 @@ function ListRow({
       onKeyDown={(event) => {
         if (event.key === "Enter") onOpen();
       }}
-      className={`cursor-default border-b border-subtle/50 transition-colors ${
+      className={`cursor-default border-b border-subtle/40 transition-colors duration-fast ${
         active ? "bg-accent-soft" : selected ? "bg-elevated" : "hover:bg-elevated"
       }`}
     >
@@ -347,7 +347,7 @@ function ListRow({
           asset={asset}
           projectId={projectId}
           glyphSize={11}
-          className="h-[22px] w-[34px] rounded-sm"
+          className="h-[22px] w-[34px] rounded"
         />
       </td>
       <td className="max-w-0 truncate px-1.5 text-xs text-fg" title={asset.original_filename}>
@@ -592,11 +592,7 @@ export function MediaBrowser({
       </PanelHeader>
 
       {/* ---- import ---- */}
-      <div
-        className={`flex shrink-0 items-center gap-1.5 px-panel pb-2 ${
-          wide ? "order-2" : ""
-        }`}
-      >
+      <div className="flex shrink-0 items-center gap-1.5 px-panel pb-2">
         <Button
           size="sm"
           title={t("media.import.filesHint")}
@@ -653,7 +649,7 @@ export function MediaBrowser({
 
       {/* ---- filter ---- */}
       <div className="flex shrink-0 items-center gap-1.5 px-panel pb-2.5">
-        <div className="relative min-w-0 flex-1">
+        <div className={`relative min-w-0 ${wide ? "w-[360px] shrink-0" : "flex-1"}`}>
           <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint">
             <Glyph name="search" size={12} />
           </span>

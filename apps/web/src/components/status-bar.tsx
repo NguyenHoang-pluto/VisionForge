@@ -172,9 +172,9 @@ export function StatusBar({
       : 0;
 
   return (
-    <section className="shrink-0 border-t border-subtle bg-elevated" aria-label={t("status.title")}>
+    <section className="shrink-0 px-2 pb-1" aria-label={t("status.title")}>
       {expanded && (
-        <ul className="max-h-40 divide-y divide-subtle/50 overflow-y-auto overscroll-contain border-b border-subtle">
+        <ul className="vf-animate-rise mb-1 max-h-48 overflow-y-auto overscroll-contain rounded-xl bg-surface p-1 shadow-panel">
           {jobs.length === 0 ? (
             <li className="px-2 py-3 text-center text-2xs text-faint">{t("status.noJobs")}</li>
           ) : (
@@ -192,7 +192,7 @@ export function StatusBar({
         </ul>
       )}
 
-      <div className="flex h-row items-center gap-2 px-2">
+      <div className="flex h-row items-center gap-2.5 px-1">
         <IconButton
           label={expanded ? t("status.hideJobs") : t("status.showJobs")}
           active={expanded}

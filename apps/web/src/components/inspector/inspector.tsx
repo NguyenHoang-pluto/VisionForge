@@ -61,13 +61,15 @@ export function Inspector({
   const readyCount = mediaList.filter((asset) => asset.status === "ready").length;
 
   return (
-    <Panel className="h-full border-l border-subtle">
-      <Tabs
-        value={tab}
-        onChange={setTab}
-        tabs={TABS.map((item) => ({ value: item.value, label: t(item.label) }))}
-        label={t("inspector.title")}
-      />
+    <Panel className="h-full overflow-hidden rounded-xl shadow-panel">
+      <div className="shrink-0 px-panel pb-2 pt-panel">
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          tabs={TABS.map((item) => ({ value: item.value, label: t(item.label) }))}
+          label={t("inspector.title")}
+        />
+      </div>
 
       <div
         role="tabpanel"
