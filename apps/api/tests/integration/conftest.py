@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
+import psycopg
 import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -133,6 +134,30 @@ _DOMAIN_TABLES = (
 )
 
 
+#: How long to wait for Postgres before concluding it is not there.
+#: Short on purpose: this is a liveness probe, not a query.
+_DB_PROBE_TIMEOUT_S = 5
+
+
+def _database_is_reachable() -> bool:
+    """Whether Postgres will actually answer, with a bounded wait.
+
+    A plain connect is not enough. A stopped Docker engine can leave its port
+    proxy listening, so the TCP handshake succeeds and the driver then blocks
+    forever waiting for a server greeting that never comes -- which turns a
+    missing dependency into a hung test run. ``connect_timeout`` is what makes
+    the answer arrive.
+    """
+    settings = get_settings()
+    dsn = settings.database_url.replace("+psycopg", "")
+    try:
+        with psycopg.connect(dsn, connect_timeout=_DB_PROBE_TIMEOUT_S) as connection:
+            connection.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _clean_database() -> None:
     """Truncate domain tables once, before any integration test runs.
@@ -146,7 +171,17 @@ def _clean_database() -> None:
     Session-scoped rather than per-test: the fixtures below already clean up
     after themselves, and truncating between every test would triple the
     suite's runtime for no additional isolation.
+
+    Does nothing when no database is reachable, and that is not a weakening.
+    This fixture is hygiene, not an assertion: with no database there is nothing
+    to clean, and every test that needs one still fails on its own ``db``,
+    ``project`` or ``store`` fixture with a message naming what is missing.
+    What it buys is that a test needing only FFmpeg -- the audio-mix suite, for
+    instance -- is no longer gated on infrastructure it never touches, which is
+    what a session-scoped autouse fixture had quietly made it.
     """
+    if not _database_is_reachable():
+        return
     with get_sync_sessionmaker()() as session:
         session.execute(
             text(f"TRUNCATE TABLE {', '.join(_DOMAIN_TABLES)} RESTART IDENTITY CASCADE")
