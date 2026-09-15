@@ -465,44 +465,130 @@ The frontend is an editing workstation, not a page. It opens straight into a
 fixed viewport with independently scrolling panels:
 
 ```
-+----------------------------- top bar -----------------------------+
-| VisionForge | project | analyse |                   panel toggles  |
-+----------+-------------------------------------+-----------------+
-| MEDIA    |                                     | INSPECTOR       |
-| BROWSER  |            PREVIEW                  | clip . analysis |
-|          |   source / program / render         | AI edit . export|
-| grid or  +-------------------------------------+                 |
-| list     |            TIMELINE                 |                 |
-|          |  V1 --[clip][clip][clip]--          |                 |
-|          |  A1 --[....][....][....]--          |                 |
-+----------+-------------------------------------+-----------------+
-| jobs . progress . health                                          |
-+-------------------------------------------------------------------+
++---------------------------------- top bar ----------------------------------+
+| ◆ VisionForge ▾ | project ▾ + | analyse · generate · render | panels ⌨ EN ☀ ⚙ |
++----------+---------------------------------------------+-------------------+
+| MEDIA    |                                             | INSPECTOR         |
+| BROWSER  |            PREVIEW                          | clip . analysis   |
+|          |   source / program / render                 | AI edit . export  |
+| grid     +---------------------------------------------+                   |
+| list     |            TIMELINE                         |                   |
+| compact  |  TC |0:00    |0:02    |0:04    |0:06         |                   |
+|          |  V1 [==clip==][==clip==][==clip==]           |                   |
+|          |  A1 [--------][--------][- - - -]           |                   |
++----------+---------------------------------------------+-------------------+
+| jobs . progress . health                                                    |
++-----------------------------------------------------------------------------+
 ```
 
-**Media browser** -- grid or list over the same library, with thumbnails,
-duration, resolution, frame rate, size, ingest status and an analysis mark.
-Ctrl-click and Shift-click select ranges; the list view is windowed so a library
-of several hundred assets renders a screenful rather than all of it.
+### Design system
 
-**Preview** -- one `<video>` element and three sources. *Source* scrubs a library
+One palette, three switchable axes, all of them resolved in CSS on `<html>` so
+that changing one is a repaint rather than a re-render. The tokens live in
+[`globals.css`](apps/web/src/app/globals.css) and are reached only through the
+semantic Tailwind names in [`tailwind.config.ts`](apps/web/tailwind.config.ts):
+a component says `bg-panel`, `border-line`, `text-muted`, `h-control`, and
+cannot spell a colour or a height of its own.
+
+| Axis | Attribute | Values |
+| --- | --- | --- |
+| Theme | `data-theme` | `dark` (default), `light` |
+| Accent | `data-accent` | `azure` (default), `violet`, `teal`, `amber`, `crimson` |
+| Density | `data-density` | `comfortable` (default), `compact` |
+
+**Colour.** Four surface levels on a near-black charcoal ground, kept
+deliberately close together: an editor is looked at for hours, and panel edges
+should read as structure rather than as contrast. Depth comes from hairlines,
+never from shadow or glow. Light mode is not an inversion — it runs the
+luminance the other way, with panels lifted above a grey working ground and
+white controls on top of those.
+
+One accent does three jobs and no more: the active state of a control, the
+current selection, and the single primary action on a surface. Anything needing
+a fourth meaning is a status colour (`ok` / `warn` / `danger` / `info`), and
+every status colour is paired with a word — no state in the application is
+carried by hue alone. The playhead keeps its own red, because "the clip I am
+holding" and "the frame I am looking at" have to stay distinguishable.
+
+Colours are stored as sRGB channel triples rather than hex, so Tailwind composes
+them with an alpha channel (`bg-accent/40` → `rgb(var(--accent) / 0.4)`). Given
+a bare `var()` Tailwind 3 drops the modifier silently, which is how a palette
+ends up with forty hand-written translucent variants nobody can audit. The
+accent's soft tint and the timeline's clip fills are mixed from the accent per
+theme with `color-mix`, so adding a preset is two lines.
+
+**Density** compacts chrome only — control heights, header strips, row rhythm,
+panel padding, track height. Type size does not shrink, because a professional
+tool that becomes unreadable on its densest setting effectively has one setting.
+
+### Preferences
+
+Language, theme, accent and density, reachable from the gear, from the
+VisionForge menu, or (for language and theme) directly from the top bar. They
+are stored in `localStorage` under `visionforge.preferences` and are never sent
+to the API — a second machine is entitled to a different answer.
+
+An inline script in `<head>` applies the three CSS axes before first paint, so
+the first frame is already in the right theme; the store rehydrates in a layout
+effect, which is after React has matched the server's HTML and before the
+browser paints, so there is neither a hydration mismatch nor a flash.
+
+### Language
+
+English and Vietnamese, switchable live from the top bar. The dictionary lives
+in [`src/lib/i18n`](apps/web/src/lib/i18n): English is authoritative and its
+keys define the message set, and `vi` is typed as `Record<MessageKey, string>`
+so a missing translation is a build error rather than a stray English word in
+the middle of a Vietnamese panel. Components contain no English at all — they
+ask for `media.empty.title`, and the fact that there are two languages is not
+something they can see. Interpolation is `{name}` slots; `t.plural(base, count)`
+picks between `.one` and `.other` so the call site does not have to know which
+languages inflect.
+
+### Panels
+
+**Empty state** — with no project open, the workstation shows what it is, the
+three steps (create or open a project, import media, cut and render) and the
+actual list of projects to click, rather than a sentence in the middle of a
+black 1920×1080 viewport.
+
+**Media browser** — three views over the same library, because the questions
+differ in kind: *grid* answers "which shot is this" (thumbnail, duration burnt
+into the frame, kind, resolution), *list* answers "which of these is 60fps"
+(columns for duration, resolution, frame rate, size, status), *compact* answers
+"where is clip_047" (one line each, as many filenames on screen as fit). List
+and compact are windowed, so a library of several hundred assets renders a
+screenful. Selection is marked as well as tinted — filled tick for the item the
+inspector is following, outlined tick for the rest of a multiple selection.
+Ctrl-click and Shift-click select ranges.
+
+**Preview** — one `<video>` element and three sources. *Source* scrubs a library
 clip, *program* plays the timeline by sequencing each clip's 720p proxy and
-cutting at its out point, *render* plays the finished MP4. The playhead is shared
-with the timeline: one position, two views of it. The playhead is advanced from
-the media element's own clock once a frame, so it tracks what is actually
-playing rather than a wall-clock timer that would drift on a slow decode.
+cutting at its out point, *render* plays the finished MP4. Transport, timecode
+(burnt into the frame and in the bar), scrub, speed, volume and fullscreen. The
+playhead is shared with the timeline: one position, two views of it. It is
+advanced from the media element's own clock once a frame, so it tracks what is
+actually playing rather than a wall-clock timer that would drift on a slow
+decode. The letterbox stays black in both themes — it is the surround for a
+picture, and a light grey one would lie about the black level of what is inside.
 
-**Timeline** -- a video track and an audio representation, a ruler, a draggable
-playhead, zoom (`Ctrl`+wheel zooms at the pointer) and horizontal scroll. Clips
-can be trimmed by their edges, reordered by dragging, split at the playhead and
-deleted. There are no gaps to drag into and no overlaps to create, because
-`EditPlan` cannot describe either -- a UI that let you build one would be
-offering an edit the renderer must reject.
+**Timeline** — a ruler with two levels of tick, a draggable playhead, a video
+track and an audio representation, filmstripped clip blocks with trim handles,
+zoom (`Ctrl`+wheel zooms at the pointer, plus fit-to-width) and horizontal
+scroll. The lanes always span the panel, so an empty sequence looks empty rather
+than broken. Clips can be trimmed by their edges, reordered by dragging, split
+at the playhead and deleted. There are no gaps to drag into and no overlaps to
+create, because `EditPlan` cannot describe either -- a UI that let you build one
+would be offering an edit the renderer must reject. For the same reason there is
+no snapping indicator: cuts are butt-joined by construction, so a magnet button
+here would be a light that is always on.
 
-**Inspector** -- four tabs over one selection: clip properties and trim points,
-the analysis readout, the AI edit panel, and export.
+**Inspector** — four tabs over one selection: clip properties and trim points,
+the analysis readout, the AI edit panel, and export. Label/value pairs on a
+fixed column, so a column of them lines up down the panel instead of ragging
+with the length of each value.
 
-**AI edit** -- mode (automatic / rules / AI), style, a free-text request, and the
+**AI edit** — mode (automatic / rules / AI), style, a free-text request, and the
 target duration, aspect, frame rate and quality. What the panel offers is
 whatever `/api/planner/capabilities` reports, so on a server with no API key the
 AI mode is visibly disabled rather than silently falling back. A generated plan
@@ -512,27 +598,33 @@ accepted into the timeline, adjusted and regenerated, or discarded. The raw mode
 output is not shown because it does not exist in the API: what the model "said"
 *is* the structured plan.
 
-**Export** -- resolution, aspect, frame rate, quality and audio, all as presets
+**Export** — resolution, aspect, frame rate, quality and audio, all as presets
 the server declared. Rendering stores the current timeline as a plan and then
 renders that plan, so what is encoded is always something the server has already
 validated.
 
-**Status bar** -- the job queue, live over the existing SSE stream. Collapsed it
+**Status bar** — the job queue, live over the existing SSE stream. Collapsed it
 is one line ("idle", or *n* jobs running with overall progress); expanded it is
 every job with its step count, attempt, progress and failure reason.
+Infrastructure health is the indicator at the right, which is where a tool that
+is being used rather than inspected should put it.
 
-Keyboard: `Space` play/pause, `S` split, `Del` delete clip, arrows nudge the
-playhead (`Shift` for a second), `+`/`-` zoom, `B`/`I` toggle the side panels,
-`?` for the full list. Single-key shortcuts are ignored while a text field has
-focus.
+### Keyboard and accessibility
 
-Desktop-first, as an editor should be: it targets 1280x720 and up, and collapses
-the media browser below 1180 px rather than squeezing four panels into a space
-that fits three.
+`Space` play/pause, `S` split, `Del` delete clip, arrows nudge the playhead
+(`Shift` for a second), `+`/`-` zoom, `B`/`I` toggle the side panels, `?` for the
+full list. Single-key shortcuts are ignored while a text field has focus.
 
-Infrastructure health is no longer its own page section -- it is the indicator at
-the right of the status bar, which is where a tool that is being used rather than
-inspected should put it.
+One focus ring is defined for the whole application on `:focus-visible`, so
+pointer users never see it and no control can ship without it. Every icon-only
+control takes a mandatory label that becomes both its accessible name and its
+tooltip. Toggles carry `aria-pressed`, tabs `aria-selected`, the playhead and
+trim handles `role="slider"` with live values.
+
+Desktop-first, as an editor should be. Panel widths step at 1400 and 1800 px;
+below 1180 the media browser collapses and below 1024 the inspector follows,
+rather than squeezing four panels into a space that fits three. Verified at
+1280×720, 1440×900 and 1920×1080, in both themes and both languages.
 
 ---
 
@@ -624,11 +716,18 @@ queue they consume. They ship as the same image with a different command.
 - [x] Workstation shell: top bar, media browser, preview, timeline, inspector
       and a job status bar in one fixed viewport with resizable panels
 - [x] Design system rebuilt on semantic tokens (`bg-panel`, `border-line`,
-      `text-muted`) — four surface levels, one accent, 2 px radius, 11 px working
-      type. No component spells a colour
-- [x] Media browser: grid and list views, thumbnails, duration, resolution, FPS,
-      size, status and analysis marks; Ctrl/Shift multi-select; windowed list
-      rendering for large libraries
+      `text-muted`, `h-control`) — four surface levels, one accent, 11 px working
+      type. No component spells a colour or a height
+- [x] **Dark and light themes**, five accent presets and two interface
+      densities, all three resolved as CSS on `<html>` so a change repaints
+      rather than re-renders; applied before first paint, so no flash
+- [x] **English and Vietnamese**, from one typed dictionary — a missing
+      translation is a build error, and no component contains English
+- [x] Preferences dialog (language, theme, accent, density), persisted to this
+      browser and never sent to the API
+- [x] Media browser: grid, list and compact views, thumbnails, duration,
+      resolution, FPS, size, status and analysis marks; Ctrl/Shift multi-select
+      marked by tick as well as tint; windowed rendering for large libraries
 - [x] Preview viewer: one `<video>` across source / program / render, play,
       pause, seek, second-step navigation, volume, mute, speed, fullscreen,
       aspect-aware framing, and the name of the source clip on screen
@@ -646,7 +745,8 @@ queue they consume. They ship as the same image with a different command.
 - [x] Export panel that sends intent only — a shape, a frame rate, a quality
       level. No width, no CRF, no path, and no field that could carry one
 - [x] Keyboard throughout, visible focus ring defined once globally, ARIA roles
-      on the listbox, tablist, sliders and progress bars
+      on the listbox, tablist, sliders and progress bars; no state carried by
+      colour alone
 - [x] 447 unit tests (+30) and no change to any Phase 1–5 contract
 
 Deliberately **not** in Phase 6: music and beat synchronisation, audio mixing,

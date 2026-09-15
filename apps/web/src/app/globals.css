@@ -2,86 +2,291 @@
 @tailwind components;
 @tailwind utilities;
 
-/*
- * Workstation tokens.
- *
- * One palette, four surface levels, one accent. The levels are close together
- * on purpose: an editor is looked at for hours, and panel edges should be read
- * as structure, not as contrast. Depth comes from hairlines, not shadows.
- *
- * Colours are defined once here and consumed through Tailwind's semantic names
- * (bg-panel, border-line, text-muted) so that a component never spells a hex
- * value and the whole application can be re-toned from this block.
- */
+/* ===========================================================================
+   VisionForge design system
+   ---------------------------------------------------------------------------
+   Three independent axes, each a data attribute on <html>, each resolved
+   entirely in CSS so that switching one is a repaint and not a re-render:
+
+     data-theme    dark | light          surface, line and text families
+     data-accent   azure | violet | …    the single accent, five presets
+     data-density  comfortable | compact control heights and panel padding
+
+   Colours are stored as space-separated sRGB channels rather than hex, so that
+   Tailwind can compose them with an alpha channel: `bg-accent/40` compiles to
+   `rgb(var(--accent) / 0.4)`. Given a bare `var(--accent)` Tailwind 3 drops the
+   modifier silently, which is how a palette ends up with forty hand-written
+   translucent variants that nobody can audit.
+
+   Components never spell a colour. They say `bg-panel`, `border-line`,
+   `text-muted`, and the whole application is re-toned from this block.
+   ======================================================================== */
+
+/* ---------------------------------------------------------------- dark ----
+   The default. A near-black charcoal ground with four surface levels kept
+   deliberately close together: an editor is looked at for hours, and panel
+   edges should read as structure, not as contrast. Depth comes from hairlines,
+   never from shadow or glow. */
 :root {
   color-scheme: dark;
 
-  /* Surfaces, deepest first. */
-  --surface-0: #0b0c0e; /* application ground, panel gutters */
-  --surface-1: #131519; /* panel body */
-  --surface-2: #1a1d22; /* panel header, raised row */
-  --surface-3: #22262c; /* control: input, button, tab */
-  --surface-4: #2c3138; /* control, hovered */
+  --surface-0: 12 13 16; /* application ground, gutters, letterbox */
+  --surface-1: 20 22 26; /* panel body */
+  --surface-2: 27 30 35; /* panel header, top bar, status bar */
+  --surface-3: 35 39 45; /* control: input, button, tab */
+  --surface-4: 45 50 58; /* control, hovered */
 
-  /* Structure. */
-  --line: #262a31;
-  --line-strong: #383e47;
+  --line: 36 40 47;
+  --line-strong: 56 61 70;
 
-  /* Type. */
-  --text: #e3e6ea;
-  --text-muted: #99a0aa;
-  --text-dim: #656c76;
+  --text: 230 233 238;
+  --text-muted: 154 162 173;
+  --text-dim: 124 132 146; /* 4.9:1 on panel — small print stays legible */
 
-  /* One accent, used for selection and the primary action only. */
-  --accent: #4b8ed4;
-  --accent-strong: #63a2e4;
-  --accent-soft: #1b3350;
-  --accent-fg: #eaf2fb;
+  /* Status. Desaturated enough to sit beside neutral greys all day, separated
+     enough in hue to survive the common forms of colour blindness. Never the
+     only carrier of meaning: everything with a status colour also has a word. */
+  --ok: 94 186 129;
+  --warn: 214 161 74;
+  --danger: 224 111 100;
+  --info: 106 158 214;
 
-  /* Status. Desaturated enough to sit beside neutral greys all day. */
-  --ok: #58b37b;
-  --warn: #cf9b46;
-  --danger: #d4685f;
-  --info: #5b93c9;
+  /* Timeline. Ruler and lane sit below the panel so that clips read as objects
+     resting on a surface rather than as panel decoration. */
+  --ruler: 16 18 21;
+  --lane: 15 17 20;
+  --playhead: 232 88 74;
 
-  /* Timeline. */
-  --track-video: #2d4358;
-  --track-video-selected: #3c6187;
-  --track-audio: #2f4440;
-  --playhead: #e0574b;
-  --ruler: #16181c;
+  /* How the accent is softened, per theme. See the derived block below. */
+  --accent-mix-soft: 24%;
+  --accent-mix-base: var(--surface-1);
+  --accent-mix-track: 30%;
+  --accent-mix-track-selected: 58%;
+  --accent-track-base: var(--surface-3);
+
+  /* Ink drawn on a solid `--accent-strong` fill. In dark mode that fill is a
+     light tint of the accent, so the readable ink is near-black; in light mode
+     the fill is a deep one and the ink is white. One token, both directions. */
+  --accent-fg: 12 13 16;
+
+  /* Chrome that is not a surface: menus and dialogs lift off the page, but by
+     a shadow you have to look for. */
+  --shadow-menu: 0 6px 20px -6px rgb(0 0 0 / 0.65), 0 2px 6px -2px rgb(0 0 0 / 0.5);
+  --scrim: 0 0 0 / 0.62;
 }
 
+/* --------------------------------------------------------------- light ----
+   Not an inversion. A light editor wants a grey working ground with panels
+   lifted *above* it and controls white on top of those — the opposite
+   luminance order to dark, where controls are lighter than the panel they sit
+   on. The surface names stay semantic, so no component needs to know which way
+   the scale runs. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --surface-0: 226 229 234; /* working ground, gutters */
+  --surface-1: 248 249 251; /* panel body */
+  --surface-2: 238 240 244; /* panel header, top bar, status bar */
+  --surface-3: 255 255 255; /* control */
+  --surface-4: 233 236 241; /* control, hovered */
+
+  --line: 219 224 231;
+  --line-strong: 190 197 208;
+
+  --text: 20 24 31;
+  --text-muted: 76 85 99;
+  --text-dim: 105 113 126; /* 4.7:1 on panel */
+
+  --ok: 31 130 78;
+  --warn: 160 106 15;
+  --danger: 191 60 48;
+  --info: 35 105 175;
+
+  --ruler: 232 235 240;
+  --lane: 222 226 232;
+  --playhead: 210 48 36;
+
+  --accent-mix-soft: 13%;
+  --accent-mix-base: 255 255 255;
+  --accent-mix-track: 22%;
+  --accent-mix-track-selected: 52%;
+  --accent-track-base: 255 255 255;
+
+  --accent-fg: 255 255 255;
+
+  --shadow-menu: 0 8px 22px -8px rgb(15 23 42 / 0.28), 0 2px 6px -2px rgb(15 23 42 / 0.16);
+  --scrim: 15 23 42 / 0.32;
+}
+
+/* -------------------------------------------------------------- accents ---
+   One accent at a time, used for exactly three things: the active state of a
+   control, the current selection, and the single primary action on a surface.
+   Anything needing a fourth meaning is a status colour, not an accent.
+
+   Each preset declares two channels. Everything else — the soft selection
+   tint, the timeline clip fill — is mixed from them per theme below, so adding
+   a preset is two lines and cannot drift out of step with the rest.
+
+   Scoped to `[data-accent]` rather than `:root[data-accent]` on purpose: the
+   preferences dialog puts the attribute on each swatch so the swatch paints
+   itself in the accent it offers. One definition serves the document and the
+   picker, and a swatch cannot end up showing a colour the application would
+   not actually use. */
+:root {
+  --accent: 74 143 219;
+  --accent-strong: 108 170 236;
+}
+[data-accent="azure"] {
+  --accent: 74 143 219;
+  --accent-strong: 108 170 236;
+}
+[data-accent="violet"] {
+  --accent: 138 116 226;
+  --accent-strong: 165 147 240;
+}
+[data-accent="teal"] {
+  --accent: 42 160 153;
+  --accent-strong: 78 188 180;
+}
+[data-accent="amber"] {
+  --accent: 201 141 47;
+  --accent-strong: 226 168 76;
+}
+[data-accent="crimson"] {
+  --accent: 209 79 92;
+  --accent-strong: 230 112 124;
+}
+
+/* Light mode needs marginally deeper accents to hold their own against white,
+   and `--accent-strong` inverts direction: on a light ground the emphatic
+   version of a colour is the darker one. Same hue, more weight.
+
+   Each rule is listed twice — as a compound and as a descendant — so that it
+   reaches both the root element and a swatch nested inside it, at equal
+   specificity either way. */
+:root[data-theme="light"] {
+  --accent: 29 106 187;
+  --accent-strong: 21 85 155;
+}
+[data-theme="light"][data-accent="azure"],
+[data-theme="light"] [data-accent="azure"] {
+  --accent: 29 106 187;
+  --accent-strong: 21 85 155;
+}
+[data-theme="light"][data-accent="violet"],
+[data-theme="light"] [data-accent="violet"] {
+  --accent: 102 76 202;
+  --accent-strong: 82 58 174;
+}
+[data-theme="light"][data-accent="teal"],
+[data-theme="light"] [data-accent="teal"] {
+  --accent: 15 124 118;
+  --accent-strong: 10 100 95;
+}
+[data-theme="light"][data-accent="amber"],
+[data-theme="light"] [data-accent="amber"] {
+  --accent: 163 106 12;
+  --accent-strong: 136 87 8;
+}
+[data-theme="light"][data-accent="crimson"],
+[data-theme="light"] [data-accent="crimson"] {
+  --accent: 183 48 63;
+  --accent-strong: 156 36 50;
+}
+
+/* Derived once, for every accent and both themes. */
+:root {
+  --accent-soft: color-mix(
+    in srgb,
+    rgb(var(--accent)) var(--accent-mix-soft),
+    rgb(var(--accent-mix-base))
+  );
+  --track-video: color-mix(
+    in srgb,
+    rgb(var(--accent)) var(--accent-mix-track),
+    rgb(var(--accent-track-base))
+  );
+  --track-video-selected: color-mix(
+    in srgb,
+    rgb(var(--accent)) var(--accent-mix-track-selected),
+    rgb(var(--accent-track-base))
+  );
+  --track-audio: color-mix(in srgb, rgb(var(--ok)) 26%, rgb(var(--accent-track-base)));
+}
+
+/* -------------------------------------------------------------- density ---
+   Chrome only. Type size does not shrink, because a professional tool that
+   becomes unreadable on its densest setting effectively has one setting. What
+   compacts is the space around the type: control heights, header strips, row
+   rhythm, panel padding and track height — about a sixth of the vertical
+   chrome, which on a 720p laptop is two more clips' worth of timeline. */
+:root,
+:root[data-density="comfortable"] {
+  --h-control: 26px;
+  --h-control-sm: 22px;
+  --h-header: 30px;
+  --h-strip: 34px;
+  --h-row: 22px;
+  --pad-panel: 10px;
+  --gap-panel: 12px;
+  --h-track: 48px;
+  --h-track-audio: 26px;
+}
+:root[data-density="compact"] {
+  --h-control: 22px;
+  --h-control-sm: 19px;
+  --h-header: 25px;
+  --h-strip: 28px;
+  --h-row: 19px;
+  --pad-panel: 7px;
+  --gap-panel: 8px;
+  --h-track: 38px;
+  --h-track-audio: 20px;
+}
+
+/* ================================================================ base === */
 html,
 body {
   height: 100%;
 }
 
 body {
-  background: var(--surface-0);
-  color: var(--text);
+  background: rgb(var(--surface-0));
+  color: rgb(var(--text));
   /* An editor is a fixed viewport with independently scrolling panels. */
   overflow: hidden;
   overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
+  /* Below this, panels stop being panels. The application does not pretend to
+     be a phone; it says so at the layout level rather than by degrading. */
+  min-width: 940px;
 }
 
 /*
- * One focus ring for the entire application.
+ * One focus ring for the whole application.
  *
- * Applied on :focus-visible only, so pointer users never see it and keyboard
- * users always do. Defined here rather than per component so that no control
- * can ship without it.
+ * On :focus-visible only, so pointer users never see it and keyboard users
+ * always do. Two pixels rather than one: at 11px type on a charcoal ground a
+ * hairline ring is not a visible state. Defined here rather than per
+ * component, so that no control can ship without it.
  */
 :focus-visible {
-  outline: 1px solid var(--accent-strong);
+  outline: 2px solid rgb(var(--accent-strong));
   outline-offset: 1px;
+  border-radius: 2px;
 }
 
-/* Compact scrollbars: a media browser has several, and the default chrome eats
-   real estate that the content needs. */
+::selection {
+  background: rgb(var(--accent) / 0.35);
+  color: rgb(var(--text));
+}
+
+/* ------------------------------------------------------------ scrollbars --
+   A media browser has several, and the platform default eats real estate the
+   content needs. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-color: rgb(var(--line-strong)) transparent;
 }
 *::-webkit-scrollbar {
   width: 10px;
@@ -91,14 +296,86 @@ body {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--line-strong);
+  background: rgb(var(--line-strong));
   border: 3px solid transparent;
   background-clip: content-box;
   border-radius: 6px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--text-dim);
+  background: rgb(var(--text-dim));
   background-clip: content-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* --------------------------------------------------------------- sliders --
+   Range inputs are the one native control that utilities cannot reach, and the
+   application has five of them (seek, volume, timeline zoom, and two in
+   preferences). Styled once here so that a slider looks like a slider
+   everywhere instead of like whichever engine drew it.
+
+   `--fill` is set inline by the component that knows the value, so the track
+   shows its own progress without a second element stacked behind it. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    rgb(var(--accent)) var(--fill, 0%),
+    rgb(var(--line-strong)) var(--fill, 0%)
+  );
+}
+input[type="range"]::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgb(var(--line-strong));
+}
+input[type="range"]::-moz-range-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: rgb(var(--accent));
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 11px;
+  width: 11px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: rgb(var(--text));
+  border: 1px solid rgb(var(--surface-0));
+  transition: background-color 120ms;
+}
+input[type="range"]::-moz-range-thumb {
+  height: 11px;
+  width: 11px;
+  border: 1px solid rgb(var(--surface-0));
+  border-radius: 50%;
+  background: rgb(var(--text));
+}
+input[type="range"]:hover::-webkit-slider-thumb {
+  background: rgb(var(--accent-strong));
+}
+input[type="range"]:hover::-moz-range-thumb {
+  background: rgb(var(--accent-strong));
+}
+input[type="range"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* The native dropdown list inherits the application, not the OS light default. */
+select option {
+  background: rgb(var(--surface-2));
+  color: rgb(var(--text));
 }
 
 /* Dragging a clip or a panel divider must not select the text underneath. */
@@ -106,6 +383,21 @@ body {
 .vf-dragging * {
   cursor: inherit !important;
   user-select: none !important;
+}
+
+/*
+ * A filmstrip: one thumbnail tiled along the length of a clip.
+ *
+ * `--strip` is set inline by the clip, which is the only thing that knows
+ * which presigned thumbnail belongs to it. Tiling one frame is honest about
+ * what the client has — it is a texture that says "this is footage", not a
+ * claim about the frames at those positions.
+ */
+.vf-filmstrip {
+  background-image: var(--strip);
+  background-repeat: repeat-x;
+  background-size: auto 100%;
+  background-position: left center;
 }
 
 @media (prefers-reduced-motion: reduce) {

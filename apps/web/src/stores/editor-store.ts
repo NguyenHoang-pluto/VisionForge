@@ -28,7 +28,14 @@ import {
  */
 
 export type PreviewSource = "source" | "program" | "render";
-export type BrowserView = "grid" | "list";
+/**
+ * How the media browser draws the library.
+ *
+ * `grid` answers "which shot is this", `list` answers "which of these is
+ * 60fps", `compact` answers "where is clip_047". Three views rather than two
+ * because those are three different questions, not three densities of one.
+ */
+export type BrowserView = "grid" | "list" | "compact";
 export type InspectorTab = "clip" | "analysis" | "ai" | "export";
 
 interface EditorState {

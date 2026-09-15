@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { api, type EditPlan, type MediaAsset } from "@/lib/api";
 import { seconds, timecode } from "@/lib/format";
+import { useT, type MessageKey, type Translate } from "@/lib/i18n";
 import { toDraft } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import { Badge, Button, Dialog, Glyph, Row } from "@/components/ui";
@@ -22,14 +23,14 @@ import { Badge, Button, Dialog, Glyph, Row } from "@/components/ui";
  */
 
 /** Fallback reasons, in words a user can act on. */
-const FALLBACK_TEXT: Record<string, string> = {
-  provider_disabled: "no AI provider is configured",
-  provider_unavailable: "the AI provider was unreachable",
-  provider_error: "the AI provider returned an error",
-  invalid_output: "the model's answer could not be used",
-  invalid_plan: "the model's edit did not pass validation",
-  no_usable_media: "there was not enough usable footage",
-  unexpected_error: "an unexpected error in the AI planner",
+const FALLBACK_TEXT: Record<string, MessageKey> = {
+  provider_disabled: "plan.fallback.provider_disabled",
+  provider_unavailable: "plan.fallback.provider_unavailable",
+  provider_error: "plan.fallback.provider_error",
+  invalid_output: "plan.fallback.invalid_output",
+  invalid_plan: "plan.fallback.invalid_plan",
+  no_usable_media: "plan.fallback.no_usable_media",
+  unexpected_error: "plan.fallback.unexpected_error",
 };
 
 /** Distinct hues so adjacent clips separate in the proportional strip. */
@@ -55,6 +56,7 @@ export function PlanReview({
   open: boolean;
   onClose: () => void;
 }) {
+  const t = useT();
   const setClips = useEditorStore((s) => s.setClips);
   const setInspectorTab = useEditorStore((s) => s.setInspectorTab);
 
@@ -70,13 +72,13 @@ export function PlanReview({
   const plan = detail.data ?? null;
 
   return (
-    <Dialog open={open} onClose={onClose} title="Edit plan">
+    <Dialog open={open} onClose={onClose} title={t("plan.title")} size="lg">
       {!plan ? (
         <p className="py-6 text-center text-xs text-dim">
-          {detail.isError ? "Could not load this plan." : "Loading plan…"}
+          {detail.isError ? t("plan.loadFailed") : t("plan.loading")}
         </p>
       ) : (
-        <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto">
+        <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto overscroll-contain">
           <PlanSummary plan={plan} />
           <Strip plan={plan} media={media} />
           <Segments plan={plan} media={media} />
@@ -94,7 +96,7 @@ export function PlanReview({
               }}
             >
               <Glyph name="check" size={10} />
-              Accept into timeline
+              {t("plan.accept")}
             </Button>
             <Button
               onClick={() => {
@@ -103,10 +105,10 @@ export function PlanReview({
               }}
             >
               <Glyph name="refresh" size={10} />
-              Adjust and regenerate
+              {t("plan.adjust")}
             </Button>
             <Button className="ml-auto" onClick={onClose}>
-              Close
+              {t("plan.close")}
             </Button>
           </div>
         </div>
@@ -116,22 +118,30 @@ export function PlanReview({
 }
 
 function PlanSummary({ plan }: { plan: EditPlan }) {
+  const t = useT();
   const output = plan.plan.output;
   return (
     <section>
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge tone={plan.planner === "manual" ? "neutral" : "accent"}>{plan.planner}</Badge>
         {plan.mode && <Badge>{plan.mode.mode}</Badge>}
-        {plan.llm?.fallback_reason && <Badge tone="warn">fell back</Badge>}
+        {plan.llm?.fallback_reason && <Badge tone="warn">{t("plan.fellBack")}</Badge>}
       </div>
       <div className="mt-1.5">
-        <Row label="Clips" value={String(plan.segment_count)} />
-        <Row label="Duration" value={timecode(plan.total_duration_ms)} />
-        <Row label="Output" value={`${output.width}×${output.height} @ ${output.fps} fps`} />
-        <Row label="Aspect" value={output.aspect_ratio} />
-        <Row label="Quality" value={output.quality} />
-        <Row label="Audio" value={output.audio} />
-        <Row label="Fit" value={output.fit} />
+        <Row label={t("plan.clips")} value={String(plan.segment_count)} />
+        <Row label={t("plan.duration")} value={timecode(plan.total_duration_ms)} />
+        <Row
+          label={t("plan.output")}
+          value={t("plan.outputValue", {
+            width: output.width,
+            height: output.height,
+            fps: output.fps,
+          })}
+        />
+        <Row label={t("plan.aspect")} value={output.aspect_ratio} />
+        <Row label={t("plan.quality")} value={output.quality} />
+        <Row label={t("plan.audio")} value={output.audio} />
+        <Row label={t("plan.fit")} value={output.fit} />
       </div>
     </section>
   );
@@ -161,17 +171,18 @@ function Strip({ plan, media }: { plan: EditPlan; media: Map<string, MediaAsset>
 }
 
 function Segments({ plan, media }: { plan: EditPlan; media: Map<string, MediaAsset> }) {
+  const t = useT();
   return (
     <div className="overflow-x-auto">
       <table className="w-full font-mono text-2xs tabular-nums">
         <thead className="text-dim">
           <tr className="border-b border-line-strong">
-            <th className="py-1 pr-2 text-left font-normal">#</th>
-            <th className="py-1 pr-2 text-left font-normal">Source</th>
-            <th className="py-1 pr-2 text-right font-normal">In</th>
-            <th className="py-1 pr-2 text-right font-normal">Out</th>
-            <th className="py-1 pr-2 text-right font-normal">Dur</th>
-            <th className="py-1 text-right font-normal">Cut</th>
+            <th className="py-1 pr-2 text-left font-normal">{t("plan.column.index")}</th>
+            <th className="py-1 pr-2 text-left font-normal">{t("plan.column.source")}</th>
+            <th className="py-1 pr-2 text-right font-normal">{t("plan.column.in")}</th>
+            <th className="py-1 pr-2 text-right font-normal">{t("plan.column.out")}</th>
+            <th className="py-1 pr-2 text-right font-normal">{t("plan.column.duration")}</th>
+            <th className="py-1 text-right font-normal">{t("plan.column.cut")}</th>
           </tr>
         </thead>
         <tbody className="text-muted">
@@ -199,13 +210,14 @@ function Segments({ plan, media }: { plan: EditPlan; media: Map<string, MediaAss
 
 /** Why clips were dropped. An automatic edit that cannot explain itself is not reviewable. */
 function Rejections({ plan, media }: { plan: EditPlan; media: Map<string, MediaAsset> }) {
+  const t = useT();
   const rejected = plan.selection?.rejected ?? [];
   if (rejected.length === 0) return null;
 
   return (
     <details>
       <summary className="cursor-pointer font-mono text-2xs text-dim marker:text-line-strong hover:text-muted">
-        {rejected.length} clip{rejected.length === 1 ? "" : "s"} not used
+        {t.plural("plan.rejected", rejected.length)}
       </summary>
       <ul className="mt-1 flex flex-col gap-0.5">
         {rejected.map((item) => (
@@ -228,25 +240,40 @@ function Rejections({ plan, media }: { plan: EditPlan; media: Map<string, MediaA
  * feature that silently does nothing.
  */
 function Provenance({ plan }: { plan: EditPlan }) {
+  const t: Translate = useT();
   const llm = plan.llm;
   const fell = llm?.fallback_reason ?? null;
 
   const fields: [string, string][] = [
-    ["Planner", `${plan.plan.planner}@${plan.plan.planner_version}`],
+    [t("plan.provenance.planner"), `${plan.plan.planner}@${plan.plan.planner_version}`],
   ];
-  if (plan.mode) fields.push(["Mode", plan.mode.mode]);
+  if (plan.mode) fields.push([t("plan.provenance.mode"), plan.mode.mode]);
   if (llm?.provider) {
-    fields.push(["Provider", llm.model ? `${llm.provider} · ${llm.model}` : llm.provider]);
-    fields.push(["Prompt", llm.prompt_version]);
-    if (llm.latency_ms) fields.push(["Latency", `${Math.round(llm.latency_ms)} ms`]);
+    fields.push([
+      t("plan.provenance.provider"),
+      llm.model ? `${llm.provider} · ${llm.model}` : llm.provider,
+    ]);
+    fields.push([t("plan.provenance.prompt"), llm.prompt_version]);
+    if (llm.latency_ms) {
+      fields.push([t("plan.provenance.latency"), `${Math.round(llm.latency_ms)} ms`]);
+    }
     const tokens = (llm.input_tokens ?? 0) + (llm.output_tokens ?? 0);
     if (tokens > 0) {
-      fields.push(["Tokens", `${llm.input_tokens ?? 0} in / ${llm.output_tokens ?? 0} out`]);
+      fields.push([
+        t("plan.provenance.tokens"),
+        t("plan.provenance.tokensValue", {
+          input: llm.input_tokens ?? 0,
+          output: llm.output_tokens ?? 0,
+        }),
+      ]);
     }
-    if (llm.attempts > 1) fields.push(["Attempts", String(llm.attempts)]);
+    if (llm.attempts > 1) fields.push([t("plan.provenance.attempts"), String(llm.attempts)]);
   }
   if (typeof plan.plan.metadata?.derived_from_edit_plan_id === "string") {
-    fields.push(["Cut from", String(plan.plan.metadata.derived_from_edit_plan_id).slice(0, 8)]);
+    fields.push([
+      t("plan.provenance.derivedFrom"),
+      String(plan.plan.metadata.derived_from_edit_plan_id).slice(0, 8),
+    ]);
   }
 
   return (
@@ -262,7 +289,9 @@ function Provenance({ plan }: { plan: EditPlan }) {
 
       {fell && (
         <p className="mt-1 border-l-2 border-warn pl-2 text-2xs leading-snug text-warn">
-          Planned by the rules engine — {FALLBACK_TEXT[fell] ?? fell.replace(/_/g, " ")}.
+          {t("plan.fallback", {
+            reason: FALLBACK_TEXT[fell] ? t(FALLBACK_TEXT[fell]) : fell.replace(/_/g, " "),
+          })}
           {llm?.fallback_detail && (
             <span className="block truncate text-dim">{llm.fallback_detail}</span>
           )}

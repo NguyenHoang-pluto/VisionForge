@@ -3,17 +3,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, type EditPlan, type Job, type MediaAsset } from "@/lib/api";
+import { api, APP_VERSION, type EditPlan, type Job, type MediaAsset } from "@/lib/api";
+import { useT, type MessageKey } from "@/lib/i18n";
 import { applyBounds, draftProblems } from "@/lib/timeline";
-import { useEditorStore } from "@/stores/editor-store";
-import { Button, Dialog, EmptyState, useShortcuts } from "@/components/ui";
+import { useEditorStore, type InspectorTab } from "@/stores/editor-store";
+import { Button, Dialog, KeyCap, useShortcuts } from "@/components/ui";
 import { Inspector } from "@/components/inspector/inspector";
 import { MediaBrowser } from "@/components/media-browser";
 import { PlanReview } from "@/components/plan-review";
+import { PreferencesDialog } from "@/components/preferences-dialog";
 import { Preview } from "@/components/preview";
 import { StatusBar } from "@/components/status-bar";
 import { Timeline } from "@/components/timeline";
-import { TopBar } from "@/components/top-bar";
+import { NewProjectDialog, TopBar } from "@/components/top-bar";
+import { Welcome } from "@/components/welcome";
 
 /**
  * The editing workstation.
@@ -30,19 +33,37 @@ import { TopBar } from "@/components/top-bar";
  */
 
 const POLL_WHILE_WORKING_MS = 3000;
-const BROWSER_WIDTH = 250;
-const INSPECTOR_WIDTH = 300;
+
+/**
+ * Panel widths, in the three sizes that matter.
+ *
+ * A fixed 250px browser is a third of the screen at 1280 and a strip at 1920.
+ * These are the widths at which the browser shows two tiles per row and the
+ * inspector's two-column forms stay two columns, measured at each breakpoint
+ * rather than picked once and lived with.
+ */
+const BROWSER_WIDTH = { base: 232, md: 256, lg: 288 };
+const INSPECTOR_WIDTH = { base: 280, md: 300, lg: 328 };
 
 /** Below this, the side panels stop being useful and start being in the way. */
 const NARROW_BREAKPOINT = 1180;
+/** And below this, one side panel is all that fits beside a usable preview. */
+const VERY_NARROW_BREAKPOINT = 1024;
 
 function activeJob(job: Job): boolean {
   return !["succeeded", "failed", "cancelled"].includes(job.status);
 }
 
+/** Which of the three width steps the viewport is in. */
+function widthStep(width: number): "base" | "md" | "lg" {
+  if (width >= 1800) return "lg";
+  if (width >= 1400) return "md";
+  return "base";
+}
+
 export function Workstation() {
+  const t = useT();
   const queryClient = useQueryClient();
-  const layoutRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   const projectId = useEditorStore((s) => s.projectId);
@@ -51,6 +72,7 @@ export function Workstation() {
   const inspectorOpen = useEditorStore((s) => s.inspectorOpen);
   const toggleBrowser = useEditorStore((s) => s.toggleBrowser);
   const toggleInspector = useEditorStore((s) => s.toggleInspector);
+  const setInspectorTab = useEditorStore((s) => s.setInspectorTab);
   const timelineHeight = useEditorStore((s) => s.timelineHeight);
   const setTimelineHeight = useEditorStore((s) => s.setTimelineHeight);
   const clips = useEditorStore((s) => s.clips);
@@ -58,6 +80,10 @@ export function Workstation() {
   const [reviewPlanId, setReviewPlanId] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [step, setStep] = useState<"base" | "md" | "lg">("base");
 
   // ------------------------------------------------------------------ queries
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
@@ -203,6 +229,15 @@ export function Workstation() {
     }
   }, [projectId, projects.data, openProject]);
 
+  /** Show the inspector tab a top-bar verb refers to, opening the panel if shut. */
+  const goToPanel = useCallback(
+    (tab: InspectorTab) => {
+      setInspectorTab(tab);
+      if (!useEditorStore.getState().inspectorOpen) toggleInspector();
+    },
+    [setInspectorTab, toggleInspector],
+  );
+
   // ------------------------------------------------------------ layout sizing
   /** Drag the divider between the preview and the timeline. */
   useEffect(() => {
@@ -224,19 +259,37 @@ export function Workstation() {
   }, [setTimelineHeight]);
 
   /**
-   * Collapse the side panels on a narrow desktop.
+   * Adapt to the width of the desktop.
    *
-   * Desktop-first, as an editor should be, but a 1280-wide laptop is a real
-   * desktop and three panels plus a preview at that width leaves the preview
-   * unusable. The browser goes first because it is the one whose work (picking
-   * clips) happens before the work the other panels support.
+   * Desktop-first, as an editor should be, but 1280 and 1920 are both real
+   * desktops and one set of panel widths cannot serve them. Three steps, and
+   * below 1180 the browser is collapsed rather than squeezed -- it goes first
+   * because its work (picking clips) happens before the work the other panels
+   * support. Below 1024 the inspector follows it.
+   *
+   * Collapsing is done once per crossing rather than on every resize event, so
+   * a user who reopens a panel at a narrow width keeps it open.
    */
   useEffect(() => {
+    let previous: number | null = null;
+
     function apply() {
-      const narrow = window.innerWidth < NARROW_BREAKPOINT;
+      const width = window.innerWidth;
+      setStep(widthStep(width));
+
+      const band = width < VERY_NARROW_BREAKPOINT ? 0 : width < NARROW_BREAKPOINT ? 1 : 2;
+      if (band === previous) return;
+      const shrinking = previous === null || band < previous;
+      previous = band;
+      // Widening never closes a panel, and re-entering a band the user has
+      // already overruled by reopening a panel does not close it again.
+      if (!shrinking) return;
+
       const state = useEditorStore.getState();
-      if (narrow && state.browserOpen && state.inspectorOpen) state.toggleBrowser();
+      if (band <= 1 && state.browserOpen && state.inspectorOpen) state.toggleBrowser();
+      if (band === 0 && state.inspectorOpen) state.toggleInspector();
     }
+
     apply();
     window.addEventListener("resize", apply);
     return () => window.removeEventListener("resize", apply);
@@ -268,9 +321,16 @@ export function Workstation() {
   });
 
   // ------------------------------------------------------------------ render
+  const chrome = (
+    <>
+      <PreferencesDialog open={preferencesOpen} onClose={() => setPreferencesOpen(false)} />
+      <ShortcutHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+    </>
+  );
+
   if (!projectId) {
     return (
-      <div className="flex h-screen flex-col">
+      <div className="flex h-screen flex-col overflow-hidden">
         <TopBar
           projects={projects.data ?? []}
           projectId={null}
@@ -280,16 +340,31 @@ export function Workstation() {
           onCreateProject={(title) => createProject.mutate(title)}
           onAnalyze={() => undefined}
           onShowShortcuts={() => setShortcutsOpen(true)}
+          onShowPreferences={() => setPreferencesOpen(true)}
+          onGoToPanel={goToPanel}
         />
-        <div className="flex flex-1 items-center justify-center">
-          <EmptyState>
-            {projects.isLoading
-              ? "Loading projects…"
-              : projects.isError
-                ? "Cannot reach the API. Start it with .\\scripts\\vf.ps1 api"
-                : "No projects yet. Create one from the top bar to begin."}
-          </EmptyState>
-        </div>
+
+        <Welcome
+          projects={projects.data ?? []}
+          loading={projects.isLoading}
+          unreachable={projects.isError}
+          onOpen={openProject}
+          onCreate={() => setCreatingProject(true)}
+          onRetry={() => void projects.refetch()}
+        />
+
+        <NewProjectDialog
+          open={creatingProject}
+          title={newTitle}
+          onTitle={setNewTitle}
+          onClose={() => setCreatingProject(false)}
+          onCreate={(value) => {
+            createProject.mutate(value);
+            setNewTitle("");
+            setCreatingProject(false);
+          }}
+        />
+        {chrome}
       </div>
     );
   }
@@ -309,11 +384,13 @@ export function Workstation() {
           )
         }
         onShowShortcuts={() => setShortcutsOpen(true)}
+        onShowPreferences={() => setPreferencesOpen(true)}
+        onGoToPanel={goToPanel}
       />
 
-      <div ref={layoutRef} className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1">
         {browserOpen && (
-          <div className="min-h-0 shrink-0" style={{ width: BROWSER_WIDTH }}>
+          <div className="min-h-0 shrink-0" style={{ width: BROWSER_WIDTH[step] }}>
             <MediaBrowser
               projectId={projectId}
               media={items}
@@ -330,7 +407,7 @@ export function Workstation() {
 
           <div
             role="separator"
-            aria-label="Resize timeline"
+            aria-label={t("timeline.resize")}
             aria-orientation="horizontal"
             tabIndex={0}
             onPointerDown={(event) => {
@@ -341,8 +418,14 @@ export function Workstation() {
               if (event.key === "ArrowUp") setTimelineHeight(timelineHeight + 20);
               if (event.key === "ArrowDown") setTimelineHeight(timelineHeight - 20);
             }}
-            className="h-[3px] shrink-0 cursor-row-resize bg-line transition-colors hover:bg-accent"
-          />
+            className="group relative h-[4px] shrink-0 cursor-row-resize bg-line transition-colors hover:bg-accent"
+          >
+            {/* A grip, so the divider looks draggable before it is dragged. */}
+            <span
+              aria-hidden
+              className="absolute left-1/2 top-1/2 h-[2px] w-8 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-line-strong transition-colors group-hover:bg-accent-strong"
+            />
+          </div>
 
           <div className="flex shrink-0 flex-col" style={{ height: timelineHeight }}>
             <Timeline projectId={projectId} media={byId} invalidClipIds={invalidClipIds} />
@@ -350,7 +433,7 @@ export function Workstation() {
         </div>
 
         {inspectorOpen && (
-          <div className="min-h-0 shrink-0" style={{ width: INSPECTOR_WIDTH }}>
+          <div className="min-h-0 shrink-0" style={{ width: INSPECTOR_WIDTH[step] }}>
             <Inspector
               projectId={projectId}
               media={byId}
@@ -378,45 +461,84 @@ export function Workstation() {
         open={reviewOpen}
         onClose={() => setReviewOpen(false)}
       />
-
-      <ShortcutHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      {chrome}
     </div>
   );
 }
 
-const SHORTCUTS: [string, string][] = [
-  ["Space", "Play / pause"],
-  ["S", "Split the clip under the playhead"],
-  ["Del / Backspace", "Delete the selected clip"],
-  ["← →", "Nudge the playhead 100 ms"],
-  ["Shift + ← →", "Nudge the playhead 1 s"],
-  ["Home", "Playhead to start"],
-  ["+ / -", "Zoom the timeline"],
-  ["Ctrl + wheel", "Zoom the timeline at the pointer"],
-  ["B", "Toggle the media browser"],
-  ["I", "Toggle the inspector"],
-  ["?", "This list"],
+/**
+ * The shortcut list.
+ *
+ * Grouped by what the keys are for rather than listed alphabetically: someone
+ * opening this is looking for "how do I cut", not for "what does S do".
+ */
+const SHORTCUT_GROUPS: {
+  title: MessageKey;
+  rows: { keys: string[]; label: MessageKey }[];
+}[] = [
+  {
+    title: "shortcuts.group.playback",
+    rows: [
+      { keys: ["Space"], label: "shortcuts.playPause" },
+      { keys: ["←", "→"], label: "shortcuts.nudge" },
+      { keys: ["Shift", "←", "→"], label: "shortcuts.nudgeBig" },
+      { keys: ["Home"], label: "shortcuts.home" },
+    ],
+  },
+  {
+    title: "shortcuts.group.editing",
+    rows: [
+      { keys: ["S"], label: "shortcuts.split" },
+      { keys: ["Del"], label: "shortcuts.delete" },
+    ],
+  },
+  {
+    title: "shortcuts.group.view",
+    rows: [
+      { keys: ["+", "−"], label: "shortcuts.zoom" },
+      { keys: ["Ctrl", "wheel"], label: "shortcuts.zoomPointer" },
+      { keys: ["B"], label: "shortcuts.browser" },
+      { keys: ["I"], label: "shortcuts.inspector" },
+      { keys: ["?"], label: "shortcuts.help" },
+    ],
+  },
 ];
 
 function ShortcutHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const t = useT();
   return (
-    <Dialog open={open} onClose={onClose} title="Keyboard">
-      <dl className="flex flex-col">
-        {SHORTCUTS.map(([keys, description]) => (
-          <div
-            key={keys}
-            className="flex items-baseline justify-between gap-4 border-b border-line/60 py-1 last:border-b-0"
-          >
-            <dt className="font-mono text-2xs text-fg">{keys}</dt>
-            <dd className="text-xs text-muted">{description}</dd>
-          </div>
+    <Dialog open={open} onClose={onClose} title={t("shortcuts.title")}>
+      <div className="flex flex-col gap-panel-gap">
+        {SHORTCUT_GROUPS.map((group) => (
+          <section key={group.title}>
+            <h3 className="border-b border-line-strong pb-1 text-xs font-semibold uppercase tracking-wider text-muted">
+              {t(group.title)}
+            </h3>
+            <dl className="mt-1 flex flex-col">
+              {group.rows.map((row) => (
+                <div
+                  key={row.label}
+                  className="flex min-h-row items-center justify-between gap-4 border-b border-line/60 py-1 last:border-b-0"
+                >
+                  <dt className="flex shrink-0 items-center gap-1">
+                    {row.keys.map((key) => (
+                      <KeyCap key={key}>{key}</KeyCap>
+                    ))}
+                  </dt>
+                  <dd className="truncate text-xs text-muted">{t(row.label)}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
         ))}
-      </dl>
-      <p className="mt-2 text-2xs leading-snug text-dim">
-        Single-key shortcuts are ignored while a text field has focus.
-      </p>
-      <div className="mt-2 flex justify-end">
-        <Button onClick={onClose}>Close</Button>
+      </div>
+
+      <p className="mt-3 text-2xs leading-snug text-dim">{t("shortcuts.note")}</p>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="font-mono text-2xs text-dim">
+          {t("app.version", { version: APP_VERSION })}
+        </span>
+        <Button onClick={onClose}>{t("common.close")}</Button>
       </div>
     </Dialog>
   );

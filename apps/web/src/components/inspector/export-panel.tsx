@@ -13,6 +13,7 @@ import {
   type RenderStatus,
 } from "@/lib/api";
 import { bytes, fps as formatFps, seconds, timecode } from "@/lib/format";
+import { useT, type MessageKey } from "@/lib/i18n";
 import { draftProblems, toManualCuts } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import {
@@ -41,10 +42,16 @@ import {
  * validated -- never of the browser's current scroll position.
  */
 
-const QUALITY_NOTE: Record<QualityPreset, string> = {
-  draft: "Fastest encode. For checking the cut.",
-  balanced: "The default. Good quality at a sane speed.",
-  high: "Slowest encode, largest file.",
+const QUALITY_NOTE: Record<QualityPreset, MessageKey> = {
+  draft: "export.quality.draftNote",
+  balanced: "export.quality.balancedNote",
+  high: "export.quality.highNote",
+};
+
+const QUALITY_LABEL: Record<QualityPreset, MessageKey> = {
+  draft: "export.quality.draft",
+  balanced: "export.quality.balanced",
+  high: "export.quality.high",
 };
 
 const RENDER_TONE: Record<RenderStatus, "neutral" | "warn" | "ok" | "danger"> = {
@@ -53,6 +60,14 @@ const RENDER_TONE: Record<RenderStatus, "neutral" | "warn" | "ok" | "danger"> = 
   ready: "ok",
   failed: "danger",
   cancelled: "neutral",
+};
+
+const RENDER_LABEL: Record<RenderStatus, MessageKey> = {
+  pending: "status.render.pending",
+  rendering: "status.render.rendering",
+  ready: "status.render.ready",
+  failed: "status.render.failed",
+  cancelled: "status.render.cancelled",
 };
 
 export function ExportPanel({
@@ -64,6 +79,7 @@ export function ExportPanel({
   media: Map<string, MediaAsset>;
   render: Render | null;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
 
   const clips = useEditorStore((s) => s.clips);
@@ -124,20 +140,20 @@ export function ExportPanel({
       setError(
         caught instanceof ApiError
           ? { message: caught.message, hint: caught.hint }
-          : { message: "Could not start the render.", hint: null },
+          : { message: t("export.error"), hint: null },
       ),
   });
 
   return (
-    <div className="flex flex-col gap-4 p-2.5">
+    <div className="flex flex-col gap-panel-gap p-panel">
       <section>
-        <SectionTitle>Output</SectionTitle>
+        <SectionTitle>{t("export.output")}</SectionTitle>
 
         <div className="mt-1.5 grid grid-cols-2 gap-2">
-          <Field label="Resolution" hint="Chosen by the server from the aspect ratio.">
+          <Field label={t("export.resolution")} hint={t("export.resolutionHint")}>
             <Select
               value={aspect}
-              aria-label="Output shape"
+              aria-label={t("export.shapeLabel")}
               onChange={(event) => setOutput({ aspect: event.target.value as AspectRatio })}
             >
               {(capabilities.data?.aspect_ratios ?? []).map((item) => (
@@ -148,10 +164,10 @@ export function ExportPanel({
             </Select>
           </Field>
 
-          <Field label="Frame rate">
+          <Field label={t("export.fps")}>
             <Select
               value={fps}
-              aria-label="Output frame rate"
+              aria-label={t("export.fpsLabel")}
               onChange={(event) => setOutput({ fps: Number(event.target.value) })}
             >
               {(capabilities.data?.fps_presets ?? [24, 30, 60]).map((value) => (
@@ -162,16 +178,16 @@ export function ExportPanel({
             </Select>
           </Field>
 
-          <Field label="Quality" hint={QUALITY_NOTE[quality]}>
+          <Field label={t("export.quality")} hint={t(QUALITY_NOTE[quality])}>
             <Select
               value={quality}
-              aria-label="Quality preset"
+              aria-label={t("export.qualityLabel")}
               onChange={(event) => setOutput({ quality: event.target.value as QualityPreset })}
             >
               {(capabilities.data?.quality_presets ?? ["draft", "balanced", "high"]).map(
                 (value) => (
                   <option key={value} value={value}>
-                    {value}
+                    {t(QUALITY_LABEL[value as QualityPreset] ?? "export.quality.balanced")}
                   </option>
                 ),
               )}
@@ -179,46 +195,51 @@ export function ExportPanel({
           </Field>
 
           <Field
-            label="Audio"
-            hint={
-              timelineHasAudio
-                ? "Source audio is concatenated with the clips."
-                : "No clip on this timeline has an audio stream."
-            }
+            label={t("export.audio")}
+            hint={timelineHasAudio ? t("export.audio.hasHint") : t("export.audio.noneHint")}
           >
             <Select
               value={audio}
-              aria-label="Audio mode"
+              aria-label={t("export.audioLabel")}
               disabled={!timelineHasAudio}
               onChange={(event) =>
                 setOutput({ audio: event.target.value as "none" | "source" })
               }
             >
-              <option value="none">Silent</option>
-              <option value="source">Source audio</option>
+              <option value="none">{t("export.audio.none")}</option>
+              <option value="source">{t("export.audio.source")}</option>
             </Select>
           </Field>
         </div>
 
-        <p className="mt-1.5 text-2xs leading-snug text-dim">{QUALITY_NOTE[quality]}</p>
+        <p className="mt-1.5 text-2xs leading-snug text-dim">{t(QUALITY_NOTE[quality])}</p>
       </section>
 
       <section>
         <SectionTitle
           aside={
-            <span className="font-mono text-2xs text-dim tabular-nums">
-              {clips.length} clips
+            <span className="shrink-0 font-mono text-2xs tabular-nums text-dim">
+              {t.plural("timeline.clipCount", clips.length)}
             </span>
           }
         >
-          Render
+          {t("export.render")}
         </SectionTitle>
 
         <div className="mt-1">
-          <Row label="Timeline length" value={timecode(clips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0))} />
           <Row
-            label="Stored plan"
-            value={committedPlanId ? `${committedPlanId.slice(0, 8)}${dirty ? " (stale)" : ""}` : "none"}
+            label={t("export.timelineLength")}
+            value={timecode(clips.reduce((sum, c) => sum + (c.outMs - c.inMs), 0))}
+          />
+          <Row
+            label={t("export.storedPlan")}
+            value={
+              committedPlanId
+                ? dirty
+                  ? t("export.storedPlan.stale", { id: committedPlanId.slice(0, 8) })
+                  : committedPlanId.slice(0, 8)
+                : t("export.storedPlan.none")
+            }
             tone={dirty ? "warn" : undefined}
           />
         </div>
@@ -226,7 +247,13 @@ export function ExportPanel({
         {problems.length > 0 && (
           <ul className="mt-2 flex flex-col gap-1">
             {problems.slice(0, 4).map((problem, index) => (
-              <li key={index} className="text-2xs leading-snug text-warn">
+              <li
+                key={index}
+                className="flex items-start gap-1.5 text-2xs leading-snug text-warn"
+              >
+                <span className="mt-px shrink-0">
+                  <Glyph name="warning" size={11} />
+                </span>
                 {problem.message}
               </li>
             ))}
@@ -240,10 +267,10 @@ export function ExportPanel({
           onClick={() => renderNow.mutate()}
         >
           {renderNow.isPending
-            ? "Queuing…"
+            ? t("export.queuing")
             : dirty || !committedPlanId
-              ? "Store timeline and render"
-              : "Render"}
+              ? t("export.storeAndRender")
+              : t("export.renderNow")}
         </Button>
 
         {error && (
@@ -255,27 +282,33 @@ export function ExportPanel({
 
       <section>
         <SectionTitle
-          aside={render && <Badge tone={RENDER_TONE[render.status]}>{render.status}</Badge>}
+          aside={
+            render && (
+              <Badge tone={RENDER_TONE[render.status]}>{t(RENDER_LABEL[render.status])}</Badge>
+            )
+          }
         >
-          Last output
+          {t("export.lastOutput")}
         </SectionTitle>
 
         {!render ? (
-          <EmptyState>No renders in this project yet.</EmptyState>
+          <EmptyState icon="download">{t("export.noRenders")}</EmptyState>
         ) : (
           <>
             <div className="mt-1">
               <Row
-                label="Resolution"
-                value={render.width ? `${render.width}×${render.height}` : "—"}
+                label={t("export.resolution")}
+                value={render.width ? `${render.width}×${render.height}` : t("common.dash")}
               />
-              <Row label="Frame rate" value={formatFps(render.fps)} />
-              <Row label="Duration" value={timecode(render.duration_ms)} />
-              <Row label="Size" value={bytes(render.bytes_size)} />
+              <Row label={t("export.fps")} value={formatFps(render.fps)} />
+              <Row label={t("export.duration")} value={timecode(render.duration_ms)} />
+              <Row label={t("export.size")} value={bytes(render.bytes_size)} />
               <Row
-                label="Encode time"
+                label={t("export.encodeTime")}
                 value={
-                  render.metrics?.render_ms ? seconds(Number(render.metrics.render_ms)) : "—"
+                  render.metrics?.render_ms
+                    ? seconds(Number(render.metrics.render_ms))
+                    : t("common.dash")
                 }
               />
             </div>
@@ -290,15 +323,15 @@ export function ExportPanel({
               <div className="mt-2 flex gap-1">
                 <Button size="sm" onClick={() => setPreviewSource("render")}>
                   <Glyph name="play" size={10} />
-                  Play
+                  {t("export.play")}
                 </Button>
                 <a
                   href={render.playback_url}
                   download
-                  className="inline-flex h-[22px] items-center gap-1 rounded border border-line-strong bg-control px-2 text-2xs text-fg transition-colors hover:bg-control-hover"
+                  className="inline-flex h-control-sm items-center gap-1 rounded border border-line-strong bg-control px-2 text-2xs font-medium text-fg transition-colors hover:bg-control-hover"
                 >
                   <Glyph name="download" size={10} />
-                  Download MP4
+                  {t("export.download")}
                 </a>
               </div>
             )}

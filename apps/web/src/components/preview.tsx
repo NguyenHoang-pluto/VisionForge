@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { AspectRatio, MediaAsset, Render } from "@/lib/api";
 import { timecode } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import { useProxyUrl, useProxyUrls } from "@/lib/media-urls";
 import { clipAt, clipDuration, place } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
-import { Badge, Divider, Glyph, IconButton, SegmentedControl } from "@/components/ui";
+import { Badge, Divider, Glyph, IconButton, SegmentedControl, Slider } from "@/components/ui";
 
 /**
  * The preview viewer.
@@ -48,6 +49,7 @@ export function Preview({
   media: Map<string, MediaAsset>;
   render: Render | null;
 }) {
+  const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
 
@@ -66,6 +68,7 @@ export function Preview({
   const [speed, setSpeed] = useState<number>(1);
   const [sourceTimeMs, setSourceTimeMs] = useState(0);
   const [stalled, setStalled] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
   const activeAsset = activeMediaId ? (media.get(activeMediaId) ?? null) : null;
   const sourceProxy = useProxyUrl(projectId, activeAsset);
@@ -215,6 +218,15 @@ export function Preview({
     if (source === "render" && !render?.playback_url) setSource("program");
   }, [source, render, setSource]);
 
+  /** Track fullscreen rather than assume it: Escape leaves it without asking. */
+  useEffect(() => {
+    function onChange() {
+      setFullscreen(document.fullscreenElement === frameRef.current);
+    }
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
   function toggleFullscreen() {
     const element = frameRef.current;
     if (!element) return;
@@ -227,44 +239,73 @@ export function Preview({
     (source === "source" && !activeAsset?.has_proxy) ||
     (source === "render" && !render?.playback_url);
 
+  const emptyMessage =
+    source === "program"
+      ? t("preview.empty.program")
+      : source === "source"
+        ? activeAsset
+          ? t("preview.empty.noProxy")
+          : t("preview.empty.noSelection")
+        : t("preview.empty.render");
+
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-ground" aria-label="Preview">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-ground" aria-label={t("preview.title")}>
       {/* ---------------- viewer header ---------------- */}
-      <header className="flex h-[30px] shrink-0 items-center gap-2 border-b border-line bg-raised px-2">
+      <header className="flex h-header shrink-0 items-center gap-2 border-b border-line bg-raised px-2">
         <SegmentedControl
-          label="Preview source"
+          label={t("preview.source")}
           value={source}
           onChange={setSource}
           options={[
-            { value: "source", label: "Source", title: "The selected library clip" },
-            { value: "program", label: "Program", title: "The timeline as it will render" },
+            {
+              value: "source",
+              label: t("preview.source.source"),
+              title: t("preview.source.sourceHint"),
+            },
+            {
+              value: "program",
+              label: t("preview.source.program"),
+              title: t("preview.source.programHint"),
+            },
             {
               value: "render",
-              label: "Render",
-              title: render?.playback_url ? "The finished file" : "No finished render yet",
+              label: t("preview.source.render"),
+              title: render?.playback_url
+                ? t("preview.source.renderHint")
+                : t("preview.source.renderNone"),
               disabled: !render?.playback_url,
             },
           ]}
         />
 
-        <span className="truncate text-2xs text-dim">
+        <span className="min-w-0 truncate text-2xs text-dim" title={activeAsset?.original_filename}>
           {source === "source"
-            ? (activeAsset?.original_filename ?? "Nothing selected")
+            ? (activeAsset?.original_filename ?? t("preview.nothingSelected"))
             : source === "render"
               ? `${render?.width ?? "—"}×${render?.height ?? "—"}`
-              : `${clips.length} clip${clips.length === 1 ? "" : "s"}`}
+              : t.plural("preview.clipCount", clips.length)}
         </span>
 
         {source === "render" && render && (
-          <Badge tone={render.status === "ready" ? "ok" : "warn"}>{render.status}</Badge>
+          <Badge tone={render.status === "ready" ? "ok" : "warn"}>
+            {t(`status.render.${render.status}`)}
+          </Badge>
         )}
+
+        {/* The output shape, at the right, where an NLE puts it. */}
+        <span className="ml-auto shrink-0 font-mono text-2xs tabular-nums text-dim">
+          {source === "program" ? aspect : ""}
+        </span>
       </header>
 
-      {/* ---------------- viewport ---------------- */}
+      {/* ---------------- viewport ----------------
+          The letterbox stays black in both themes: it is the surround for a
+          picture, and a light grey one would lie about the black level of
+          whatever is being graded inside it. */}
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
         <div
           ref={frameRef}
-          className={`relative flex max-h-full max-w-full items-center justify-center border border-line bg-black ${
+          className={`relative flex max-h-full max-w-full items-center justify-center bg-black shadow-[0_0_0_1px_rgb(var(--line-strong))] ${
             source === "program" ? ASPECT_CLASS[aspect] : "aspect-video"
           }`}
           style={{ height: "100%" }}
@@ -274,7 +315,7 @@ export function Preview({
             ref={videoRef}
             playsInline
             preload="metadata"
-            aria-label="Preview player"
+            aria-label={t("preview.player")}
             className={`h-full w-full ${source === "program" ? "object-cover" : "object-contain"} ${empty ? "invisible" : ""}`}
             onTimeUpdate={(event) => {
               if (source !== "program") {
@@ -290,27 +331,29 @@ export function Preview({
           />
 
           {empty && (
-            <p className="absolute inset-0 flex items-center justify-center px-6 text-center text-xs text-dim">
-              {source === "program"
-                ? "The timeline is empty. Generate an edit, or add clips from the media browser."
-                : source === "source"
-                  ? activeAsset
-                    ? "This asset has no 720p proxy yet, so there is nothing to scrub."
-                    : "Select a clip in the media browser."
-                  : "No finished render yet."}
+            <p className="absolute inset-0 flex items-center justify-center px-8 text-center text-xs leading-relaxed text-white/45">
+              {emptyMessage}
             </p>
           )}
 
           {stalled && !empty && (
-            <span className="absolute left-2 top-2 rounded border border-line-strong bg-ground/80 px-1 font-mono text-2xs text-muted">
-              buffering
+            <span className="absolute left-2 top-2 rounded-sm bg-black/70 px-1.5 py-0.5 font-mono text-2xs text-white/80">
+              {t("preview.buffering")}
+            </span>
+          )}
+
+          {/* A burnt-in timecode, as a viewer in this category has. Over the
+              picture rather than under it, because it belongs to the frame. */}
+          {!empty && (
+            <span className="pointer-events-none absolute right-2 top-2 rounded-sm bg-black/65 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-white/85">
+              {timecode(positionMs)}
             </span>
           )}
 
           {/* Which source clip is on screen right now. The one thing that is
               invisible during program playback and matters most. */}
           {source === "program" && current && (
-            <span className="pointer-events-none absolute bottom-2 left-2 max-w-[70%] truncate rounded border border-line-strong bg-ground/85 px-1.5 py-0.5 font-mono text-2xs text-muted">
+            <span className="pointer-events-none absolute bottom-2 left-2 max-w-[70%] truncate rounded-sm bg-black/65 px-1.5 py-0.5 font-mono text-2xs text-white/85">
               {current.clip.index + 1}.{" "}
               {media.get(current.clip.mediaId)?.original_filename ??
                 current.clip.mediaId.slice(0, 8)}
@@ -320,53 +363,78 @@ export function Preview({
       </div>
 
       {/* ---------------- transport ---------------- */}
-      <div className="flex h-[34px] shrink-0 items-center gap-1 border-t border-line bg-raised px-2">
-        <IconButton label="Go to start" onClick={() => seek(0)}>
-          <Glyph name="skip-back" />
-        </IconButton>
-        <IconButton label="Back one second" onClick={() => seek(positionMs - 1000)}>
-          <Glyph name="step-back" />
+      <div className="flex h-strip shrink-0 items-center gap-1 border-t border-line bg-raised px-2">
+        <IconButton label={t("preview.toStart")} size="sm" onClick={() => seek(0)}>
+          <Glyph name="skip-back" size={12} />
         </IconButton>
         <IconButton
-          label={playing ? "Pause" : "Play"}
-          active={playing}
+          label={t("preview.back")}
+          size="sm"
+          onClick={() => seek(positionMs - 1000)}
+        >
+          <Glyph name="step-back" size={12} />
+        </IconButton>
+
+        {/* Play is the one control in the bar that is filled rather than
+            ghosted: it is pressed more than the rest put together. */}
+        <button
+          type="button"
+          aria-label={playing ? t("preview.pause") : t("preview.play")}
+          title={playing ? t("preview.pause") : t("preview.play")}
+          aria-pressed={playing}
           disabled={empty}
           onClick={() => setPlaying(!playing)}
+          className="inline-flex h-control w-[30px] shrink-0 items-center justify-center rounded border border-line-strong bg-control text-fg transition-colors hover:bg-control-hover disabled:pointer-events-none disabled:opacity-35"
         >
           <Glyph name={playing ? "pause" : "play"} />
+        </button>
+
+        <IconButton
+          label={t("preview.forward")}
+          size="sm"
+          onClick={() => seek(positionMs + 1000)}
+        >
+          <Glyph name="step-forward" size={12} />
         </IconButton>
-        <IconButton label="Forward one second" onClick={() => seek(positionMs + 1000)}>
-          <Glyph name="step-forward" />
-        </IconButton>
-        <IconButton label="Go to end" onClick={() => seek(durationMs)}>
-          <Glyph name="skip-forward" />
+        <IconButton label={t("preview.toEnd")} size="sm" onClick={() => seek(durationMs)}>
+          <Glyph name="skip-forward" size={12} />
         </IconButton>
 
         <Divider vertical />
 
-        <span className="shrink-0 font-mono text-2xs tabular-nums text-fg">
-          {timecode(positionMs)}
-          <span className="text-dim"> / {timecode(durationMs)}</span>
+        {/* Position reads at full strength, duration at half: they are the same
+            kind of number but only one of them changes. */}
+        {/* Named, because "0:04.120 / 0:25.000" read aloud is two numbers with
+            no nouns. Sighted users get the same nouns as a tooltip. */}
+        <span className="shrink-0 font-mono text-xs tabular-nums text-fg">
+          <span title={t("preview.position")} aria-label={t("preview.position")}>
+            {timecode(positionMs)}
+          </span>
+          <span className="text-dim" title={t("preview.duration")} aria-label={t("preview.duration")}>
+            {" / "}
+            {timecode(durationMs)}
+          </span>
         </span>
 
         {/* Scrub bar. In program mode this is the same playhead the timeline
             shows -- one position, two views of it. */}
-        <input
-          type="range"
+        <Slider
           min={0}
           max={Math.max(1, durationMs)}
           value={Math.round(positionMs)}
           step={10}
-          aria-label="Seek"
+          aria-label={t("preview.seek")}
+          disabled={empty}
           onChange={(event) => seek(Number(event.target.value))}
-          className="mx-2 h-1 min-w-[80px] flex-1 cursor-pointer appearance-none rounded bg-control accent-[var(--accent)]"
+          className="mx-2 min-w-[80px] flex-1"
         />
 
         <select
           value={speed}
           onChange={(event) => setSpeed(Number(event.target.value))}
-          aria-label="Playback speed"
-          className="h-[22px] shrink-0 rounded border border-line-strong bg-control px-1 font-mono text-2xs text-muted focus:border-accent"
+          aria-label={t("preview.speed")}
+          title={t("preview.speed")}
+          className="h-control-sm shrink-0 rounded border border-line-strong bg-control px-1 font-mono text-2xs text-muted transition-colors hover:bg-control-hover focus:border-accent"
         >
           {SPEEDS.map((value) => (
             <option key={value} value={value}>
@@ -375,25 +443,37 @@ export function Preview({
           ))}
         </select>
 
-        <IconButton label={muted ? "Unmute" : "Mute"} onClick={() => setMuted(!muted)}>
-          <Glyph name={muted ? "mute" : "volume"} />
+        <Divider vertical />
+
+        <IconButton
+          label={muted || volume === 0 ? t("preview.unmute") : t("preview.mute")}
+          size="sm"
+          active={muted || volume === 0}
+          onClick={() => setMuted(!muted)}
+        >
+          <Glyph name={muted || volume === 0 ? "mute" : "volume"} size={12} />
         </IconButton>
-        <input
-          type="range"
+        <Slider
           min={0}
           max={1}
           step={0.05}
-          value={volume}
-          aria-label="Volume"
+          value={muted ? 0 : volume}
+          aria-label={t("preview.volume")}
           onChange={(event) => {
-            setVolume(Number(event.target.value));
-            setMuted(Number(event.target.value) === 0);
+            const next = Number(event.target.value);
+            setVolume(next);
+            setMuted(next === 0);
           }}
-          className="h-1 w-14 shrink-0 cursor-pointer appearance-none rounded bg-control accent-[var(--accent)]"
+          className="w-14"
         />
 
-        <IconButton label="Fullscreen" onClick={toggleFullscreen}>
-          <Glyph name="fullscreen" />
+        <IconButton
+          label={fullscreen ? t("preview.exitFullscreen") : t("preview.fullscreen")}
+          size="sm"
+          active={fullscreen}
+          onClick={toggleFullscreen}
+        >
+          <Glyph name="fullscreen" size={12} />
         </IconButton>
       </div>
     </section>

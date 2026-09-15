@@ -13,12 +13,14 @@ import {
   type PlannerMode,
   type QualityPreset,
 } from "@/lib/api";
+import { useT, type MessageKey } from "@/lib/i18n";
 import { toDraft } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import {
   Button,
   ErrorNote,
   Field,
+  Glyph,
   NumberInput,
   SectionTitle,
   SegmentedControl,
@@ -37,33 +39,21 @@ import {
  * capability the deployment lacks is worse than no control.
  */
 
-const MODES: { value: PlannerMode; label: string; note: string }[] = [
-  {
-    value: "automatic",
-    label: "Automatic",
-    note: "Picks the planner from what you ask for.",
-  },
-  {
-    value: "rules",
-    label: "Rules",
-    note: "Deterministic scoring. Same footage, same edit, every time.",
-  },
-  {
-    value: "ai",
-    label: "AI",
-    note: "A model chooses the clips. Falls back to the rules engine if it fails.",
-  },
+const MODES: { value: PlannerMode; label: MessageKey; note: MessageKey }[] = [
+  { value: "automatic", label: "ai.mode.automatic", note: "ai.mode.automaticNote" },
+  { value: "rules", label: "ai.mode.rules", note: "ai.mode.rulesNote" },
+  { value: "ai", label: "ai.mode.ai", note: "ai.mode.aiNote" },
 ];
 
-const ORDERS: { value: ClipOrder; label: string }[] = [
-  { value: "score_desc", label: "Strongest first" },
-  { value: "sequence", label: "Upload order" },
+const ORDERS: { value: ClipOrder; label: MessageKey }[] = [
+  { value: "score_desc", label: "ai.order.score" },
+  { value: "sequence", label: "ai.order.sequence" },
 ];
 
-const QUALITIES: { value: QualityPreset; label: string }[] = [
-  { value: "draft", label: "Draft" },
-  { value: "balanced", label: "Balanced" },
-  { value: "high", label: "High" },
+const QUALITIES: { value: QualityPreset; label: MessageKey }[] = [
+  { value: "draft", label: "export.quality.draft" },
+  { value: "balanced", label: "export.quality.balanced" },
+  { value: "high", label: "export.quality.high" },
 ];
 
 export function AiEditPanel({
@@ -75,6 +65,7 @@ export function AiEditPanel({
   readyCount: number;
   onPlanned: (plan: EditPlan) => void;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
 
   const aspect = useEditorStore((s) => s.aspect);
@@ -134,38 +125,38 @@ export function AiEditPanel({
       setError(
         caught instanceof ApiError
           ? { message: caught.message, hint: caught.hint }
-          : { message: "Could not generate an edit.", hint: null },
+          : { message: t("ai.error"), hint: null },
       ),
   });
 
   const selectedStyle = styles.find((item) => item.value === style);
+  const activeNote = MODES.find((item) => item.value === mode)?.note;
 
   return (
-    <div className="flex flex-col gap-3 p-2.5">
-      <SectionTitle>Automatic edit</SectionTitle>
+    <div className="flex flex-col gap-3 p-panel">
+      <SectionTitle>{t("ai.title")}</SectionTitle>
 
-      <Field label="Mode" hint={MODES.find((m) => m.value === mode)?.note}>
+      <Field label={t("ai.mode")} hint={activeNote ? t(activeNote) : undefined}>
         <SegmentedControl
-          label="Planner mode"
+          label={t("ai.mode.label")}
           value={mode}
           onChange={setMode}
           className="w-full [&>button]:flex-1"
           options={MODES.map((item) => ({
             value: item.value,
-            label: item.label,
+            label: t(item.label),
             title:
-              item.value === "ai" && !aiAvailable
-                ? "No AI provider is configured on this server."
-                : item.note,
+              item.value === "ai" && !aiAvailable ? t("ai.mode.aiUnavailable") : t(item.note),
             disabled: item.value === "ai" && !aiAvailable,
           }))}
         />
       </Field>
+      {activeNote && <p className="-mt-1.5 text-2xs leading-snug text-dim">{t(activeNote)}</p>}
 
-      <Field label="Style" hint={selectedStyle?.description}>
+      <Field label={t("ai.style")} hint={selectedStyle?.description}>
         <Select
           value={style}
-          aria-label="Edit style"
+          aria-label={t("ai.style.label")}
           onChange={(event) => {
             const next = event.target.value as EditStyle | "";
             setStyle(next);
@@ -179,7 +170,7 @@ export function AiEditPanel({
             }
           }}
         >
-          <option value="">None</option>
+          <option value="">{t("ai.style.none")}</option>
           {styles.map((item) => (
             <option key={item.value} value={item.value}>
               {item.label}
@@ -191,39 +182,39 @@ export function AiEditPanel({
         <p className="-mt-1.5 text-2xs leading-snug text-dim">{selectedStyle.description}</p>
       )}
 
-      <Field label="Request" hint="What you want, in your own words.">
+      <Field label={t("ai.request")} hint={t("ai.request.hint")}>
         <TextInput
           value={requestText}
           maxLength={capabilities.data?.max_request_chars ?? 500}
-          placeholder="Fast 25 second football highlight, best moments"
-          aria-label="Describe the edit"
+          placeholder={t("ai.request.placeholder")}
+          aria-label={t("ai.request.label")}
           onChange={(event) => setRequestText(event.target.value)}
         />
       </Field>
 
       <div className="grid grid-cols-2 gap-2">
-        <Field label="Duration (s)">
+        <Field label={t("ai.duration")}>
           <NumberInput
             min={2}
             max={120}
             value={targetSeconds}
-            aria-label="Target duration in seconds"
+            aria-label={t("ai.duration.label")}
             onChange={(event) => setTargetSeconds(Number(event.target.value))}
           />
         </Field>
-        <Field label="Max clips">
+        <Field label={t("ai.maxClips")}>
           <NumberInput
             min={1}
             max={20}
             value={maxClips}
-            aria-label="Maximum clips"
+            aria-label={t("ai.maxClips.label")}
             onChange={(event) => setMaxClips(Number(event.target.value))}
           />
         </Field>
-        <Field label="Aspect">
+        <Field label={t("ai.aspect")}>
           <Select
             value={aspect}
-            aria-label="Aspect ratio"
+            aria-label={t("ai.aspect.label")}
             onChange={(event) => setOutput({ aspect: event.target.value as AspectRatio })}
           >
             {(capabilities.data?.aspect_ratios ?? []).map((item) => (
@@ -233,10 +224,10 @@ export function AiEditPanel({
             ))}
           </Select>
         </Field>
-        <Field label="Frame rate">
+        <Field label={t("ai.fps")}>
           <Select
             value={fps}
-            aria-label="Frame rate"
+            aria-label={t("ai.fps.label")}
             onChange={(event) => setOutput({ fps: Number(event.target.value) })}
           >
             {fpsPresets.map((value) => (
@@ -246,28 +237,28 @@ export function AiEditPanel({
             ))}
           </Select>
         </Field>
-        <Field label="Quality">
+        <Field label={t("ai.quality")}>
           <Select
             value={quality}
-            aria-label="Quality preset"
+            aria-label={t("ai.quality.label")}
             onChange={(event) => setOutput({ quality: event.target.value as QualityPreset })}
           >
             {QUALITIES.map((item) => (
               <option key={item.value} value={item.value}>
-                {item.label}
+                {t(item.label)}
               </option>
             ))}
           </Select>
         </Field>
-        <Field label="Order">
+        <Field label={t("ai.order")}>
           <Select
             value={order}
-            aria-label="Clip order"
+            aria-label={t("ai.order.label")}
             onChange={(event) => setOrder(event.target.value as ClipOrder)}
           >
             {ORDERS.map((item) => (
               <option key={item.value} value={item.value}>
-                {item.label}
+                {t(item.label)}
               </option>
             ))}
           </Select>
@@ -279,29 +270,27 @@ export function AiEditPanel({
         disabled={readyCount === 0 || generate.isPending}
         onClick={() => generate.mutate()}
       >
-        {generate.isPending ? "Generating…" : "Generate edit"}
+        <Glyph name="spark" size={11} />
+        {generate.isPending ? t("ai.generating") : t("ai.generate")}
       </Button>
 
       {error && <ErrorNote hint={error.hint}>{error.message}</ErrorNote>}
 
-      {readyCount === 0 && (
-        <p className="text-2xs leading-snug text-dim">
-          No analysed media in this project yet. Import clips and run Analyse first.
-        </p>
-      )}
+      {readyCount === 0 && <p className="text-2xs leading-snug text-dim">{t("ai.noMedia")}</p>}
 
       {/* What this server actually has. No claim beyond it. */}
       <p className="border-t border-line pt-2 font-mono text-2xs leading-snug text-dim">
         {aiAvailable
           ? capabilities.data?.is_stub
-            ? `planner: ${capabilities.data.provider} — deterministic stub, not a model`
-            : `planner: ${capabilities.data?.provider} · ${capabilities.data?.model}`
-          : "planner: rules engine only — no AI provider configured"}
+            ? t("ai.planner.stub", { provider: capabilities.data.provider ?? "—" })
+            : t("ai.planner.model", {
+                provider: capabilities.data?.provider ?? "—",
+                model: capabilities.data?.model ?? "—",
+              })
+          : t("ai.planner.rules")}
       </p>
       {mode === "ai" && !aiAvailable && (
-        <p className="text-2xs leading-snug text-warn">
-          AI is unavailable on this server, so the rules engine will plan instead.
-        </p>
+        <p className="text-2xs leading-snug text-warn">{t("ai.planner.willFallBack")}</p>
       )}
     </div>
   );

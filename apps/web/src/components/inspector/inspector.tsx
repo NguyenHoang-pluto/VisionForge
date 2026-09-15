@@ -1,8 +1,9 @@
 "use client";
 
 import type { EditPlan, MediaAsset, Render } from "@/lib/api";
+import { useT, type MessageKey } from "@/lib/i18n";
 import { useEditorStore, type InspectorTab } from "@/stores/editor-store";
-import { Panel, Tabs } from "@/components/ui";
+import { EmptyState, Panel, Tabs } from "@/components/ui";
 import { AiEditPanel } from "@/components/inspector/ai-edit-panel";
 import { AnalysisPanel } from "@/components/inspector/analysis-panel";
 import { ClipProperties } from "@/components/inspector/clip-properties";
@@ -15,11 +16,11 @@ import { ExportPanel } from "@/components/inspector/export-panel";
  * the honest weighting: it is a way of producing a first cut, not the point of
  * the application.
  */
-const TABS: { value: InspectorTab; label: string }[] = [
-  { value: "clip", label: "Clip" },
-  { value: "analysis", label: "Analysis" },
-  { value: "ai", label: "AI Edit" },
-  { value: "export", label: "Export" },
+const TABS: { value: InspectorTab; label: MessageKey }[] = [
+  { value: "clip", label: "inspector.tab.clip" },
+  { value: "analysis", label: "inspector.tab.analysis" },
+  { value: "ai", label: "inspector.tab.ai" },
+  { value: "export", label: "inspector.tab.export" },
 ];
 
 export function Inspector({
@@ -35,6 +36,7 @@ export function Inspector({
   render: Render | null;
   onPlanned: (plan: EditPlan) => void;
 }) {
+  const t = useT();
   const tab = useEditorStore((s) => s.inspectorTab);
   const setTab = useEditorStore((s) => s.setInspectorTab);
   const activeMediaId = useEditorStore((s) => s.activeMediaId);
@@ -56,12 +58,17 @@ export function Inspector({
 
   return (
     <Panel className="h-full border-l border-line">
-      <Tabs value={tab} onChange={setTab} tabs={TABS} label="Inspector" />
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={TABS.map((item) => ({ value: item.value, label: t(item.label) }))}
+        label={t("inspector.title")}
+      />
 
       <div
         role="tabpanel"
-        aria-label={TABS.find((item) => item.value === tab)?.label}
-        className="min-h-0 flex-1 overflow-y-auto"
+        aria-label={t(TABS.find((item) => item.value === tab)?.label ?? "inspector.title")}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
       >
         {tab === "clip" && <ClipProperties media={media} />}
 
@@ -73,17 +80,11 @@ export function Inspector({
               onSelectMedia={(mediaId) => selectMedia(mediaId)}
             />
           ) : (
-            <div className="p-2.5 text-xs text-dim">
-              Select a clip or a media item to see its analysis.
-            </div>
+            <EmptyState icon="analyse">{t("analysis.selectSomething")}</EmptyState>
           ))}
 
         {tab === "ai" && (
-          <AiEditPanel
-            projectId={projectId}
-            readyCount={readyCount}
-            onPlanned={onPlanned}
-          />
+          <AiEditPanel projectId={projectId} readyCount={readyCount} onPlanned={onPlanned} />
         )}
 
         {tab === "export" && (
