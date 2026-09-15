@@ -172,6 +172,59 @@ class TestPacingFollowsTheReference:
             length = segment.source_out_ms - segment.source_in_ms
             assert MIN_SEGMENT_MS <= length <= MAX_SEGMENT_MS
 
+    def test_the_dial_moves_the_pacing_at_every_stop(self) -> None:
+        """A dial, not a switch.
+
+        The first implementation only clamped to the policy's bounds, so a
+        reference did nothing until a bound narrowed past the requested pacing
+        and then did all of it at once -- 0% and 50% produced identical clips
+        and 100% produced something seven times shorter. Each stop must move.
+        """
+        clips = candidates()
+        planner = RulesEnginePlanner()
+        preset = profile_for(None)
+
+        lengths = [
+            planner.plan(
+                request(style_policy=blend(preset, fast_reference(), strength)), list(clips)
+            ).plan.metadata["per_clip_ms"]
+            for strength in StyleStrength
+        ]
+
+        # Strictly decreasing: the reference cuts faster than the request asks
+        # for, so every step toward it shortens the clips.
+        assert lengths == sorted(lengths, reverse=True)
+        assert len(set(lengths)) == len(lengths), f"a stop did nothing: {lengths}"
+
+    def test_a_low_confidence_measurement_moves_the_pacing_less(self) -> None:
+        """Confidence gates the pull, not just the bounds."""
+        clips = candidates()
+        planner = RulesEnginePlanner()
+        preset = profile_for(None)
+
+        certain = planner.plan(
+            request(
+                style_policy=blend(
+                    preset,
+                    fast_reference(shot_ms=Measurement(value=800.0, confidence=1.0)),
+                    StyleStrength.FULL,
+                ),
+            ),
+            list(clips),
+        ).plan.metadata["per_clip_ms"]
+        unsure = planner.plan(
+            request(
+                style_policy=blend(
+                    preset,
+                    fast_reference(shot_ms=Measurement(value=800.0, confidence=0.25)),
+                    StyleStrength.FULL,
+                ),
+            ),
+            list(clips),
+        ).plan.metadata["per_clip_ms"]
+
+        assert certain < unsure
+
     def test_an_absurd_reference_cannot_widen_the_plan_bounds(self) -> None:
         """A reference measuring hour-long takes is clamped by the plan, not
         honoured by it."""

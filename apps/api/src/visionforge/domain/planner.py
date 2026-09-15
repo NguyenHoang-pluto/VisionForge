@@ -512,13 +512,23 @@ class RulesEnginePlanner:
         video measured -- and the plan bounds express what is renderable at all,
         applied last so neither a style nor a reference can widen them.
 
+        A reference also *pulls* the duration before either clamp, in proportion
+        to the strength the user chose and the confidence of the measurement.
+        Clamping alone made the dial inert until a bound bit; see
+        ``StylePolicy.pace``.
+
         Unchanged by Phase 7, and deliberately so: this is the unquantised
         length, which is both the answer when there is no music and the target
         that ``_beat_sync`` rounds to a whole number of beats.
         """
         raw = request.target_duration_ms // max(clip_count, 1)
         if styled:
-            raw = policy.clamp_clip_ms(raw)
+            # Toward the reference's own shot length first -- by however much
+            # the dial and that measurement's confidence allow -- and only then
+            # clamped. Without the pull, a reference did nothing until the
+            # bounds narrowed past the requested pacing and then did all of it
+            # at once, which is a switch wearing a dial's clothes.
+            raw = policy.clamp_clip_ms(policy.pace(raw))
         return max(MIN_SEGMENT_MS, min(MAX_SEGMENT_MS, raw))
 
     @staticmethod

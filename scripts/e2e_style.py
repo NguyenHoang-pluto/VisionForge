@@ -293,7 +293,9 @@ def scenario_media() -> tuple[str, str, list[str]]:
 
 def scenario_analysis(project_id: str) -> None:
     step("2. ANALYSIS - the CPU lane, now including motion and colour")
-    accepted = httpx.post(f"{API}/api/projects/{project_id}/analyze", timeout=60)
+    accepted = httpx.post(
+        f"{API}/api/projects/{project_id}/analysis", json={"lanes": ["cpu"]}, timeout=60
+    )
     check("analysis accepted", accepted.status_code == 202, str(accepted.status_code))
 
     for job in accepted.json()["jobs"]:
@@ -424,14 +426,29 @@ def scenario_strength(project_id: str, reference_id: str) -> dict:
             for s in plan["plan"]["segments"]
         ]
 
+    # The comparison has to be like for like. Detaching the reference does two
+    # things at once -- it turns the dial off *and* it makes the reference clip
+    # eligible as footage again -- so the segment lists legitimately differ by
+    # that clip. What "0% changes nothing" means is that the *pacing* and the
+    # policy are untouched; that the reference stays out of the edit is a
+    # separate guarantee, checked on its own below.
     check(
-        "0% is identical to having no reference at all",
-        segments(plans["0"]) == segments(control),
-        f"{len(segments(plans['0']))} segments",
+        "0% paces the edit exactly as no reference does",
+        per_clip["0"] == control["plan"]["metadata"]["per_clip_ms"],
+        f"{per_clip['0']} ms vs {control['plan']['metadata']['per_clip_ms']} ms",
     )
     check(
         "0% records no style policy",
         plans["0"]["plan"]["metadata"].get("style_policy") is None,
+    )
+    check(
+        "the reference is absent from the 0% plan",
+        reference_id not in {media for media, _, _ in segments(plans["0"])},
+    )
+    check(
+        "the reference is eligible again once detached",
+        reference_id in {media for media, _, _ in segments(control)},
+        "the exclusion is the reference being current, not the clip being marked",
     )
     check(
         "100% shortens the clips toward the reference",
@@ -439,8 +456,8 @@ def scenario_strength(project_id: str, reference_id: str) -> dict:
         f"{per_clip['100']} ms vs {per_clip['0']} ms",
     )
     check(
-        "50% lands between the two",
-        per_clip["100"] <= per_clip["50"] <= per_clip["0"],
+        "50% lands strictly between the two",
+        per_clip["100"] < per_clip["50"] < per_clip["0"],
         f"{per_clip['50']} ms",
     )
 

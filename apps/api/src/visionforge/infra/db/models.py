@@ -110,7 +110,19 @@ class Project(Base, TimestampMixin):
     #: derivation is deterministic -- and being derived means it can never go
     #: stale against a re-analysis.
     reference_media_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("media_assets.id", ondelete="SET NULL"), nullable=True
+        # ``use_alter`` because this constraint closes a cycle: a media asset
+        # belongs to a project and a project points back at one of its media.
+        # Without it SQLAlchemy cannot sort the two tables for create or drop
+        # and warns that it may refuse to in a future release. The migration
+        # already emits it as a separate ALTER, so this only tells the metadata
+        # what the database was always going to be told.
+        ForeignKey(
+            "media_assets.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_projects_reference_media_id",
+        ),
+        nullable=True,
     )
 
     owner: Mapped[User] = relationship(back_populates="projects")

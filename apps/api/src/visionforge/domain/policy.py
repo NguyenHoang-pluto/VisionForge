@@ -153,6 +153,32 @@ class StylePolicy:
         return max(self.min_clip_ms, min(self.max_clip_ms, value))
 
     @property
+    def pacing_pull(self) -> float:
+        """How hard the reference's shot length is allowed to pull, 0..1.
+
+        Strength times the confidence of that one measurement. Zero when there
+        is no reference, when the dial is off, or when the shot length could not
+        be measured.
+        """
+        return self.influence.get("shot_ms", 0.0)
+
+    def pace(self, raw_ms: int) -> int:
+        """Move a per-clip duration toward the reference's shot length.
+
+        Interpolation rather than replacement, and this is the difference
+        between a dial and a switch: at half strength the clips come half of the
+        way to the reference's pacing, not none of the way and then all of it
+        when a bound finally bites.
+
+        The result is still clamped afterwards, by the policy and then by the
+        plan, so this can move the pacing but never past what is renderable.
+        """
+        pull = self.pacing_pull
+        if pull <= 0:
+            return raw_ms
+        return int(round(raw_ms + (self.target_clip_ms - raw_ms) * pull))
+
+    @property
     def is_styled(self) -> bool:
         """Whether the reference is doing anything at all."""
         return self.strength is not StyleStrength.ZERO and bool(self.influence)
