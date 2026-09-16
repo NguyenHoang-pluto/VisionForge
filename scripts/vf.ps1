@@ -13,6 +13,7 @@ param(
     [ValidateSet('setup', 'infra-up', 'infra-down', 'infra-reset', 'infra-status',
                  'migrate', 'api', 'web', 'worker-cpu', 'worker-gpu', 'worker-render',
                  'e2e', 'e2e-analysis', 'e2e-edit', 'e2e-llm', 'e2e-editor', 'e2e-music',
+                 'e2e-style', 'e2e-effects', 'e2e-coedit',
                  'test', 'test-integration', 'lint', 'format', 'typecheck',
                  'contracts', 'web-lint', 'web-build', 'compose-check', 'check', 'help')]
     [string]$Command = 'help'
@@ -119,6 +120,26 @@ switch ($Command) {
         # the MP4's audio stream independently with ffprobe.
         & $Python (Join-Path $Root 'scripts\e2e_music.py')
     }
+
+    'e2e-style' {
+        # Phase 8. Measures a reference video, dials its influence in, and
+        # plans an edit under it.
+        & $Python (Join-Path $Root 'scripts\e2e_style.py')
+    }
+
+    'e2e-effects' {
+        # Phase 9. Transitions, effects and burned-in subtitles, proved visible
+        # by comparing frames against the same edit rendered without them.
+        & $Python (Join-Path $Root 'scripts\e2e_effects.py')
+    }
+
+    'e2e-coedit' {
+        # Phase 10. An edit changed by asking: delta, validation, a new version,
+        # undo that restores byte for byte, and a render of the patched plan.
+        # The deterministic path needs no AI provider -- run it a second time
+        # with LLM_ENABLED=true to exercise the model path as well.
+        & $Python (Join-Path $Root 'scripts\e2e_coedit.py')
+    }
     'test'             { Invoke-Api { & $Python -m pytest -m 'not integration and not gpu' } }
     'test-integration' { Invoke-Api { & $Python -m pytest -m integration } }
     'lint' {
@@ -173,6 +194,9 @@ switch ($Command) {
         Write-Host "    e2e-llm            Phase 5 acceptance test (run with LLM on and off)"
         Write-Host "    e2e-editor         Phase 6 acceptance test (timeline editing -> render)"
         Write-Host "    e2e-music          Phase 7 acceptance test (beats, audio mix -> render)"
+        Write-Host "    e2e-style          Phase 8 acceptance test (reference style -> plan)"
+        Write-Host "    e2e-effects        Phase 9 acceptance test (transitions, effects, subtitles)"
+        Write-Host "    e2e-coedit         Phase 10 acceptance test (AI co-editor, versions, undo)"
         Write-Host ""
         Write-Host "  Quality"
         Write-Host "    check              Run everything CI runs"

@@ -7,15 +7,15 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 9 — subtitles, transitions and core visual effects.**
-> Clips can now be joined with a crossfade or a fade instead of only a cut,
-> carry a speed change, a zoom or a colour adjustment, and be subtitled in a
-> closed set of server-decided styles. A crossfade genuinely shortens the
-> programme, and the plan, the timeline, the render spec and the editor all
-> compute that the same way. The renderer is still the only component that
-> knows FFmpeg syntax, and subtitle text never reaches a filter expression.
+> **Current phase: Phase 10 — the AI co-editor.**
+> AI is no longer a one-shot generator. An edit that already exists can be
+> changed by asking — "lower the music to 40%", "remove the third clip and use
+> bold subtitles" — and the change arrives as a validated `EditDelta` over a
+> closed vocabulary of sixteen operations, applied deterministically and
+> all-or-nothing to the current plan. Every change is a version, undo restores
+> the previous plan byte for byte, and most requests never reach a model at all.
 > See [Roadmap](#roadmap) and
-> [ADR-0013](docs/adr/0013-transitions-effects-subtitles.md).
+> [ADR-0014](docs/adr/0014-ai-co-editor.md).
 
 ---
 
@@ -36,7 +36,9 @@ Three rules shape everything else:
    layer emits declarative plans over a closed vocabulary; deterministic
    compilers turn them into timelines and FFmpeg commands. A model refers to
    clips by opaque handles — `c1`, `c2` — and never sees a media id, a filename
-   or a path.
+   or a path. Changing an existing edit works the same way: a model emits an
+   `EditDelta` of typed operations addressed by clip position, and deterministic
+   code applies it or rejects it whole.
 
 ---
 
@@ -900,6 +902,11 @@ VisionForge/
 ├─ scripts/e2e_analysis.py      Phase 3 acceptance test (analysis lanes)
 ├─ scripts/e2e_edit.py          Phase 4 acceptance test (plan and render)
 ├─ scripts/e2e_llm.py           Phase 5 acceptance test (LLM planning)
+├─ scripts/e2e_editor.py        Phase 6 acceptance test (timeline editing)
+├─ scripts/e2e_music.py         Phase 7 acceptance test (beats and audio mix)
+├─ scripts/e2e_style.py         Phase 8 acceptance test (reference style)
+├─ scripts/e2e_effects.py       Phase 9 acceptance test (transitions, subtitles)
+├─ scripts/e2e_coedit.py        Phase 10 acceptance test (AI co-editor)
 ├─ .github/workflows/ci.yml
 ├─ docker-compose.yml           postgres · redis · minio
 ├─ Makefile                     same targets for Linux/WSL/CI
@@ -1047,6 +1054,58 @@ exposes no sample data and drawing one would be fiction), per-clip colour or
 transform controls, and anything belonging to Phase 8.
 
 ---
+
+**Phase 10 — the AI co-editor.**
+
+- [x] **`EditDelta`** — sixteen operations over a closed vocabulary, every field
+      an integer, a float, a boolean or a member of an enum the codebase already
+      validates. No parameter dictionary, so there is nowhere to put a path, a
+      storage key, a filter expression, an FFmpeg argument or a command; the
+      parser does not filter them out, it has no field to read them into
+- [x] **Clips are addressed by position in the plan the user was shown**, so
+      `[remove 0, remove 1]` removes those two clips rather than one of them and
+      its neighbour. A clip an earlier operation removed is reported as gone
+- [x] **Patching is deterministic and all-or-nothing.** A failure anywhere —
+      including in the same `validate_plan` gate every plan has passed since
+      Phase 4 — returns the original plan object untouched
+- [x] Two normalisations run afterwards and are **reported in the diff rather
+      than applied quietly**: a dissolve that lost the clip it came from, and a
+      transition the clips can no longer carry. Cues past a shortened end are
+      clipped or dropped, and the count is said out loud
+- [x] `CHANGE_STYLE_STRENGTH` and `CHANGE_BEAT_SYNC` record planning intent, and
+      the diff labels them **"next plan"** — a cut edit cannot be restyled
+      without re-cutting it, and claiming otherwise would be a lie
+- [x] **The rules run first, and only when every clause resolves.** "Lower the
+      music to 40%" never reaches a model; "make it feel like a trailer" always
+      does. Half-understanding a two-part request and silently doing one half is
+      the failure this rule exists to prevent
+- [x] The resolver is conservative on purpose: no number means no amount
+      invented, 60% is not snapped to a dial stop that does not exist, and a clip
+      the edit does not have is not guessed at
+- [x] **The model is shown shape, never identity** — clip count, durations,
+      transitions, volumes, cue count. No media id, no filename, no project id,
+      no path. The prompt is generated from the domain's own enums
+- [x] **Versions are a tree and undo moves the head.** No plan is written, so an
+      undo restores the exact bytes rather than a recomputation; editing after an
+      undo branches instead of erasing. One head per project, enforced by a
+      partial unique index
+- [x] Generated, hand-cut and AI-changed plans all record versions, which is what
+      lets manual and AI editing interleave on one history
+- [x] Preview writes nothing and is produced by the same code that commits, so
+      the diff cannot disagree with the result. Apply carries the version it was
+      previewed against and 409s if the head moved
+- [x] **Applying never renders.** A plan change must not queue an encode
+- [x] The editor: the AI tab gained Create / Refine rather than the application
+      gaining a seventh tab. A field, a before/after, an applied-changes list,
+      undo, redo, render and recent requests — an editing tool, not a chatbot
+- [x] 1184 unit tests and 217 integration tests; `scripts/e2e_coedit.py` verifies
+      the whole path to an MP4 with `ffprobe` and a full decode, passing both
+      with an AI provider configured and without one
+
+Deliberately **not** in Phase 10: adding new footage through a delta (that is a
+timeline action, and choosing new material is planning, which has a route);
+per-cue subtitle styling; conversational memory across requests; and any
+operation that could name a file, a filter or an encoder setting.
 
 **Phase 9 — subtitles, transitions and core visual effects.**
 
@@ -1213,8 +1272,11 @@ output, and any new model or downloaded weights.
 | 4     | 7–8   | **Vertical slice**: folder in → timeline → rendered MP4 out, plus the web UI |
 | 5     | 9–10  | LLM planning behind the `EditPlan` boundary, styles, provider abstraction |
 | 6     | 11–12 | Editing workstation — media browser, preview, timeline, manual editing |
-| **7** | 13–14 | Music, deterministic beat detection, beat-synced cutting, audio mixing *(current)* |
-| 8     | 15    | Evaluation loop, Asset Studio with license tracking, AWS deployment |
+| 7     | 13–14 | Music, deterministic beat detection, beat-synced cutting, audio mixing |
+| 8     | 15    | Reference video style intelligence |
+| 9     | 16    | Subtitles, transitions and core visual effects |
+| **10** | 17   | AI co-editor — edit deltas, plan versions, undo/redo *(current)* |
+| 11    | 18    | Evaluation loop, Asset Studio with license tracking, AWS deployment |
 
 The reasoning layer moved forward. It was planned for Phase 7, and was brought
 into Phase 5 because Phase 4 had already built the boundary it has to sit behind

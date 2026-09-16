@@ -8,6 +8,7 @@ WEB_DIR := apps/web
 .PHONY: help setup infra-up infra-down infra-reset infra-status migrate \
         api web worker-cpu worker-gpu worker-render \
         e2e e2e-analysis e2e-edit e2e-llm e2e-editor e2e-music \
+        e2e-style e2e-effects e2e-coedit \
         test test-integration lint format typecheck \
         contracts web-lint web-build compose-check check
 
@@ -15,6 +16,7 @@ help:
 	@echo "setup infra-up infra-down infra-reset infra-status migrate"
 	@echo "api web worker-cpu worker-gpu worker-render"
 	@echo "e2e e2e-analysis e2e-edit e2e-llm e2e-editor e2e-music"
+	@echo "e2e-style e2e-effects e2e-coedit"
 	@echo "check test test-integration lint format typecheck contracts"
 	@echo "web-lint web-build compose-check"
 
@@ -86,6 +88,21 @@ e2e-editor:     # Phase 6: same stack as e2e-edit
 # locally by FFmpeg; nothing is downloaded.
 e2e-music:      # Phase 7: same stack as e2e-edit
 	$(PYTHON) scripts/e2e_music.py
+
+# Phase 8: a reference video measured, its influence dialled in, and an edit
+# planned under it.
+e2e-style:      # Phase 8: same stack as e2e-edit
+	$(PYTHON) scripts/e2e_style.py
+
+# Phase 9: transitions, effects and burned-in subtitles to a playable MP4.
+e2e-effects:    # Phase 9: same stack as e2e-edit
+	$(PYTHON) scripts/e2e_effects.py
+
+# Phase 10: an edit changed by asking -- delta, validation, versions, undo, and
+# a render of the patched plan. The deterministic path needs no AI provider;
+# run it a second time with LLM_ENABLED=true to exercise the model path too.
+e2e-coedit:     # Phase 10: same stack as e2e-edit
+	$(PYTHON) scripts/e2e_coedit.py
 
 test:
 	cd $(API_DIR) && $(PYTHON) -m pytest -m "not integration and not gpu"
