@@ -30,8 +30,12 @@ from visionforge.domain.editplan import (
     FitMode,
     MusicCue,
     QualityPreset,
+    TransitionKind,
 )
+from visionforge.domain.effects import Effect, speed_of
+from visionforge.domain.effects import output_duration_ms as effect_output_ms
 from visionforge.domain.ids import MediaId, ProjectId
+from visionforge.domain.subtitles import SubtitleTrack
 
 
 class TrackKind(StrEnum):
@@ -59,10 +63,35 @@ class TimelineClip:
     source_in_ms: int
     source_out_ms: int
     timeline_start_ms: int
+    #: How this clip enters, and for how long (Phase 9). ``CUT`` with zero is
+    #: every clip written before Phase 9.
+    transition_in: TransitionKind = TransitionKind.CUT
+    transition_ms: int = 0
+    effects: tuple[Effect, ...] = ()
+
+    @property
+    def source_duration_ms(self) -> int:
+        """The trim: how much of the source file this clip reads."""
+        return self.source_out_ms - self.source_in_ms
 
     @property
     def duration_ms(self) -> int:
-        return self.source_out_ms - self.source_in_ms
+        """How long this clip plays, after any speed change.
+
+        Not the trim. A clip at half speed reads two seconds of source and plays
+        for four, and every position on the timeline is computed from the second
+        number.
+        """
+        return effect_output_ms(self.source_duration_ms, self.effects)
+
+    @property
+    def speed(self) -> float:
+        return speed_of(self.effects)
+
+    @property
+    def overlap_ms(self) -> int:
+        """How much of this clip plays over the one before it."""
+        return self.transition_ms if self.transition_in.consumes_time else 0
 
     @property
     def timeline_end_ms(self) -> int:
@@ -179,6 +208,10 @@ class Timeline:
     #: Gain on the clips' own audio. Still not an encoder setting: a number the
     #: compiler turns into a filter, the way ``quality`` becomes a CRF.
     source_gain: float = 1.0
+    #: Subtitles, carried through unchanged from the plan (Phase 9). The
+    #: timeline does not lay them out: cues are already in output coordinates,
+    #: which is exactly why they are stored that way.
+    subtitles: SubtitleTrack | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -248,10 +281,17 @@ class Timeline:
 def compile_timeline(plan: EditPlan) -> Timeline:
     """Lay a validated plan out on a timeline.
 
-    Butt-joined: each clip starts where the previous ended. Phase 4 has hard
-    cuts only, so there is no overlap to negotiate and no gap to fill. When a
-    dissolve arrives it changes exactly this function -- clips overlap by the
-    transition duration and the running offset shrinks accordingly.
+    Phase 4 was butt-joined and said, in this docstring, that a dissolve would
+    change exactly this function -- clips overlapping by the transition duration
+    with the running offset shrinking accordingly. This is that change, plus one
+    the same paragraph did not anticipate: a speed effect means a clip occupies a
+    different length than it reads, so the offset advances by the *output*
+    duration and not by the trim.
+
+    The two adjustments compose in one place so that the plan's
+    ``total_duration_ms`` and the last clip's ``timeline_end_ms`` cannot
+    disagree -- a property the tests assert directly, because an editor that
+    reports one length and renders another is worse than one that refuses.
 
     The plan must already have passed ``assert_valid``; this compiler assumes
     well-formed input and does not re-validate.
@@ -259,16 +299,25 @@ def compile_timeline(plan: EditPlan) -> Timeline:
     clips: list[TimelineClip] = []
     offset = 0
     for index, segment in enumerate(plan.ordered_segments):
+        # A crossfade starts this clip *before* the previous one has finished,
+        # by exactly the overlap. The first clip has nothing to overlap, whatever
+        # its transition claims -- validation rejects that, and this is total
+        # anyway rather than trusting it to have run.
+        overlap = segment.overlap_ms if index > 0 else 0
+        start = max(0, offset - overlap)
         clips.append(
             TimelineClip(
                 media_id=segment.media_id,
                 index=index,
                 source_in_ms=segment.source_in_ms,
                 source_out_ms=segment.source_out_ms,
-                timeline_start_ms=offset,
+                timeline_start_ms=start,
+                transition_in=segment.transition_in,
+                transition_ms=segment.transition_ms,
+                effects=segment.effects,
             )
         )
-        offset += segment.duration_ms
+        offset = start + segment.output_duration_ms
 
     tracks = [Track(kind=TrackKind.VIDEO, clips=tuple(clips))]
     if plan.output.audio is AudioMode.SOURCE:
@@ -301,11 +350,16 @@ def compile_timeline(plan: EditPlan) -> Timeline:
         audio=plan.output.audio,
         quality=plan.output.quality,
         source_gain=plan.output.source_gain,
+        subtitles=plan.subtitles,
         metadata={
             "planner": plan.planner,
             "planner_version": plan.planner_version,
             "segment_count": len(clips),
             "has_music": plan.music is not None,
+            "has_subtitles": plan.subtitles is not None,
+            "transitions": sorted(
+                {s.transition_in.value for s in plan.ordered_segments if s.transition_ms}
+            ),
         },
     )
 
@@ -350,15 +404,35 @@ class RenderInput:
 
 @dataclass(frozen=True, slots=True)
 class RenderSegment:
-    """One trimmed piece of one input, in the order it will be concatenated."""
+    """One trimmed piece of one input, in the order it will be joined."""
 
     input_index: int
     source_in_ms: int
     source_out_ms: int
+    #: How this segment enters, and for how long. ``CUT`` with zero is every
+    #: segment written before Phase 9, and the compiler keeps its old code path
+    #: for a spec in which every segment says that.
+    transition_in: TransitionKind = TransitionKind.CUT
+    transition_ms: int = 0
+    effects: tuple[Effect, ...] = ()
+
+    @property
+    def source_duration_ms(self) -> int:
+        """The trim, in source time. What ``atrim``/``trim`` are given."""
+        return self.source_out_ms - self.source_in_ms
 
     @property
     def duration_ms(self) -> int:
-        return self.source_out_ms - self.source_in_ms
+        """How long this segment plays, after any speed change."""
+        return effect_output_ms(self.source_duration_ms, self.effects)
+
+    @property
+    def speed(self) -> float:
+        return speed_of(self.effects)
+
+    @property
+    def overlap_ms(self) -> int:
+        return self.transition_ms if self.transition_in.consumes_time else 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,10 +491,38 @@ class RenderSpec:
     #: The music bed, if there is one. Independent of ``include_audio``: music
     #: alone, source alone, both, or neither are all valid outputs.
     music: RenderMusic | None = None
+    #: Subtitles, if any (Phase 9). The compiler turns these into an ASS
+    #: document in the render's own scratch directory; the spec carries no path
+    #: because the path does not exist until the compiler makes one.
+    subtitles: SubtitleTrack | None = None
 
     @property
     def duration_ms(self) -> int:
-        return sum(segment.duration_ms for segment in self.segments)
+        """How long the encode will run.
+
+        A sum minus the overlaps. Phase 4 could sum the segments because every
+        join was a cut; a crossfade makes the output shorter than its parts, and
+        a spec that still reported the sum would make the progress bar, the
+        music trim and the stored duration all wrong in the same direction.
+        """
+        if not self.segments:
+            return 0
+        total = sum(segment.duration_ms for segment in self.segments)
+        return total - sum(segment.overlap_ms for segment in self.segments[1:])
+
+    @property
+    def has_transitions(self) -> bool:
+        """Whether any join is something other than a hard cut.
+
+        The compiler branches on this: a spec of pure cuts takes the Phase 4
+        concat path unchanged, so eight phases of existing plans render to the
+        same bytes they always did.
+        """
+        return any(segment.transition_in is not TransitionKind.CUT for segment in self.segments)
+
+    @property
+    def has_effects(self) -> bool:
+        return any(segment.effects for segment in self.segments)
 
     @property
     def has_audio_output(self) -> bool:
@@ -508,6 +610,9 @@ def build_render_spec(
             input_index=input_index[clip.media_id],
             source_in_ms=clip.source_in_ms,
             source_out_ms=clip.source_out_ms,
+            transition_in=clip.transition_in,
+            transition_ms=clip.transition_ms,
+            effects=clip.effects,
         )
         for clip in clips
     )

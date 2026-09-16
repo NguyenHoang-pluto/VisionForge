@@ -358,7 +358,11 @@ class TestHostilePlans:
         deliberate act that fails this test until someone confirms the new field
         cannot carry a path or a command. Phase 5 added ``quality``, which is an
         enum of three values. Phase 7 added ``source_gain`` and the music cue,
-        which are numbers and one media id.
+        which are numbers and one media id. Phase 9 added ``transition_ms``, an
+        integer, and ``effects``, a list whose every entry is a closed enum plus
+        one number and two optional integers -- deliberately not a parameter
+        dictionary, which would be a hole in exactly the shape of an arbitrary
+        filter argument.
         """
         plan, _ = simple_plan(1)
         payload = plan.as_payload()
@@ -370,6 +374,8 @@ class TestHostilePlans:
             "source_out_ms",
             "duration_ms",
             "transition_in",
+            "transition_ms",
+            "effects",
         }
         assert set(payload["output"]) == {
             "aspect_ratio",
@@ -381,6 +387,45 @@ class TestHostilePlans:
             "quality",
             "source_gain",
         }
+
+    def test_an_effect_is_an_enum_and_a_number(self) -> None:
+        """No parameter dictionary, in either direction.
+
+        An effect that carried ``{"filter": "..."}`` would defeat every other
+        guarantee in this file, so the payload's field set is pinned the same
+        way the segment's is.
+        """
+        from visionforge.domain.effects import Effect, EffectKind
+
+        payload = Effect(kind=EffectKind.BRIGHTNESS, amount=0.2).as_payload()
+        assert set(payload) == {"kind", "amount", "start_ms", "end_ms"}
+        assert isinstance(payload["kind"], str)
+        assert isinstance(payload["amount"], float)
+
+    def test_subtitle_text_is_the_only_string_and_it_is_not_a_filter(self) -> None:
+        """The first user-supplied string in the plan, and what happens to it.
+
+        Text reaches the renderer inside an ASS document, never inside a filter
+        graph -- so the characters that would carry meaning to a filter or to
+        the document format are removed before storage rather than escaped at
+        render time. ``clean_text`` is where that happens; this pins that it
+        happens at all.
+        """
+        from visionforge.domain.subtitles import SubtitleCue, SubtitleTrack, clean_text
+
+        hostile = "hi':drawbox=c=red@1:t=fill,drawtext=text='pwned"
+        cleaned = clean_text(hostile)
+        assert "\\" not in cleaned
+        assert "{" not in cleaned and "}" not in cleaned
+
+        track = SubtitleTrack(cues=(SubtitleCue(0, 1_000, cleaned),))
+        payload = track.as_payload()
+        assert set(payload) == {"style", "position", "cues"}
+        assert set(payload["cues"][0]) == {"start_ms", "end_ms", "text"}
+        # Style and position are ids, never parameters: no font path, no size,
+        # no colour, nothing the renderer would take as an instruction.
+        assert isinstance(payload["style"], str)
+        assert isinstance(payload["position"], str)
 
     def test_the_music_cue_has_no_field_for_a_path_or_a_command(self) -> None:
         """The same guard, for the audio track.

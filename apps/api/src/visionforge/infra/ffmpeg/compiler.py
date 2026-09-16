@@ -21,8 +21,10 @@ exists to prevent.
 
 from __future__ import annotations
 
-from visionforge.domain.editplan import FitMode
-from visionforge.domain.timeline import RenderMusic, RenderSpec
+from visionforge.domain.editplan import FitMode, TransitionKind
+from visionforge.domain.effects import EffectKind
+from visionforge.domain.timeline import RenderMusic, RenderSegment, RenderSpec
+from visionforge.infra.ffmpeg.subtitles import escape_filter_path
 
 #: One sample rate and layout for everything that meets in the mixer. `concat`
 #: and `amix` both require their inputs to agree, and real sources do not: a
@@ -167,7 +169,113 @@ def build_audio_graph(spec: RenderSpec, source_labels: list[str]) -> list[str]:
     return parts
 
 
-def build_filter_graph(spec: RenderSpec) -> str:
+def build_effect_chain(segment: RenderSegment, *, fps: int, width: int, height: int) -> str:
+    """The filters one segment's effects compile to, in a fixed order.
+
+    Order is decided here rather than by the caller's list, because it changes
+    the picture: a colour grade applied before a zoom is sampled differently
+    from one applied after, and "whichever order the client happened to send"
+    is not a rendering contract. Geometry first, then colour, then rate.
+
+    Returns a chain ending in a comma when non-empty, so callers can splice it
+    into a filter string without counting separators.
+    """
+    parts: list[str] = []
+    duration_ms = segment.source_duration_ms
+
+    # --- geometry ---
+    for effect in segment.effects:
+        if effect.kind not in (EffectKind.ZOOM_IN, EffectKind.ZOOM_OUT) or effect.is_neutral:
+            continue
+        # A centre crop that tightens (or loosens) over the clip, scaled back
+        # out to the output rectangle. `crop` evaluates its expressions once per
+        # frame and leaves timestamps alone, which is the whole reason it is
+        # used here instead of `zoompan`: zoompan regenerates PTS from its own
+        # frame counter, and a two-second clip came back claiming seventeen
+        # minutes.
+        #
+        # `t` is the segment's own clock -- setpts rebased it to zero above --
+        # so the ramp is written against the trim's length and needs no frame
+        # count.
+        seconds = max(duration_ms / 1000, 0.001)
+        amount = effect.amount
+        if effect.kind is EffectKind.ZOOM_IN:
+            factor = rf"1+{amount:g}*min(t/{seconds:g}\,1)"
+        else:
+            factor = rf"{1 + amount:g}-{amount:g}*min(t/{seconds:g}\,1)"
+        parts.append(
+            f"crop=w='iw/({factor})':h='ih/({factor})'"
+            f":x='(iw-ow)/2':y='(ih-oh)/2'"
+            f",scale={width}:{height},setsar=1"
+        )
+
+    # --- colour ---
+    #
+    # One `eq` per effect rather than one combined: they may have different
+    # windows, and `enable` applies to a filter instance.
+    for effect in segment.effects:
+        option = {
+            EffectKind.BRIGHTNESS: "brightness",
+            EffectKind.CONTRAST: "contrast",
+            EffectKind.SATURATION: "saturation",
+        }.get(effect.kind)
+        if option is None or effect.is_neutral:
+            continue
+        chain = f"eq={option}={effect.amount:g}"
+        if effect.is_ranged:
+            start, end = effect.window(duration_ms)
+            # Timeline-gated. `t` here is the trimmed segment's own clock,
+            # because setpts has already rebased it to zero.
+            chain += f":enable='between(t,{_ms(start)},{_ms(end)})'"
+        parts.append(chain)
+
+    # --- rate ---
+    #
+    # Last, and deliberately so: setpts rewrites timestamps, and a filter that
+    # reasons about time (the `enable` above) must see the unaltered clock.
+    rate = segment.speed
+    if abs(rate - 1.0) > 1e-9:
+        parts.append(f"setpts=PTS/{rate:g}")
+
+    return ",".join(parts) + "," if parts else ""
+
+
+def build_audio_effect_chain(segment: RenderSegment) -> str:
+    """The audio side of a speed change.
+
+    ``atempo`` is the only effect audio has, because the others are visual. Its
+    accepted range is 0.5-2.0 on the builds this has to work with, so a rate
+    outside that is factored into a chain of instances inside it -- 0.25 becomes
+    two halvings. Colour and zoom produce nothing here.
+    """
+    rate = segment.speed
+    if abs(rate - 1.0) <= 1e-9:
+        return ""
+
+    factors: list[float] = []
+    remaining = rate
+    while remaining < 0.5:
+        factors.append(0.5)
+        remaining /= 0.5
+    while remaining > 2.0:
+        factors.append(2.0)
+        remaining /= 2.0
+    factors.append(remaining)
+
+    return ",".join(f"atempo={factor:g}" for factor in factors) + ","
+
+
+def build_subtitle_filter(spec: RenderSpec, ass_path: str) -> str:
+    """Burn subtitles in, from a document this process wrote.
+
+    The filename is the only thing that crosses into the graph, and it names a
+    file in the render's own scratch directory. No user string reaches here:
+    the text is inside the document, which libass parses as text.
+    """
+    return f"subtitles=filename='{escape_filter_path(ass_path)}'"
+
+
+def build_filter_graph(spec: RenderSpec, *, ass_path: str | None = None) -> str:
     """The complete filtergraph: trim, normalise, concatenate.
 
     Each segment is trimmed from its input, reset to a zero timebase, scaled to
@@ -190,6 +298,12 @@ def build_filter_graph(spec: RenderSpec) -> str:
             # concatenated output inherits the source timestamps and stalls.
             f"setpts=PTS-STARTPTS,"
             f"{scale_filter(spec.width, spec.height, spec.fit)},"
+            # Effects sit after normalisation and before the frame rate is
+            # forced: zoompan needs to know the geometry it is cropping within,
+            # and a speed change has to be reflected in the timestamps that fps
+            # then resamples.
+            f"{build_effect_chain(segment, fps=spec.fps, width=spec.width, height=spec.height)}"
+            f"{_fade_chain(segment, spec.fps)}"
             f"fps={spec.fps},"
             f"format={spec.pixel_format}"
             f"[{video_label}]"
@@ -202,6 +316,7 @@ def build_filter_graph(spec: RenderSpec) -> str:
                 f"[{source}:a]"
                 f"atrim=start={_ms(segment.source_in_ms)}:end={_ms(segment.source_out_ms)},"
                 f"asetpts=PTS-STARTPTS,"
+                f"{build_audio_effect_chain(segment)}"
                 # Resample to one rate/layout for the same reason as the video:
                 # concat requires uniform inputs.
                 f"{_AFORMAT}"
@@ -218,23 +333,107 @@ def build_filter_graph(spec: RenderSpec) -> str:
     # there is no music -- the same segments, in the same order, at the same
     # rate -- and makes the mix expressible when there is.
     count = len(spec.segments)
-    chain = "".join(f"[{v}]" for v in video_labels)
-    parts.append(f"{chain}concat=n={count}:v=1:a=0[vout]")
+    if spec.has_transitions:
+        # Pairwise, because `concat` cannot overlap. See `_join_with_transitions`.
+        parts.extend(_join_with_transitions(spec, video_labels, "vout"))
+    else:
+        # The Phase 4 path, untouched. Every plan written before Phase 9 takes
+        # this branch and produces the bytes it always did.
+        chain = "".join(f"[{v}]" for v in video_labels)
+        parts.append(f"{chain}concat=n={count}:v=1:a=0[vout]")
+
     parts.extend(build_audio_graph(spec, audio_labels))
+
+    if ass_path is not None and spec.subtitles is not None:
+        # Burned in last, over the finished picture, so a cue that spans a cut
+        # is drawn once rather than clipped at the join -- and so subtitles are
+        # not dissolved by a crossfade they happen to overlap.
+        parts.append(f"[vout]{build_subtitle_filter(spec, ass_path)}[vsub]")
 
     return ";".join(parts)
 
 
-def compile_render_argv(spec: RenderSpec, *, overwrite: bool = True) -> list[str]:
+def _fade_chain(segment: RenderSegment, fps: int) -> str:
+    """Fades to and from black, which are drawn on the clip rather than between.
+
+    Unlike a crossfade these consume no time: the clip plays its whole length
+    and the fade is painted over its head or tail. That is why they are here, in
+    the per-segment chain, and not in the join.
+    """
+    if segment.transition_ms <= 0:
+        return ""
+
+    duration_s = segment.transition_ms / 1000
+    if segment.transition_in is TransitionKind.FADE_IN:
+        return f"fade=t=in:st=0:d={duration_s:g},"
+    if segment.transition_in is TransitionKind.FADE_TO_BLACK:
+        # Measured from the segment's *output* length, so a slowed clip fades
+        # out at its real end rather than early.
+        start = max(0.0, segment.duration_ms / 1000 - duration_s)
+        return f"fade=t=out:st={start:g}:d={duration_s:g},"
+    return ""
+
+
+def _join_with_transitions(spec: RenderSpec, labels: list[str], output_label: str) -> list[str]:
+    """Join segments pairwise, dissolving where asked.
+
+    `concat` takes n inputs and plays them end to end; it has no way to overlap
+    two of them, so a crossfade cannot be expressed in the same filter. `xfade`
+    can, but takes exactly two inputs -- so the chain is built one join at a
+    time, carrying a running label and a running output length.
+
+    The offset arithmetic is the part worth being careful about. `xfade`'s
+    ``offset`` is measured from the start of the *accumulated* first input, and
+    the transition begins there, so joining an accumulation of length ``A`` to a
+    clip of length ``B`` with a ``D``-long dissolve puts the offset at ``A - D``
+    and produces ``A + B - D``. Getting that wrong does not fail: it renders,
+    with the dissolve in the wrong place and the output the wrong length.
+
+    Cuts inside a transitioned spec become two-input concats rather than being
+    batched, which is exactly equivalent and keeps one code path.
+    """
+    parts: list[str] = []
+    current = labels[0]
+    accumulated = spec.segments[0].duration_ms
+
+    for index in range(1, len(spec.segments)):
+        segment = spec.segments[index]
+        nxt = labels[index]
+        last = index == len(spec.segments) - 1
+        out = output_label if last else f"x{index}"
+
+        if segment.transition_in is TransitionKind.CROSSFADE and segment.transition_ms > 0:
+            offset_s = max(0.0, (accumulated - segment.transition_ms) / 1000)
+            parts.append(
+                f"[{current}][{nxt}]"
+                f"xfade=transition=fade:duration={segment.transition_ms / 1000:g}"
+                f":offset={offset_s:g}"
+                f"[{out}]"
+            )
+            accumulated = accumulated + segment.duration_ms - segment.transition_ms
+        else:
+            parts.append(f"[{current}][{nxt}]concat=n=2:v=1:a=0[{out}]")
+            accumulated += segment.duration_ms
+
+        current = out
+
+    return parts
+
+
+def compile_render_argv(
+    spec: RenderSpec, *, overwrite: bool = True, ass_path: str | None = None
+) -> list[str]:
     """Compile a RenderSpec into FFmpeg arguments.
 
     Returns the arguments *after* the executable: the runner resolves and
     prepends the binary, so this function never has to know where FFmpeg lives
     and cannot be pointed at a different one.
 
-    Pure. Given a spec, the output is fully determined -- which is what lets the
-    command be asserted directly in tests instead of being inferred from whether
-    a render succeeded.
+    ``ass_path`` names a subtitle document the *worker* has already written into
+    the render's scratch directory. It is an argument rather than something this
+    function derives, because writing a file is I/O and this function is pure --
+    which is what lets the whole command be asserted in a test instead of being
+    inferred from whether a render succeeded.
     """
     if not spec.inputs:
         raise ValueError("render spec has no inputs")
@@ -248,8 +447,9 @@ def compile_render_argv(spec: RenderSpec, *, overwrite: bool = True) -> list[str
     for render_input in spec.inputs:
         args += ["-i", render_input.local_path]
 
-    args += ["-filter_complex", build_filter_graph(spec)]
-    args += ["-map", "[vout]"]
+    burn_subtitles = ass_path is not None and spec.subtitles is not None
+    args += ["-filter_complex", build_filter_graph(spec, ass_path=ass_path)]
+    args += ["-map", "[vsub]" if burn_subtitles else "[vout]"]
     if spec.has_audio_output:
         args += ["-map", "[aout]"]
 

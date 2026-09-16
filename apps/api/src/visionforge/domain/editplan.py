@@ -29,9 +29,25 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from visionforge.domain.effects import (
+    EFFECT_BOUNDS,
+    MAX_EFFECTS_PER_SEGMENT,
+    MIN_EFFECT_MS,
+    Effect,
+    output_duration_ms,
+    speed_of,
+)
 from visionforge.domain.errors import PermanentError
 from visionforge.domain.ids import MediaId, ProjectId
 from visionforge.domain.media import MediaKind, MediaStatus
+from visionforge.domain.subtitles import (
+    MAX_CUE_CHARS,
+    MAX_CUE_MS,
+    MAX_CUES,
+    MIN_CUE_GAP_MS,
+    MIN_CUE_MS,
+    SubtitleTrack,
+)
 
 # --------------------------------------------------------------------- limits
 #: Bounds every plan is checked against. These are product limits, not guesses:
@@ -39,6 +55,20 @@ from visionforge.domain.media import MediaKind, MediaStatus
 MIN_SEGMENT_MS = 300
 MAX_SEGMENT_MS = 30_000
 MAX_SEGMENTS = 40
+
+#: Transition bounds (Phase 9).
+#:
+#: The floor is two frames at 60 fps: below that the effect is a cut with extra
+#: encoding. The ceiling is a judgement -- a four-second dissolve is a stylistic
+#: choice, a forty-second one is a mistake that also costs a great deal of
+#: encode time.
+MIN_TRANSITION_MS = 80
+MAX_TRANSITION_MS = 4_000
+
+#: A crossfade eats into both neighbours. Allowing it to consume more than this
+#: share of either would leave a "clip" that is entirely dissolve -- visible as a
+#: smear rather than as an edit, and impossible for ``xfade`` to place.
+MAX_TRANSITION_SHARE = 0.5
 MIN_OUTPUT_MS = 1_000
 MAX_OUTPUT_MS = 10 * 60 * 1_000
 MIN_DIMENSION = 16
@@ -85,13 +115,48 @@ class FitMode(StrEnum):
 
 
 class TransitionKind(StrEnum):
-    """Phase 4 ships hard cuts only.
+    """How one segment gives way to the next. A closed vocabulary.
 
-    Declared as an enum with one member rather than omitted, so that adding a
-    dissolve later extends a closed vocabulary instead of introducing one.
+    Phase 4 shipped ``CUT`` alone and said a dissolve would extend this rather
+    than introduce a vocabulary; Phase 9 is that extension. Four members, and
+    the restraint is deliberate: a wipe, an iris and a page curl are each a
+    filter, a parameter set and a timing rule, and shipping twelve of them
+    badly is worse than shipping four that are exact.
+
+    They divide into two kinds, and the division is the whole of the timing
+    model:
+
+    **Overlapping.** ``CROSSFADE`` plays the tail of one clip and the head of
+    the next at the same time, so the programme is *shorter* than the sum of its
+    segments by exactly the overlap.
+
+    **Overlaid.** ``FADE_IN`` and ``FADE_TO_BLACK`` are drawn on top of a clip
+    that plays its full length. They consume no time and move nothing.
     """
 
     CUT = "cut"
+    #: Dissolve from the previous segment into this one. Consumes time.
+    CROSSFADE = "crossfade"
+    #: This segment fades up from black. Consumes no time.
+    FADE_IN = "fade_in"
+    #: This segment fades down to black at its end. Consumes no time.
+    FADE_TO_BLACK = "fade_to_black"
+
+    @property
+    def consumes_time(self) -> bool:
+        """Whether this transition shortens the programme.
+
+        The single question the timeline arithmetic asks. Written as a property
+        of the kind rather than as a set the callers each keep, because a fifth
+        member added without answering it would otherwise silently default to
+        "no" and produce a plan whose reported duration is wrong.
+        """
+        return self is TransitionKind.CROSSFADE
+
+    @property
+    def needs_previous(self) -> bool:
+        """Whether this transition is meaningless on the first segment."""
+        return self is TransitionKind.CROSSFADE
 
 
 class QualityPreset(StrEnum):
@@ -155,10 +220,44 @@ class Segment:
     source_in_ms: int
     source_out_ms: int
     transition_in: TransitionKind = TransitionKind.CUT
+    #: How long the incoming transition runs. Ignored for ``CUT``, which has no
+    #: duration by definition; validated against both neighbours for the kinds
+    #: that do.
+    transition_ms: int = 0
+    #: Effects applied to this segment (Phase 9). A tuple, because a clip may
+    #: reasonably carry a zoom *and* a colour adjustment, and ordering them is
+    #: the compiler's job rather than the caller's.
+    effects: tuple[Effect, ...] = ()
 
     @property
     def duration_ms(self) -> int:
+        """How long this segment's source contributes.
+
+        Note what this is *not*: the time it occupies on the timeline. A segment
+        entered by a crossfade overlaps its predecessor, so the programme grows
+        by less than this. ``Timeline`` owns that arithmetic; a segment only
+        knows its own trim.
+        """
         return self.source_out_ms - self.source_in_ms
+
+    @property
+    def overlap_ms(self) -> int:
+        """How much of this segment plays over the previous one."""
+        return self.transition_ms if self.transition_in.consumes_time else 0
+
+    @property
+    def output_duration_ms(self) -> int:
+        """How long this segment occupies once its speed effects are applied.
+
+        Half speed doubles a clip. This is the number the timeline lays out and
+        the number the renderer produces; ``duration_ms`` is the trim it was cut
+        from, and the two are equal only when nothing changed the rate.
+        """
+        return output_duration_ms(self.duration_ms, self.effects)
+
+    @property
+    def speed(self) -> float:
+        return speed_of(self.effects)
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +328,10 @@ class EditPlan:
     #: a new member of ``AudioMode``: a plan written before Phase 7 deserialises
     #: to ``None`` and renders to the same bytes it always did.
     music: MusicCue | None = None
+    #: Subtitles, if the edit has any (Phase 9). Optional for the same reason
+    #: ``music`` is: a plan written before Phase 9 deserialises to ``None`` and
+    #: renders to the same bytes.
+    subtitles: SubtitleTrack | None = None
     planner: str = "rules-engine"
     planner_version: str = "1"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -256,7 +359,28 @@ class EditPlan:
 
     @property
     def total_duration_ms(self) -> int:
-        return sum(segment.duration_ms for segment in self.segments)
+        """How long the programme runs.
+
+        Three things make this more than a sum, and getting any of them wrong
+        produces a plan that reports one length and renders another:
+
+        - a speed effect changes how long a segment *plays* (half speed doubles
+          it), so each segment contributes its output duration, not its trim;
+        - a crossfade overlaps two segments, so the programme is shorter than
+          their sum by exactly the overlap;
+        - a fade to or from black is drawn on top of a clip that plays its full
+          length and changes nothing.
+
+        The arithmetic lives here, and ``compile_timeline`` lays clips out using
+        the same two helpers, so the plan and the timeline cannot disagree.
+        """
+        segments = self.ordered_segments
+        if not segments:
+            return 0
+        total = sum(segment.output_duration_ms for segment in segments)
+        # The first segment has nothing to overlap with, whatever it claims.
+        total -= sum(segment.overlap_ms for segment in segments[1:])
+        return total
 
     @property
     def ordered_segments(self) -> tuple[Segment, ...]:
@@ -287,6 +411,8 @@ class EditPlan:
                     "source_out_ms": segment.source_out_ms,
                     "duration_ms": segment.duration_ms,
                     "transition_in": segment.transition_in.value,
+                    "transition_ms": segment.transition_ms,
+                    "effects": [effect.as_payload() for effect in segment.effects],
                 }
                 for segment in self.ordered_segments
             ],
@@ -461,6 +587,10 @@ def validate_plan(plan: EditPlan, media_facts: dict[MediaId, MediaFact]) -> list
 
     for segment in plan.ordered_segments:
         violations.extend(_validate_segment(segment, plan, media_facts))
+
+    violations.extend(_validate_transitions(plan))
+    violations.extend(_validate_effects(plan))
+    violations.extend(_validate_subtitles(plan))
 
     # --- total duration ---
     total = plan.total_duration_ms
@@ -705,6 +835,240 @@ def _validate_segment(
     return violations
 
 
+def _validate_transitions(plan: EditPlan) -> list[PlanViolation]:
+    """Transitions, and the timing they are only allowed to imply.
+
+    A crossfade is the only kind that consumes time, and it is the only one with
+    anything to get wrong: it eats into both neighbours, so it has to be shorter
+    than either can spare, and it needs a previous clip to dissolve from.
+    """
+    violations: list[PlanViolation] = []
+    segments = plan.ordered_segments
+
+    for index, segment in enumerate(segments):
+        kind = segment.transition_in
+        order = segment.order
+
+        if kind is TransitionKind.CUT:
+            # A cut has no duration by definition. A plan that sends one is
+            # describing something it does not mean, and silently ignoring it
+            # would let an editor show a slider that does nothing.
+            if segment.transition_ms:
+                violations.append(
+                    PlanViolation(
+                        "transition_duration_on_cut",
+                        f"a cut cannot last {segment.transition_ms} ms",
+                        order,
+                    )
+                )
+            continue
+
+        if not MIN_TRANSITION_MS <= segment.transition_ms <= MAX_TRANSITION_MS:
+            violations.append(
+                PlanViolation(
+                    "transition_duration",
+                    f"{segment.transition_ms} ms outside "
+                    f"{MIN_TRANSITION_MS}-{MAX_TRANSITION_MS} ms",
+                    order,
+                )
+            )
+            continue
+
+        if kind.needs_previous and index == 0:
+            violations.append(
+                PlanViolation(
+                    "transition_without_previous",
+                    f"{kind.value} needs a segment to come from",
+                    order,
+                )
+            )
+            continue
+
+        if not kind.consumes_time:
+            continue
+
+        # A dissolve borrows from both clips. Either being too short to lend is
+        # the same failure, and both are reported against the segment carrying
+        # the transition, because that is the one the user chose.
+        previous = segments[index - 1]
+        share = int(
+            min(previous.output_duration_ms, segment.output_duration_ms) * MAX_TRANSITION_SHARE
+        )
+        if segment.transition_ms > share:
+            violations.append(
+                PlanViolation(
+                    "transition_too_long_for_neighbours",
+                    f"{segment.transition_ms} ms exceeds {share} ms, "
+                    f"half the shorter of the two clips",
+                    order,
+                )
+            )
+
+    return violations
+
+
+def _validate_effects(plan: EditPlan) -> list[PlanViolation]:
+    """Effect kinds, parameter ranges, windows, and the combinations that lie."""
+    violations: list[PlanViolation] = []
+
+    for segment in plan.ordered_segments:
+        order = segment.order
+
+        if len(segment.effects) > MAX_EFFECTS_PER_SEGMENT:
+            violations.append(
+                PlanViolation(
+                    "too_many_effects",
+                    f"{len(segment.effects)} effects exceeds {MAX_EFFECTS_PER_SEGMENT}",
+                    order,
+                )
+            )
+
+        kinds = [effect.kind for effect in segment.effects]
+        if len(set(kinds)) != len(kinds):
+            violations.append(
+                PlanViolation(
+                    "duplicate_effect",
+                    "a segment cannot carry the same effect twice",
+                    order,
+                )
+            )
+
+        speeds = [kind for kind in kinds if kind.changes_duration]
+        if len(speeds) > 1:
+            # Two rates multiply to a third that nobody asked for.
+            violations.append(
+                PlanViolation(
+                    "conflicting_speed",
+                    "a segment can have one speed change, not two",
+                    order,
+                )
+            )
+
+        for effect in segment.effects:
+            low, high, _ = EFFECT_BOUNDS[effect.kind]
+            if not low <= effect.amount <= high:
+                violations.append(
+                    PlanViolation(
+                        "effect_amount",
+                        f"{effect.kind.value} {effect.amount} outside {low}-{high}",
+                        order,
+                    )
+                )
+
+            if effect.is_ranged and effect.kind.spans_whole_segment:
+                violations.append(
+                    PlanViolation(
+                        "effect_cannot_be_ranged",
+                        f"{effect.kind.value} applies to a whole clip, not part of one",
+                        order,
+                    )
+                )
+                continue
+
+            if not effect.is_ranged:
+                continue
+
+            start, end = effect.window(segment.duration_ms)
+            if start >= end:
+                violations.append(
+                    PlanViolation(
+                        "effect_window_inverted",
+                        f"{effect.kind.value} window {start}-{end} ms is empty",
+                        order,
+                    )
+                )
+            elif end - start < MIN_EFFECT_MS:
+                violations.append(
+                    PlanViolation(
+                        "effect_window_too_short",
+                        f"{end - start} ms below {MIN_EFFECT_MS} ms",
+                        order,
+                    )
+                )
+            if effect.end_ms is not None and effect.end_ms > segment.duration_ms:
+                violations.append(
+                    PlanViolation(
+                        "effect_window_past_end",
+                        f"{effect.end_ms} ms is past the clip's {segment.duration_ms} ms",
+                        order,
+                    )
+                )
+
+    return violations
+
+
+def _validate_subtitles(plan: EditPlan) -> list[PlanViolation]:
+    """Cue bounds, ordering, overlap and text length.
+
+    Cues are in *timeline* coordinates, so they are checked against the
+    programme's own length -- which already accounts for crossfade overlap and
+    speed changes. A cue past the end would simply never be drawn, which is a
+    silent failure and the kind this gate exists to convert into a loud one.
+    """
+    track = plan.subtitles
+    if track is None:
+        return []
+
+    violations: list[PlanViolation] = []
+    cues = track.ordered
+
+    if len(cues) > MAX_CUES:
+        violations.append(PlanViolation("too_many_cues", f"{len(cues)} cues exceeds {MAX_CUES}"))
+
+    total = plan.total_duration_ms
+    previous_end: int | None = None
+
+    for index, cue in enumerate(cues):
+        where = f"cue {index + 1}"
+
+        if cue.start_ms < 0:
+            violations.append(PlanViolation("cue_negative_start", f"{where} starts before zero"))
+        if cue.end_ms <= cue.start_ms:
+            violations.append(PlanViolation("cue_inverted", f"{where} ends at or before it starts"))
+            continue
+
+        if not MIN_CUE_MS <= cue.duration_ms <= MAX_CUE_MS:
+            violations.append(
+                PlanViolation(
+                    "cue_duration",
+                    f"{where} is {cue.duration_ms} ms, outside {MIN_CUE_MS}-{MAX_CUE_MS} ms",
+                )
+            )
+
+        if not cue.text.strip():
+            violations.append(PlanViolation("cue_empty", f"{where} has no text"))
+        elif len(cue.text) > MAX_CUE_CHARS:
+            violations.append(
+                PlanViolation(
+                    "cue_too_long",
+                    f"{where} is {len(cue.text)} characters, over {MAX_CUE_CHARS}",
+                )
+            )
+
+        if total and cue.end_ms > total:
+            violations.append(
+                PlanViolation(
+                    "cue_past_end",
+                    f"{where} ends at {cue.end_ms} ms, past the edit's {total} ms",
+                )
+            )
+
+        if previous_end is not None and cue.start_ms < previous_end + MIN_CUE_GAP_MS:
+            # Overlap is rejected rather than layered. Two cues on screen at
+            # once is a different feature -- it needs a second row, a stacking
+            # rule and a safe area that accounts for both -- and rendering them
+            # on top of each other is not that feature.
+            violations.append(
+                PlanViolation(
+                    "cue_overlap",
+                    f"{where} starts at {cue.start_ms} ms, before {previous_end} ms",
+                )
+            )
+        previous_end = max(previous_end or 0, cue.end_ms)
+
+    return violations
+
+
 def assert_valid(plan: EditPlan, media_facts: dict[MediaId, MediaFact]) -> None:
     """The gate. Nothing reaches the timeline compiler without passing it."""
     violations = validate_plan(plan, media_facts)
@@ -794,6 +1158,8 @@ def plan_from_payload(payload: dict[str, Any]) -> EditPlan:
                 source_in_ms=int(segment["source_in_ms"]),
                 source_out_ms=int(segment["source_out_ms"]),
                 transition_in=TransitionKind(segment.get("transition_in", "cut")),
+                transition_ms=int(segment.get("transition_ms", 0)),
+                effects=tuple(Effect.from_payload(effect) for effect in segment.get("effects", [])),
             )
             for segment in payload["segments"]
         ),
