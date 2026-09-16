@@ -46,6 +46,7 @@ from visionforge.domain.planner import (
 )
 from visionforge.domain.reference import without_reference
 from visionforge.domain.selection import Candidate, SelectionResult
+from visionforge.domain.subtitles import SubtitleTrack
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,7 @@ class EditService:
         cuts: Sequence[Cut],
         output: OutputSpec,
         music: MusicCue | None = None,
+        subtitles: SubtitleTrack | None = None,
         derived_from: UUID | None = None,
     ) -> Any:
         """Persist an edit the user assembled themselves.
@@ -303,6 +305,10 @@ class EditService:
             # A hand-placed bed goes through the same validator as a planned
             # one: the gate does not care who chose the numbers.
             music=music,
+            # Subtitles get the same treatment as the bed: validated against the
+            # programme's real length, which already accounts for any crossfade
+            # overlap and speed change the editor asked for.
+            subtitles=subtitles,
             metadata={
                 "source": "manual",
                 # Which automatic plan this was cut from, when it was cut from

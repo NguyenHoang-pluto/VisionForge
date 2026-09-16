@@ -15,6 +15,7 @@ from visionforge.domain.editplan import (
     MAX_MUSIC_MS,
     MAX_OUTPUT_MS,
     MAX_SEGMENTS,
+    MAX_TRANSITION_MS,
     MIN_GAIN,
     MIN_MUSIC_MS,
     MIN_OUTPUT_MS,
@@ -24,10 +25,20 @@ from visionforge.domain.editplan import (
     QualityPreset,
     TransitionKind,
 )
+from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, Effect, EffectKind
 from visionforge.domain.llm_planner import PlannerMode
 from visionforge.domain.planner import ClipOrder
 from visionforge.domain.policy import StyleStrength
 from visionforge.domain.style import FPS_PRESETS, EditStyle
+from visionforge.domain.subtitles import (
+    MAX_CUE_CHARS,
+    MAX_CUES,
+    SubtitleCue,
+    SubtitlePosition,
+    SubtitleStyle,
+    SubtitleTrack,
+    clean_text,
+)
 
 
 class MusicRequest(BaseModel):
@@ -162,6 +173,10 @@ class ManualCutRequest(BaseModel):
     source_in_ms: int = Field(ge=0)
     source_out_ms: int = Field(gt=0)
     transition_in: TransitionKind = TransitionKind.CUT
+    #: How long the incoming transition runs. Zero for a cut, which is what the
+    #: plan validator insists on.
+    transition_ms: int = Field(default=0, ge=0, le=MAX_TRANSITION_MS)
+    effects: list[EffectRequest] = Field(default_factory=list, max_length=MAX_EFFECTS_PER_SEGMENT)
 
 
 class ManualPlanCreateRequest(BaseModel):
@@ -186,6 +201,10 @@ class ManualPlanCreateRequest(BaseModel):
     #: The bed the editor placed, if any. Same schema as the automatic route's,
     #: because a hand-placed cue gets no weaker a gate than a planned one.
     music: MusicRequest | None = None
+
+    #: Subtitles the editor wrote. Validated here for shape and again by the
+    #: plan validator for bounds, ordering and overlap against the real length.
+    subtitles: SubtitleTrackRequest | None = None
 
     #: The automatic plan this timeline was cut from, when there was one.
     derived_from_edit_plan_id: UUID | None = None
@@ -365,3 +384,103 @@ class ReferenceResponse(BaseModel):
     #: it" rather than showing an empty profile with no explanation.
     pending_analyzers: list[str] = Field(default_factory=list)
     profile: ReferenceProfileResponse | None = None
+
+
+# ------------------------------------------------------- Phase 9 primitives
+class EffectRequest(BaseModel):
+    """One effect a client asks for.
+
+    A kind and a number, and the number's meaning comes from the kind. There is
+    no parameter object and no filter field: the bounds are checked server-side
+    against ``EFFECT_BOUNDS``, so a value outside them is a 422 rather than
+    something the renderer has to survive.
+    """
+
+    kind: EffectKind
+    amount: float
+    #: Offsets within the clip, for the colour effects that support a window.
+    #: Zoom and speed must span the whole clip and the plan validator says so.
+    start_ms: int | None = Field(default=None, ge=0)
+    end_ms: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _within_bounds(self) -> EffectRequest:
+        low, high, _ = EFFECT_BOUNDS[self.kind]
+        if not low <= self.amount <= high:
+            raise ValueError(f"{self.kind.value} must be between {low} and {high}")
+        if self.start_ms is not None and self.end_ms is not None and self.end_ms <= self.start_ms:
+            raise ValueError("end_ms must be after start_ms")
+        return self
+
+    def to_domain(self) -> Effect:
+        return Effect(
+            kind=self.kind,
+            amount=self.amount,
+            start_ms=self.start_ms,
+            end_ms=self.end_ms,
+        )
+
+
+class SubtitleCueRequest(BaseModel):
+    """One line of text, for one interval of the output.
+
+    ``text`` is the only free string the API accepts anywhere, and it is capped,
+    stripped of the characters that carry meaning to the document format, and
+    stored as display content. It never becomes part of a filter expression --
+    see ``infra.ffmpeg.subtitles`` for why that decision is structural rather
+    than a matter of escaping carefully.
+    """
+
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    text: str = Field(min_length=1, max_length=MAX_CUE_CHARS)
+
+    @field_validator("text")
+    @classmethod
+    def _plain_display_text(cls, value: str) -> str:
+        cleaned = clean_text(value)
+        if not cleaned:
+            raise ValueError("subtitle text must contain displayable characters")
+        return cleaned
+
+    def to_domain(self) -> SubtitleCue:
+        return SubtitleCue(start_ms=self.start_ms, end_ms=self.end_ms, text=self.text)
+
+
+class SubtitleTrackRequest(BaseModel):
+    """Every cue, and the one preset they share.
+
+    ``style`` and ``position`` are ids. A client cannot send a font, a size, a
+    colour or a coordinate -- the preset table on the server decides all of
+    them, which is what keeps a font *path* out of the render.
+    """
+
+    cues: list[SubtitleCueRequest] = Field(default_factory=list, max_length=MAX_CUES)
+    style: SubtitleStyle = SubtitleStyle.CLEAN
+    position: SubtitlePosition = SubtitlePosition.BOTTOM
+
+    def to_domain(self) -> SubtitleTrack:
+        return SubtitleTrack(
+            cues=tuple(cue.to_domain() for cue in self.cues),
+            style=self.style,
+            position=self.position,
+        )
+
+
+class SubtitlePresetResponse(BaseModel):
+    """What a preset looks like, so the editor can preview it honestly."""
+
+    id: str
+    label: str
+    font: str
+    size: int
+    bold: bool
+
+
+class EffectBoundsResponse(BaseModel):
+    kind: str
+    minimum: float
+    maximum: float
+    neutral: float
+    #: False for the colour effects, which may be applied to part of a clip.
+    whole_segment_only: bool

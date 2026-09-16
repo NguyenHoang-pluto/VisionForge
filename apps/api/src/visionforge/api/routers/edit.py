@@ -320,6 +320,8 @@ async def create_manual_edit_plan(
             source_in_ms=segment.source_in_ms,
             source_out_ms=segment.source_out_ms,
             transition_in=segment.transition_in,
+            transition_ms=segment.transition_ms,
+            effects=tuple(effect.to_domain() for effect in segment.effects),
         )
         for segment in body.segments
     ]
@@ -330,6 +332,7 @@ async def create_manual_edit_plan(
             cuts=cuts,
             output=output,
             music=_cue_from(body.music),
+            subtitles=body.subtitles.to_domain() if body.subtitles else None,
             derived_from=body.derived_from_edit_plan_id,
         )
     except PlanInvalidError as exc:

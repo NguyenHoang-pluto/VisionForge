@@ -1098,6 +1098,8 @@ class Cut:
     source_in_ms: int
     source_out_ms: int
     transition_in: TransitionKind = TransitionKind.CUT
+    transition_ms: int = 0
+    effects: tuple[Effect, ...] = ()
 
 
 def plan_from_cuts(
@@ -1106,6 +1108,7 @@ def plan_from_cuts(
     cuts: Sequence[Cut],
     output: OutputSpec,
     music: MusicCue | None = None,
+    subtitles: SubtitleTrack | None = None,
     planner: str = "manual",
     planner_version: str = "1",
     metadata: dict[str, Any] | None = None,
@@ -1127,11 +1130,14 @@ def plan_from_cuts(
                 source_in_ms=cut.source_in_ms,
                 source_out_ms=cut.source_out_ms,
                 transition_in=cut.transition_in,
+                transition_ms=cut.transition_ms,
+                effects=cut.effects,
             )
             for index, cut in enumerate(cuts)
         ),
         output=output,
         music=music,
+        subtitles=subtitles,
         planner=planner,
         planner_version=planner_version,
         metadata=dict(metadata or {}),
