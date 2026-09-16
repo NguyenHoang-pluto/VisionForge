@@ -244,6 +244,14 @@
      kinds of thing and should not be separated by brightness alone. */
   --track-audio: color-mix(in srgb, rgb(var(--success)) 30%, rgb(var(--accent-track-base)));
   --track-audio-selected: color-mix(in srgb, rgb(var(--success)) 58%, rgb(var(--accent-track-base)));
+  /* Text is neither the picture nor the bed, so it gets its own hue rather
+     than a third brightness of one of theirs. */
+  --track-subtitle: color-mix(in srgb, rgb(var(--info)) 34%, rgb(var(--accent-track-base)));
+  --track-subtitle-selected: color-mix(
+    in srgb,
+    rgb(var(--info)) 62%,
+    rgb(var(--accent-track-base))
+  );
 }
 
 /* -------------------------------------------------------------- density ---
@@ -264,6 +272,7 @@
   --gap-panel: 16px;
   --h-track: 60px;
   --h-track-audio: 38px;
+  --h-track-text: 26px;
 }
 :root[data-density="compact"] {
   --h-control: 26px;
@@ -276,6 +285,7 @@
   --gap-panel: 11px;
   --h-track: 46px;
   --h-track-audio: 30px;
+  --h-track-text: 22px;
 }
 
 /* --------------------------------------------------------------- motion ---
@@ -455,6 +465,22 @@ select option {
   background-repeat: repeat-x;
   background-size: auto 100%;
   background-position: left center;
+}
+
+/*
+ * A crossfade, drawn as the overlap it is.
+ *
+ * Diagonal hatching rather than a solid wash, because the band has to read as
+ * "both clips are here" over two different clip colours. Its width is the
+ * transition's duration, so the mark is the measurement: the region it covers
+ * is exactly how much shorter the programme is than the sum of its clips.
+ */
+.vf-crossfade {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgb(255 255 255 / 0.22) 0 3px,
+    rgb(0 0 0 / 0.16) 3px 6px
+  );
 }
 
 /*

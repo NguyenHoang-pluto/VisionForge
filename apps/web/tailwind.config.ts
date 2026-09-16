@@ -55,6 +55,8 @@ export default {
         "track-video-selected": "var(--track-video-selected)",
         "track-audio": "var(--track-audio)",
         "track-audio-selected": "var(--track-audio-selected)",
+        "track-subtitle": "var(--track-subtitle)",
+        "track-subtitle-selected": "var(--track-subtitle-selected)",
         playhead: channel("playhead"),
         ruler: channel("ruler"),
         lane: channel("lane"),

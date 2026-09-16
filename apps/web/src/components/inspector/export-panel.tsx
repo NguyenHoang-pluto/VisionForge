@@ -14,7 +14,14 @@ import {
 } from "@/lib/api";
 import { bytes, fps as formatFps, seconds, timecode } from "@/lib/format";
 import { useT, type MessageKey } from "@/lib/i18n";
-import { draftProblems, toManualCuts, toMusicRequest } from "@/lib/timeline";
+import {
+  cueProblems,
+  draftProblems,
+  toManualCuts,
+  toMusicRequest,
+  toSubtitleRequest,
+  totalDuration,
+} from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import {
   Badge,
@@ -93,6 +100,7 @@ export function ExportPanel({
   const committedPlanId = useEditorStore((s) => s.committedPlanId);
   const sourcePlanId = useEditorStore((s) => s.sourcePlanId);
   const dirty = useEditorStore((s) => s.dirty);
+  const subtitles = useEditorStore((s) => s.subtitles);
   const markCommitted = useEditorStore((s) => s.markCommitted);
   const setPreviewSource = useEditorStore((s) => s.setPreviewSource);
 
@@ -104,7 +112,13 @@ export function ExportPanel({
     staleTime: 5 * 60 * 1000,
   });
 
-  const problems = draftProblems(clips, media);
+  // Cue problems join clip problems in the one list the Render button reads,
+  // because the server rejects the plan for either and a button that is
+  // enabled into a 422 is a button that lies.
+  const problems = [
+    ...draftProblems(clips, media),
+    ...cueProblems(subtitles, totalDuration(clips)),
+  ];
   const timelineHasAudio = clips.some((clip) => Boolean(media.get(clip.mediaId)?.channels));
   const musicAsset = musicBed ? media.get(musicBed.mediaId) : undefined;
 
@@ -129,6 +143,10 @@ export function ExportPanel({
           // The bed travels with the timeline it was placed under. The server
           // validates it against the real media rows like everything else.
           music: toMusicRequest(musicBed),
+          // The cue list travels with the timeline it was written against. Cue
+          // times are timeline positions, so a plan stored from a different
+          // edit would place them somewhere else entirely.
+          subtitles: toSubtitleRequest(subtitles),
           derived_from_edit_plan_id: sourcePlanId,
         });
         planId = plan.id;

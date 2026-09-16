@@ -228,6 +228,41 @@ export interface PlannerCapabilities {
    * has decided not to trust, rather than offering a toggle that silently does
    * nothing.
    */
+  /**
+   * The Phase 9 vocabulary, declared by the server.
+   *
+   * The same argument as `segment_bounds`: the editor has to grey out a
+   * transition the clips are too short for while the pointer is moving, and a
+   * slider whose range disagrees with the validator is a slider that produces
+   * a 422. These are read once and applied over the module's defaults.
+   */
+  transitions: {
+    value: TransitionKind;
+    consumes_time: boolean;
+    needs_previous: boolean;
+    min_ms: number;
+    max_ms: number;
+    max_share: number;
+  }[];
+  effects: {
+    kind: EffectKind;
+    minimum: number;
+    maximum: number;
+    neutral: number;
+    whole_segment_only: boolean;
+  }[];
+  /** What each preset actually looks like, so the panel previews it honestly
+   *  rather than guessing at the font the renderer will use. */
+  subtitle_styles: { id: SubtitleStyle; label: string; font: string; size: number; bold: boolean }[];
+  subtitle_positions: SubtitlePosition[];
+  subtitle_bounds: {
+    min_cue_ms: number;
+    max_cue_ms: number;
+    max_chars: number;
+    max_cues: number;
+    max_effects_per_clip: number;
+  };
+
   beat_sync: {
     analyzer: AnalyzerName;
     min_bpm: number;
@@ -299,6 +334,16 @@ export interface PlanSegment {
   source_out_ms: number;
   duration_ms: number;
   transition_in: string;
+  /** Present from Phase 9. Absent on plans stored before it. */
+  transition_ms?: number;
+  effects?: EffectRequest[];
+}
+
+/** Subtitles as the plan records them: ids, cues, and no styling. */
+export interface PlanSubtitles {
+  cues: { start_ms: number; end_ms: number; text: string }[];
+  style: SubtitleStyle;
+  position: SubtitlePosition;
 }
 
 export interface PlanDocument {
@@ -316,6 +361,7 @@ export interface PlanDocument {
     source_gain: number;
   };
   music: PlanMusic | null;
+  subtitles?: PlanSubtitles | null;
   segments: PlanSegment[];
   total_duration_ms: number;
   metadata: Record<string, unknown>;
@@ -360,11 +406,144 @@ export interface Render {
   playback_expires_in_s: number | null;
 }
 
+/**
+ * How a clip enters. A closed set, validated server-side (Phase 9).
+ *
+ * Only `crossfade` changes the length of the edit -- it overlaps the previous
+ * clip -- which is why the editor computes durations from the same rule the
+ * server does rather than summing clip lengths.
+ */
+export type TransitionKind = "cut" | "crossfade" | "fade_in" | "fade_to_black";
+
+export const TRANSITIONS: TransitionKind[] = ["cut", "crossfade", "fade_in", "fade_to_black"];
+
+/** Transitions that overlap the previous clip and shorten the programme. */
+export const OVERLAPPING: TransitionKind[] = ["crossfade"];
+
+export type EffectKind =
+  | "zoom_in"
+  | "zoom_out"
+  | "slow_motion"
+  | "speed_up"
+  | "brightness"
+  | "contrast"
+  | "saturation";
+
+/**
+ * One effect: a kind and a number, with the number's meaning set by the kind.
+ *
+ * There is no parameter object here for the same reason there is none on the
+ * server: a free-form bag on a renderer instruction is a hole in the shape of
+ * an arbitrary filter argument.
+ */
+export interface EffectRequest {
+  kind: EffectKind;
+  amount: number;
+  /** Offsets inside the clip. Only the colour effects accept a window. */
+  start_ms?: number | null;
+  end_ms?: number | null;
+}
+
+/** The server's bounds per kind, mirrored so a slider cannot offer an invalid
+ *  value. The server validates regardless; this is about not showing the user a
+ *  control whose range would be refused. */
+export const EFFECT_BOUNDS: Record<
+  EffectKind,
+  { min: number; max: number; neutral: number; step: number; wholeClipOnly: boolean }
+> = {
+  zoom_in: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  zoom_out: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  slow_motion: { min: 0.25, max: 1, neutral: 1, step: 0.05, wholeClipOnly: true },
+  speed_up: { min: 1, max: 4, neutral: 1, step: 0.05, wholeClipOnly: true },
+  brightness: { min: -1, max: 1, neutral: 0, step: 0.05, wholeClipOnly: false },
+  contrast: { min: 0.5, max: 1.5, neutral: 1, step: 0.05, wholeClipOnly: false },
+  saturation: { min: 0, max: 2, neutral: 1, step: 0.05, wholeClipOnly: false },
+};
+
+export const TRANSITION_BOUNDS = { min: 80, max: 4000 } as const;
+
+export type SubtitleStyle = "clean" | "bold" | "minimal" | "cinematic" | "social";
+export type SubtitlePosition = "bottom" | "center" | "top" | "bottom_left" | "bottom_right";
+
+export const SUBTITLE_STYLES: SubtitleStyle[] = [
+  "clean",
+  "bold",
+  "minimal",
+  "cinematic",
+  "social",
+];
+export const SUBTITLE_POSITIONS: SubtitlePosition[] = [
+  "bottom",
+  "center",
+  "top",
+  "bottom_left",
+  "bottom_right",
+];
+
+/** Cue bounds, mirrored from the server so the editor can refuse locally too. */
+export const CUE_BOUNDS = { minMs: 400, maxMs: 10_000, maxChars: 120, maxCues: 300 } as const;
+
+export const MIN_CUE_MS = CUE_BOUNDS.minMs;
+
+/** A transition may eat at most half of the shorter side it joins. Mirrors
+ *  `MAX_TRANSITION_SHARE` in the domain, for the same reason the other bounds
+ *  are mirrored: to disable a control rather than to offer a 422. */
+export const MAX_TRANSITION_SHARE = 0.5;
+
+export interface SubtitleCueRequest {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+}
+
+/**
+ * Subtitles as the API takes them.
+ *
+ * `style` and `position` are ids. There is no font, size, colour or coordinate
+ * here: the server's preset table decides all of them, which is what keeps a
+ * font path out of the render.
+ */
+export interface SubtitleTrackRequest {
+  cues: SubtitleCueRequest[];
+  style: SubtitleStyle;
+  position: SubtitlePosition;
+}
+
+/**
+ * What the AI subtitle route answers.
+ *
+ * Two states and no third: `ok` with a track, or not-ok with a `failure` naming
+ * which of the known failures happened. There is no partial result and nothing
+ * is filled in when the model could not answer -- an empty panel that says why
+ * beats subtitles nobody wrote.
+ */
+export type SubtitleFailure =
+  | "provider_disabled"
+  | "provider_unavailable"
+  | "provider_error"
+  | "unreadable"
+  | "no_usable_cues"
+  | "timeline_too_short";
+
+export interface SubtitleSuggestion {
+  ok: boolean;
+  subtitles: SubtitleTrackRequest | null;
+  failure: SubtitleFailure | null;
+  detail: string;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  latency_ms: number;
+}
+
 /** One clip on a hand-cut timeline. Position in the array is the edit order. */
 export interface ManualCut {
   media_id: string;
   source_in_ms: number;
   source_out_ms: number;
+  transition_in?: TransitionKind;
+  transition_ms?: number;
+  effects?: EffectRequest[];
 }
 
 /**
@@ -384,6 +563,8 @@ export interface ManualPlanOptions {
   source_gain?: number;
   /** The bed the editor placed, if any. */
   music?: MusicRequest | null;
+  /** Subtitles the editor wrote (Phase 9). */
+  subtitles?: SubtitleTrackRequest | null;
   derived_from_edit_plan_id?: string | null;
 }
 
@@ -655,6 +836,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify(options),
     }),
+
+  /**
+   * Ask a model to draft subtitles for a stored plan.
+   *
+   * Against a stored plan, so the model is shown the timing that will actually
+   * be rendered. Read-only: the cues come back to the editor and reach the
+   * database only if the user submits a plan containing them.
+   *
+   * Never throws for "the model could not": a failure arrives as `ok: false`
+   * with a named reason, because an empty panel with an explanation is the
+   * honest outcome and invented subtitles are not.
+   */
+  suggestSubtitles: (
+    projectId: string,
+    editPlanId: string,
+    body: { request_text?: string | null; style?: SubtitleStyle; position?: SubtitlePosition },
+  ) =>
+    request<SubtitleSuggestion>(
+      `/api/projects/${projectId}/edit-plan/${editPlanId}/subtitles/suggest`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 
   createRender: (projectId: string, editPlanId: string) =>
     request<Render>(`/api/projects/${projectId}/render`, {

@@ -9,18 +9,27 @@ import { AnalysisPanel } from "@/components/inspector/analysis-panel";
 import { AudioPanel } from "@/components/inspector/audio-panel";
 import { ClipProperties } from "@/components/inspector/clip-properties";
 import { ExportPanel } from "@/components/inspector/export-panel";
+import { SubtitlesPanel } from "@/components/inspector/subtitles-panel";
 
 /**
  * The inspector.
  *
- * Five tabs over one selection. AI lives here, as one tab among five, which is
+ * Six tabs over one selection. AI lives here, as one tab among six, which is
  * the honest weighting: it is a way of producing a first cut, not the point of
  * the application. Audio joined them in Phase 7 rather than becoming a mode of
  * its own, for the same reason -- a music bed is a property of the edit, not a
  * separate activity.
+ *
+ * Phase 9 added Text and nothing else. Transitions, speed and effects are
+ * properties *of the selected clip*, so they became sections on the Clip tab
+ * rather than tabs of their own -- an inspector whose strip is wider than its
+ * panel has stopped being an inspector. Subtitles are the exception because
+ * they genuinely are not a clip property: the track runs over the whole
+ * programme and survives every clip in it being replaced.
  */
 const TABS: { value: InspectorTab; label: MessageKey }[] = [
   { value: "clip", label: "inspector.tab.clip" },
+  { value: "subtitles", label: "inspector.tab.subtitles" },
   { value: "analysis", label: "inspector.tab.analysis" },
   { value: "ai", label: "inspector.tab.ai" },
   { value: "audio", label: "inspector.tab.audio" },
@@ -79,6 +88,8 @@ export function Inspector({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
       >
         {tab === "clip" && <ClipProperties media={media} />}
+
+        {tab === "subtitles" && <SubtitlesPanel projectId={projectId} />}
 
         {tab === "analysis" &&
           (analysisAsset ? (

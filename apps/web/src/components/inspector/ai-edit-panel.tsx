@@ -137,7 +137,7 @@ export function AiEditPanel({
       // The plan may have chosen its own cue -- trimmed to the cut, started on
       // the first beat. Accepting the plan takes that too, or the edit reviewed
       // is not the edit produced.
-      setClips(draft.clips, plan.id, plan.id, draft.music);
+      setClips(draft.clips, plan.id, plan.id, draft.music, draft.subtitles);
       setPreviewSource("program");
       onPlanned(plan);
       void queryClient.invalidateQueries({ queryKey: ["edit-plans", projectId] });

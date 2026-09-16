@@ -3,7 +3,7 @@
 import type { MediaAsset } from "@/lib/api";
 import { bytes, fps as formatFps, resolution, timecode } from "@/lib/format";
 import { useT, type MessageKey } from "@/lib/i18n";
-import { clipDuration, MAX_CLIP_MS, MIN_CLIP_MS } from "@/lib/timeline";
+import { clipDuration, clipPlaybackMs, MAX_CLIP_MS, MIN_CLIP_MS, place } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import {
   Button,
@@ -15,6 +15,7 @@ import {
   Row,
   SectionTitle,
 } from "@/components/ui";
+import { EffectsSection, TransitionSection } from "@/components/inspector/effects-panel";
 
 /**
  * Properties of whatever is selected.
@@ -63,7 +64,11 @@ export function ClipProperties({ media }: { media: Map<string, MediaAsset> }) {
     return <EmptyState icon="film">{t("inspector.noSelection")}</EmptyState>;
   }
 
-  const startMs = clip ? clips.slice(0, index).reduce((sum, c) => sum + clipDuration(c), 0) : 0;
+  // Where this clip starts on the *timeline*, which is not the sum of the
+  // trims before it: a crossfade overlaps its predecessor and a speed effect
+  // stretches one. `place` is the single arithmetic both this readout and the
+  // timeline draw from, and it is the arithmetic the server uses.
+  const startMs = clip ? place(clips)[index].startMs : 0;
 
   return (
     <div className="flex flex-col gap-panel-gap p-panel">
@@ -108,6 +113,13 @@ export function ClipProperties({ media }: { media: Map<string, MediaAsset> }) {
 
           <div className="mt-1.5">
             <Row label={t("clip.duration")} value={timecode(clipDuration(clip))} />
+            {clipPlaybackMs(clip) !== clipDuration(clip) && (
+              <Row
+                label={t("clip.playback")}
+                value={timecode(clipPlaybackMs(clip))}
+                title={t("clip.playbackHint")}
+              />
+            )}
             <Row label={t("clip.startsAt")} value={timecode(startMs)} />
             <Row
               label={t("clip.limits")}
@@ -127,6 +139,11 @@ export function ClipProperties({ media }: { media: Map<string, MediaAsset> }) {
           </div>
         </section>
       )}
+
+      {/* Transitions, speed and effects are properties of the selected clip,
+          so they live under it rather than behind three more tabs. */}
+      {clip && <TransitionSection clip={clip} index={index} />}
+      {clip && <EffectsSection clip={clip} />}
 
       <section>
         <SectionTitle>{t("clip.section.source")}</SectionTitle>

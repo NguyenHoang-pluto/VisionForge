@@ -12,10 +12,15 @@ import {
   MAX_CLIP_MS,
   MIN_CLIP_MS,
   clipDuration,
+  clipPlaybackMs,
+  clipSpeed,
   musicDuration,
   place,
+  sortedCues,
+  transitionOf,
   type MusicBed,
   type PlacedClip,
+  type SubtitleCueDraft,
 } from "@/lib/timeline";
 import {
   MAX_PX_PER_SECOND,
@@ -27,15 +32,22 @@ import { Badge, Divider, Glyph, IconButton, Slider } from "@/components/ui";
 /**
  * The timeline.
  *
- * One video track and one audio track, which is what the EditPlan schema
- * describes: a sequence of trims with no gaps, position implied by order. The
- * timeline draws exactly that and nothing more -- no gaps to drag into, no
- * overlaps to create, because the plan has no way to express either and a UI
- * that let you build one would be offering an edit the renderer must reject.
+ * Four lanes, which is what the EditPlan schema describes: a sequence of trims
+ * with position implied by order, the source audio that comes with them, one
+ * music bed, and one subtitle track. The timeline draws exactly that and
+ * nothing more -- no gaps to drag into, no second bed, no per-cue styling --
+ * because the plan has no way to express any of them and a UI that let you
+ * build one would be offering an edit the renderer must reject.
  *
  * For the same reason there is no snapping indicator, no magnet toggle and no
- * ripple mode. Cuts are butt-joined by construction, so there is nothing for a
- * clip to snap *to*; a magnet button here would be a light that is always on.
+ * ripple mode. Clips are joined by construction, so there is nothing for a clip
+ * to snap *to*; a magnet button here would be a light that is always on.
+ *
+ * The one place a clip is *not* butt-joined is a crossfade, and Phase 9 draws
+ * that as the overlap it is: the incoming clip starts before the outgoing one
+ * ends, exactly as `place` computes it and exactly as the compiler renders it.
+ * Drawing butt joints and reporting a shorter duration would make the editor
+ * disagree with its own export.
  *
  * Interaction is pointer-event based with pointer capture, so a drag that
  * leaves the element still tracks, and one that ends outside still commits.
@@ -80,9 +92,14 @@ function Clip({
 }) {
   const t = useT();
   const thumbnail = useThumbnailUrl(projectId, asset ?? null);
-  const width = (clipDuration(clip) / 1000) * pxPerSecond;
+  // Played length, not trim length: a clip at half speed occupies twice its
+  // trim on the timeline, and drawing the trim would put every later clip in
+  // the wrong place.
+  const width = (clipPlaybackMs(clip) / 1000) * pxPerSecond;
   const left = (clip.startMs / 1000) * pxPerSecond;
   const name = asset?.original_filename ?? clip.mediaId.slice(0, 8);
+  const speed = clipSpeed(clip);
+  const effects = clip.effects ?? [];
 
   // Three widths of clip: one that can carry a name and a duration, one that
   // can carry a number, and one that is a sliver. Deciding here rather than
@@ -130,12 +147,52 @@ function Clip({
             {compact ? clip.index + 1 : name}
           </span>
           {!compact && (
-            <span className="truncate font-mono text-2xs tabular-nums text-white/70">
-              {timecode(clipDuration(clip), false)}
+            <span className="flex items-center gap-1 truncate font-mono text-2xs tabular-nums text-white/70">
+              {timecode(clipPlaybackMs(clip), false)}
+              {/* Two marks, and only when there is something to mark. A clip
+                  with no effects carries no badge, so a badge means something
+                  was done rather than being permanent furniture. */}
+              {speed !== 1 && (
+                <span
+                  title={t("timeline.speed", { rate: speed.toFixed(2) })}
+                  className="rounded bg-black/45 px-1 text-white/90"
+                >
+                  {speed.toFixed(2)}×
+                </span>
+              )}
+              {effects.length > 0 && (
+                <span
+                  title={effects.map((effect) => effect.kind).join(", ")}
+                  className="rounded bg-black/45 px-1 text-white/90"
+                >
+                  fx{effects.length > 1 ? ` ${effects.length}` : ""}
+                </span>
+              )}
             </span>
           )}
         </div>
       )}
+
+      {/* The effect range. Only the colour effects can be windowed, so this is
+          drawn from the first one that has a window and covers the clip
+          otherwise -- a bar across the whole clip would say nothing. */}
+      {!sliver &&
+        effects
+          .filter((effect) => effect.start_ms != null || effect.end_ms != null)
+          .slice(0, 1)
+          .map((effect) => {
+            const length = Math.max(1, clipDuration(clip));
+            const from = (effect.start_ms ?? 0) / length;
+            const to = (effect.end_ms ?? length) / length;
+            return (
+              <span
+                key={effect.kind}
+                aria-hidden
+                className="pointer-events-none absolute bottom-0 h-[3px] rounded-full bg-info/80"
+                style={{ left: `${from * 100}%`, width: `${Math.max(0, to - from) * 100}%` }}
+              />
+            );
+          })}
 
       {/* Trim handles. Wide enough to hit, quiet until the clip is pointed at,
           and carrying a grip so that "this edge is draggable" is visible rather
@@ -276,6 +333,101 @@ function MusicBlock({
 }
 
 
+// ------------------------------------------------------------- transitions
+/**
+ * The mark between two clips.
+ *
+ * A crossfade is drawn as the *overlap it is* -- a hatched band spanning the
+ * region where both clips play -- rather than as an icon sitting on the join.
+ * The band is the edit: it is how much shorter the programme is, and how much
+ * of each shot the viewer sees twice. A symbol would have looked tidier and
+ * told the editor nothing about the length they had chosen.
+ *
+ * The fades are overlaid rather than overlapping. They consume no time, so they
+ * get a gradient at the edge of the clip they belong to and nothing between.
+ */
+function TransitionMark({
+  clip,
+  pxPerSecond,
+}: {
+  clip: PlacedClip;
+  pxPerSecond: number;
+}) {
+  const t = useT();
+  const { kind, ms } = transitionOf(clip);
+  if (kind === "cut" || ms <= 0) return null;
+
+  const width = (ms / 1000) * pxPerSecond;
+  const left = (clip.startMs / 1000) * pxPerSecond;
+
+  if (kind === "crossfade") {
+    return (
+      <span
+        aria-hidden
+        title={t("transition.overlap", { ms })}
+        className="vf-crossfade pointer-events-none absolute inset-y-[4px] z-10 rounded-sm ring-1 ring-inset ring-white/25"
+        style={{ left, width: Math.max(width, 2) }}
+      />
+    );
+  }
+
+  // `fade_in` opens the clip; `fade_to_black` closes it.
+  const closing = kind === "fade_to_black";
+  return (
+    <span
+      aria-hidden
+      title={t(closing ? "transition.fade_to_black" : "transition.fade_in")}
+      className="pointer-events-none absolute inset-y-[4px] z-10 rounded-sm"
+      style={{
+        left: closing
+          ? ((clip.endMs - ms) / 1000) * pxPerSecond
+          : left,
+        width: Math.max(width, 2),
+        background: closing
+          ? "linear-gradient(to right, transparent, rgba(0,0,0,0.85))"
+          : "linear-gradient(to right, rgba(0,0,0,0.85), transparent)",
+      }}
+    />
+  );
+}
+
+// --------------------------------------------------------------- subtitles
+/** One cue, on the text lane. Positioned by its own timeline window. */
+function CueBlock({
+  cue,
+  pxPerSecond,
+  selected,
+  onSelect,
+}: {
+  cue: SubtitleCueDraft;
+  pxPerSecond: number;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const left = (cue.startMs / 1000) * pxPerSecond;
+  const width = ((cue.endMs - cue.startMs) / 1000) * pxPerSecond;
+
+  return (
+    <button
+      type="button"
+      title={cue.text}
+      aria-label={cue.text}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        onSelect();
+      }}
+      style={{ left, width: Math.max(width, 4) }}
+      className={`absolute inset-y-[3px] flex items-center overflow-hidden rounded px-1.5 text-left transition-[background-color,box-shadow] duration-fast ${
+        selected
+          ? "bg-track-subtitle-selected ring-2 ring-inset ring-accent-strong"
+          : "bg-track-subtitle ring-1 ring-inset ring-black/12 hover:shadow-panel"
+      }`}
+    >
+      <span className="truncate text-2xs leading-none text-white/95">{cue.text}</span>
+    </button>
+  );
+}
+
 // --------------------------------------------------------------- track header
 function TrackLabel({
   glyph,
@@ -283,7 +435,7 @@ function TrackLabel({
   detail,
   height,
 }: {
-  glyph: "video" | "audio";
+  glyph: "video" | "audio" | "layers";
   name: string;
   detail: string;
   height: string;
@@ -315,6 +467,9 @@ export function Timeline({
   const t = useT();
   const scrollRef = useRef<HTMLDivElement>(null);
   const laneRef = useRef<HTMLDivElement>(null);
+  const subtitles = useEditorStore((s) => s.subtitles);
+  const selectedCueId = useEditorStore((s) => s.selectedCueId);
+  const selectCue = useEditorStore((s) => s.selectCue);
   const dragRef = useRef<Drag | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -482,6 +637,9 @@ export function Timeline({
     };
   }, [clips, placed, dropIndex, media, msAtClientX, moveClip, pxPerSecond, setPlayhead, totalMs, trim]);
 
+  /** Cues in time order, so the lane reads the way the list does. */
+  const cues = useMemo(() => sortedCues(subtitles?.cues ?? []), [subtitles]);
+
   /** The lanes fill the panel, so their width depends on the panel's. */
   useEffect(() => {
     const element = scrollRef.current;
@@ -644,6 +802,12 @@ export function Timeline({
             detail={music ? timecode(musicDuration(music), false) : ""}
             height="var(--h-track-audio)"
           />
+          <TrackLabel
+            glyph="layers"
+            name={t("timeline.track.textShort")}
+            detail={cues.length ? String(cues.length) : ""}
+            height="var(--h-track-text)"
+          />
         </div>
 
         <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
@@ -721,6 +885,12 @@ export function Timeline({
                 />
               ))}
 
+              {/* Drawn after the clips, so a crossfade band sits over both
+                  sides of the join it describes rather than under one. */}
+              {placed.map((clip) => (
+                <TransitionMark key={`fx-${clip.id}`} clip={clip} pxPerSecond={pxPerSecond} />
+              ))}
+
               {dropIndex !== null && (
                 <div
                   aria-hidden
@@ -765,7 +935,7 @@ export function Timeline({
                     }
                     style={{
                       left: (clip.startMs / 1000) * pxPerSecond,
-                      width: Math.max((clipDuration(clip) / 1000) * pxPerSecond, 3),
+                      width: Math.max((clipPlaybackMs(clip) / 1000) * pxPerSecond, 3),
                     }}
                     className={`absolute inset-y-[3px] overflow-hidden rounded ${
                       hasAudio
@@ -813,6 +983,36 @@ export function Timeline({
               )}
             </div>
 
+            {/* ---- text track ----
+                Cue positions are timeline positions, which is what the plan
+                stores: a cue belongs to the programme, not to whichever shot is
+                under it. Drawing it against the clips would make it appear to
+                move when an earlier crossfade was lengthened, which is the one
+                thing that does *not* happen. */}
+            <div
+              aria-label={t("timeline.track.text")}
+              style={{ height: "var(--h-track-text)" }}
+              className="relative bg-lane/40"
+            >
+              {cues.map((cue) => (
+                <CueBlock
+                  key={cue.id}
+                  cue={cue}
+                  pxPerSecond={pxPerSecond}
+                  selected={cue.id === selectedCueId}
+                  onSelect={() => {
+                    selectCue(cue.id);
+                    setInspectorTab("subtitles");
+                  }}
+                />
+              ))}
+              {cues.length === 0 && clips.length > 0 && (
+                <p className="pointer-events-none absolute inset-0 flex items-center pl-3 text-2xs text-faint">
+                  {t("timeline.text.empty")}
+                </p>
+              )}
+            </div>
+
             {/* ---- playhead ----
                 Its own colour, not the accent. The accent means "selected", and
                 an editor has to be able to tell the clip it is holding from the
@@ -845,8 +1045,20 @@ export function Timeline({
               {t("timeline.out")} {timecode(selected.outMs)}
             </span>
             <span className="text-fg" title={t("timeline.duration")}>
-              {timecode(clipDuration(selected))}
+              {timecode(clipPlaybackMs(selected))}
             </span>
+            {transitionOf(selected).kind !== "cut" && (
+              <span title={t("timeline.transitionLabel")}>
+                {t(
+                  transitionOf(selected).kind === "crossfade"
+                    ? "transition.crossfade"
+                    : transitionOf(selected).kind === "fade_in"
+                      ? "transition.fade_in"
+                      : "transition.fade_to_black",
+                )}{" "}
+                {transitionOf(selected).ms} ms
+              </span>
+            )}
             <span className="ml-auto hidden truncate 2xl:inline">{t("timeline.hint")}</span>
           </>
         ) : (
