@@ -269,6 +269,16 @@ export interface PlannerCapabilities {
     max_bpm: number;
     min_confidence: number;
   };
+
+  /**
+   * The closed vocabulary a co-edit may use (Phase 10).
+   *
+   * Declared for the same reason every other bound is: the panel should offer
+   * what the parser accepts, and an operation removed on the server should stop
+   * being offered rather than become a 422.
+   */
+  operations: { kind: OperationKind }[];
+  coedit_prompt_version: string;
 }
 
 /**
@@ -668,6 +678,161 @@ export interface LlmRun {
   created_at: string;
 }
 
+/**
+ * The operations a co-edit may ask for. A closed set, mirrored from the server.
+ *
+ * Note what a client cannot construct: there is no operation here that names a
+ * file, a path, a filter or an encoder setting, because there is none on the
+ * server either. The mirror is for labelling and for disabling controls -- the
+ * server validates regardless.
+ */
+export type OperationKind =
+  | "REMOVE_SEGMENT"
+  | "REORDER_SEGMENT"
+  | "TRIM_SEGMENT"
+  | "CHANGE_DURATION"
+  | "CHANGE_STYLE_STRENGTH"
+  | "CHANGE_TRANSITION"
+  | "ADD_EFFECT"
+  | "REMOVE_EFFECT"
+  | "MODIFY_EFFECT"
+  | "ADD_SUBTITLE"
+  | "MODIFY_SUBTITLE"
+  | "REMOVE_SUBTITLE"
+  | "CHANGE_MUSIC_VOLUME"
+  | "CHANGE_MUSIC_FADE"
+  | "CHANGE_BEAT_SYNC"
+  | "CHANGE_OUTPUT_PRESET";
+
+/**
+ * One operation, as it travels.
+ *
+ * Deliberately loose on this side: the fields differ per kind and the server
+ * owns the schema. The editor never builds one of these by hand -- it sends a
+ * sentence and hands back whatever the preview returned -- so a precise union
+ * here would be a second copy of the vocabulary to keep in step for no gain.
+ */
+export interface EditOperation {
+  kind: OperationKind;
+  [field: string]: unknown;
+}
+
+/** One line of the before/after the panel draws. Already formatted by the server. */
+export interface DiffEntry {
+  field: string;
+  label: string;
+  before: string;
+  after: string;
+  /** 1-based, when the change is about one clip. */
+  clip: number | null;
+}
+
+export interface PlanDiff {
+  entries: DiffEntry[];
+  /** What the operations said they would do, in their own words. */
+  applied: string[];
+  /** Adjustments the server made on its own to keep the plan renderable. */
+  adjustments: string[];
+}
+
+/** Why a change produced nothing. Named, so the panel can explain rather than shrug. */
+export type CoEditFailure =
+  | "provider_disabled"
+  | "provider_unavailable"
+  | "provider_error"
+  | "unreadable"
+  | "no_usable_operations"
+  | "not_understood"
+  | "empty_request";
+
+/** Which resolver read the request. `rules` never touches a model. */
+export type CoEditSource = "rules" | "llm" | "client";
+
+/**
+ * What a change would do. Nothing has been written when this comes back.
+ *
+ * `needs_confirmation` is false when the server's own rules resolved the
+ * request, which is the signal the panel uses to apply a simple change
+ * immediately instead of showing a diff nobody needs to read.
+ */
+export interface CoEditPreview {
+  ok: boolean;
+  base_version_id: string | null;
+  base_version: number | null;
+  operations: EditOperation[];
+  rationale: string;
+  diff: PlanDiff;
+  failure: CoEditFailure | null;
+  detail: string;
+  source: CoEditSource;
+  provider: string;
+  model: string;
+  latency_ms: number;
+  violations: { code: string; message: string; index: number | null }[];
+  needs_confirmation: boolean;
+}
+
+/**
+ * One step in the edit history.
+ *
+ * No request text, only a digest: the server stores a fingerprint of what was
+ * asked and never the words, so there is nothing else to send.
+ */
+export interface EditVersion {
+  id: string;
+  version: number;
+  parent_id: string | null;
+  edit_plan_id: string;
+  origin: "generated" | "manual" | "co_edit" | "undo" | "redo";
+  is_current: boolean;
+  applied: string[];
+  operation_count: number;
+  source: string;
+  provider: string | null;
+  model: string | null;
+  latency_ms: number | null;
+  request_digest: string | null;
+  total_duration_ms: number;
+  segment_count: number;
+  created_at: string;
+  render_id: string | null;
+  render_status: RenderStatus | null;
+}
+
+export interface EditVersionList {
+  items: EditVersion[];
+  total: number;
+  current_version_id: string | null;
+  /** Decided by the server that owns the history, not guessed from the list. */
+  can_undo: boolean;
+  can_redo: boolean;
+}
+
+/** A committed change: the new version, its plan, and what it did. */
+export interface CoEditResult {
+  version: EditVersion;
+  plan: EditPlan;
+  diff: PlanDiff;
+  rationale: string;
+  source: CoEditSource;
+  provider: string;
+  model: string;
+  latency_ms: number;
+}
+
+/**
+ * A change request.
+ *
+ * Either words or operations from a preview the user approved. There is no
+ * field here for a plan, a segment's media id or an output setting: a change
+ * names what to change about the edit the server already holds.
+ */
+export interface CoEditRequest {
+  request_text?: string | null;
+  operations?: EditOperation[] | null;
+  base_version_id?: string | null;
+}
+
 export interface SignedUrl {
   url: string;
   expires_in_s: number;
@@ -900,6 +1065,54 @@ export const api = {
 
   listLlmRuns: (projectId: string) =>
     request<{ items: LlmRun[]; total: number }>(`/api/projects/${projectId}/llm-runs`),
+
+  // ----------------------------------------------------------- co-editor
+  /**
+   * What a change would do. Writes nothing.
+   *
+   * The whole pipeline runs server-side and everything but the diff is thrown
+   * away, so what this returns cannot disagree with what applying it does.
+   */
+  previewCoEdit: (projectId: string, body: CoEditRequest) =>
+    request<CoEditPreview>(`/api/projects/${projectId}/edit-plan/co-edit/preview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Apply a change and store it as a new version.
+   *
+   * Does not render. A plan change must not queue an encode -- the render is a
+   * separate, explicit request through the route that already exists.
+   */
+  applyCoEdit: (projectId: string, body: CoEditRequest) =>
+    request<CoEditResult>(`/api/projects/${projectId}/edit-plan/co-edit`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listEditVersions: (projectId: string) =>
+    request<EditVersionList>(`/api/projects/${projectId}/edit-plan/versions`),
+
+  /**
+   * Step back one version. The server is authoritative: no plan is written and
+   * the restored version is the one that was stored, not a recomputation.
+   */
+  undoEditVersion: (projectId: string) =>
+    request<EditVersion>(`/api/projects/${projectId}/edit-plan/versions/undo`, {
+      method: "POST",
+    }),
+
+  redoEditVersion: (projectId: string) =>
+    request<EditVersion>(`/api/projects/${projectId}/edit-plan/versions/redo`, {
+      method: "POST",
+    }),
+
+  restoreEditVersion: (projectId: string, versionId: string) =>
+    request<EditVersion>(
+      `/api/projects/${projectId}/edit-plan/versions/${versionId}/restore`,
+      { method: "POST" },
+    ),
 };
 
 /**

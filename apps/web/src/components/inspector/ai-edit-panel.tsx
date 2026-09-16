@@ -29,6 +29,7 @@ import {
   Spinner,
   TextArea,
 } from "@/components/ui";
+import { CoEditorPanel } from "@/components/inspector/co-editor-panel";
 import { ReferencePanel } from "@/components/inspector/reference-panel";
 
 /**
@@ -40,7 +41,15 @@ import { ReferencePanel } from "@/components/inspector/reference-panel";
  * says about the server is whatever `/planner/capabilities` reports, including
  * "there is no model configured here", because a control that claims a
  * capability the deployment lacks is worse than no control.
+ *
+ * Two modes, one tab (Phase 10). **Create** plans an edit from the library;
+ * **Refine** changes the edit that already exists. They are the same activity
+ * at two moments rather than two features, and a seventh tab on a strip that is
+ * already six wide would have said otherwise -- an inspector whose tab strip is
+ * wider than its panel has stopped being an inspector.
  */
+
+type AiMode = "create" | "refine";
 
 const MODES: { value: PlannerMode; label: MessageKey; note: MessageKey }[] = [
   { value: "automatic", label: "ai.mode.automatic", note: "ai.mode.automaticNote" },
@@ -87,6 +96,7 @@ export function AiEditPanel({
   const beatSync = useEditorStore((s) => s.beatSync);
   const styleStrength = useEditorStore((s) => s.styleStrength);
 
+  const [aiMode, setAiMode] = useState<AiMode>("create");
   const [mode, setMode] = useState<PlannerMode>("automatic");
   const [style, setStyle] = useState<EditStyle | "">("");
   const [requestText, setRequestText] = useState("");
@@ -154,8 +164,39 @@ export function AiEditPanel({
   const selectedStyle = styles.find((item) => item.value === style);
   const activeNote = MODES.find((item) => item.value === mode)?.note;
 
+  if (aiMode === "refine") {
+    return (
+      <div className="flex flex-col">
+        <div className="px-panel pt-panel">
+          <SegmentedControl
+            label={t("coedit.mode.label")}
+            value={aiMode}
+            onChange={setAiMode}
+            className="w-full [&>button]:flex-1"
+            options={[
+              { value: "create" as const, label: t("coedit.mode.create") },
+              { value: "refine" as const, label: t("coedit.mode.refine") },
+            ]}
+          />
+        </div>
+        <CoEditorPanel projectId={projectId} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-panel-gap p-panel">
+      <SegmentedControl
+        label={t("coedit.mode.label")}
+        value={aiMode}
+        onChange={setAiMode}
+        className="w-full [&>button]:flex-1"
+        options={[
+          { value: "create" as const, label: t("coedit.mode.create") },
+          { value: "refine" as const, label: t("coedit.mode.refine") },
+        ]}
+      />
+
       {/* ------------------------------------------------------ the brief ----
           The prompt first, and given room. Everything under it narrows what the
           planner may do with the brief; putting the six numeric controls above
