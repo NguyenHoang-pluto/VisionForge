@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from visionforge.domain.editbrief import MAX_REQUEST_CHARS
+from visionforge.domain.editdelta import MAX_OPERATIONS
 from visionforge.domain.editplan import (
     MAX_FADE_MS,
     MAX_GAIN,
@@ -298,6 +299,14 @@ class PlannerCapabilities(BaseModel):
     subtitle_positions: list[str]
     subtitle_bounds: dict[str, int]
 
+    # ---------------------------------------------------------- Phase 10
+    #: The closed operation vocabulary a co-edit may use. Declared for the same
+    #: reason every other bound is: so the editor offers exactly what the server
+    #: accepts, and a kind removed here stops being offered rather than becoming
+    #: a 422.
+    operations: list[dict[str, Any]] = Field(default_factory=list)
+    coedit_prompt_version: str = ""
+
 
 class EditPlanListResponse(BaseModel):
     items: list[EditPlanSummary]
@@ -527,6 +536,131 @@ class SubtitleSuggestResponse(BaseModel):
     provider: str = ""
     model: str = ""
     prompt_version: str = ""
+    latency_ms: float = 0.0
+
+
+# ------------------------------------------------------- co-editor (Phase 10)
+class CoEditRequest(BaseModel):
+    """Ask for a change to the current edit, in words or as operations.
+
+    Two shapes, one route. ``request_text`` is the user's sentence, which the
+    server resolves with its rules or hands to a model. ``operations`` is the
+    same list coming back from a preview the user approved -- re-parsed and
+    re-validated from scratch, because it arrived over HTTP like anything else.
+
+    Note what a client cannot send: a plan, a timeline, a segment's media id, a
+    width, an encoder setting or a path. A change request names what to change
+    about the edit the server already holds.
+    """
+
+    request_text: str | None = Field(default=None, max_length=MAX_REQUEST_CHARS)
+    #: Operations from a preview, when the user is confirming one. Bounded here
+    #: and validated against the closed vocabulary by the domain parser.
+    operations: list[dict[str, Any]] | None = Field(default=None, max_length=MAX_OPERATIONS)
+    #: The version this change was previewed against. The server refuses to
+    #: apply it if the head has moved, because the clip the user meant may no
+    #: longer be the clip that index names.
+    base_version_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _something_to_do(self) -> CoEditRequest:
+        if not self.request_text and not self.operations:
+            raise ValueError("send request_text, operations, or both")
+        return self
+
+
+class DiffEntryResponse(BaseModel):
+    """One line of the before/after the panel draws."""
+
+    field: str
+    label: str
+    before: str
+    after: str
+    clip: int | None = None
+
+
+class PlanDiffResponse(BaseModel):
+    entries: list[DiffEntryResponse] = Field(default_factory=list)
+    #: What the operations said they would do, in their own words.
+    applied: list[str] = Field(default_factory=list)
+    #: Adjustments the server made on its own to keep the plan renderable.
+    #: Surfaced rather than silent.
+    adjustments: list[str] = Field(default_factory=list)
+
+
+class CoEditPreviewResponse(BaseModel):
+    """What a change would do. Nothing has been written when this is returned.
+
+    ``ok: false`` carries a named ``failure`` and the violations behind it --
+    there is no partial state in which some of the change happened.
+    """
+
+    ok: bool
+    base_version_id: UUID | None = None
+    base_version: int | None = None
+    operations: list[dict[str, Any]] = Field(default_factory=list)
+    rationale: str = ""
+    diff: PlanDiffResponse = Field(default_factory=PlanDiffResponse)
+    failure: str | None = None
+    detail: str = ""
+    #: rules | llm | client -- which resolver read the request.
+    source: str = "rules"
+    provider: str = ""
+    model: str = ""
+    latency_ms: float = 0.0
+    violations: list[dict[str, Any]] = Field(default_factory=list)
+    #: False when the rules alone resolved it, so the editor may apply it
+    #: without a confirmation step.
+    needs_confirmation: bool = True
+
+
+class EditVersionResponse(BaseModel):
+    """One step in the history.
+
+    No request text, only a digest: the same trade every other record of a user
+    request in this API makes.
+    """
+
+    id: UUID
+    version: int
+    parent_id: UUID | None = None
+    edit_plan_id: UUID
+    origin: str
+    is_current: bool
+    applied: list[str] = Field(default_factory=list)
+    operation_count: int = 0
+    source: str = ""
+    provider: str | None = None
+    model: str | None = None
+    latency_ms: float | None = None
+    request_digest: str | None = None
+    total_duration_ms: int = 0
+    segment_count: int = 0
+    created_at: str
+    render_id: UUID | None = None
+    render_status: str | None = None
+
+
+class EditVersionListResponse(BaseModel):
+    items: list[EditVersionResponse]
+    total: int
+    current_version_id: UUID | None = None
+    #: Whether the buttons should be enabled, decided by the server that owns
+    #: the history rather than guessed at from the list.
+    can_undo: bool = False
+    can_redo: bool = False
+
+
+class CoEditApplyResponse(BaseModel):
+    """A committed change: the new version, its plan, and what it did."""
+
+    version: EditVersionResponse
+    plan: EditPlanDetail
+    diff: PlanDiffResponse
+    rationale: str = ""
+    source: str = "rules"
+    provider: str = ""
+    model: str = ""
     latency_ms: float = 0.0
 
 

@@ -12,6 +12,7 @@ from uuid import UUID
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from visionforge.application.coedit_service import CoEditService
 from visionforge.application.edit_service import EditService
 from visionforge.application.health_service import HealthService
 from visionforge.application.job_dispatch import JobDispatcher
@@ -31,6 +32,7 @@ from visionforge.infra.db.models import Project
 from visionforge.infra.db.repositories import (
     AnalysisRepository,
     EditPlanRepository,
+    EditVersionRepository,
     EventRepository,
     JobRepository,
     LlmRunRepository,
@@ -97,6 +99,10 @@ def get_llm_run_repo(session: AsyncSession = Depends(get_session)) -> LlmRunRepo
     return LlmRunRepository(session)
 
 
+def get_version_repo(session: AsyncSession = Depends(get_session)) -> EditVersionRepository:
+    return EditVersionRepository(session)
+
+
 def get_event_repo(session: AsyncSession = Depends(get_session)) -> EventRepository:
     return EventRepository(session)
 
@@ -154,6 +160,7 @@ class EditServiceFactory:
         events: EventRepository,
         llm_runs: LlmRunRepository,
         provider: LlmProvider | None,
+        versions: EditVersionRepository,
     ) -> None:
         self._session = session
         self._media = media
@@ -161,6 +168,7 @@ class EditServiceFactory:
         self._events = events
         self._llm_runs = llm_runs
         self._provider = provider
+        self._versions = versions
 
     def for_request(
         self,
@@ -183,13 +191,19 @@ class EditServiceFactory:
             selection.planner,
             llm_runs=self._llm_runs,
             mode_decision=selection.decision,
+            versions=self._versions,
         )
         return service, selection
 
     def plain(self) -> EditService:
         """A service with the rules engine, for routes that never plan."""
         return EditService(
-            self._session, self._media, self._plans, self._events, RulesEnginePlanner()
+            self._session,
+            self._media,
+            self._plans,
+            self._events,
+            RulesEnginePlanner(),
+            versions=self._versions,
         )
 
 
@@ -200,8 +214,9 @@ def get_edit_service_factory(
     events: EventRepository = Depends(get_event_repo),
     llm_runs: LlmRunRepository = Depends(get_llm_run_repo),
     provider: LlmProvider | None = Depends(get_llm_provider),
+    versions: EditVersionRepository = Depends(get_version_repo),
 ) -> EditServiceFactory:
-    return EditServiceFactory(session, media, plans, events, llm_runs, provider)
+    return EditServiceFactory(session, media, plans, events, llm_runs, provider, versions)
 
 
 def get_edit_service(
@@ -209,6 +224,22 @@ def get_edit_service(
 ) -> EditService:
     """The rules-engine service, for routes that dispatch rather than plan."""
     return factory.plain()
+
+
+def get_coedit_service(
+    session: AsyncSession = Depends(get_session),
+    media: MediaRepository = Depends(get_media_repo),
+    plans: EditPlanRepository = Depends(get_edit_plan_repo),
+    versions: EditVersionRepository = Depends(get_version_repo),
+    events: EventRepository = Depends(get_event_repo),
+) -> CoEditService:
+    """The co-editor (Phase 10).
+
+    Note what it is *not* given: a planner. Co-editing patches the plan that
+    exists rather than producing a new one, so there is nothing here that could
+    quietly re-plan a project when a change failed to apply.
+    """
+    return CoEditService(session, media, plans, versions, events)
 
 
 def get_job_dispatcher(

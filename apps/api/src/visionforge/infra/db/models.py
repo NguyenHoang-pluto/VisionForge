@@ -28,6 +28,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -346,6 +347,84 @@ class RenderRow(Base, TimestampMixin):
     error: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     edit_plan: Mapped[EditPlanRow] = relationship(back_populates="renders")
+
+
+# ------------------------------------------------------------- plan versions
+class EditPlanVersionRow(Base, TimestampMixin):
+    """One step in a project's edit history.
+
+    A version is a pointer to a plan plus the story of how it got there. The
+    plan rows stay append-only: patching writes a new ``edit_plans`` row and a
+    version that points at it, so a render is always traceable to the immutable
+    plan it was built from.
+
+    **Undo writes no plan.** It moves ``is_current`` back to the parent, which
+    is why undoing is instant and restores the exact bytes that were there
+    rather than a recomputed approximation. Making a change while two versions
+    back adds a new child instead of erasing the abandoned branch -- which is
+    what every editor does, and why ``parent_version_id`` is a tree and not a
+    list.
+
+    **What is deliberately absent: the user's request text.** Only
+    ``request_digest`` is kept, the same trade ``llm_runs`` makes. Enough to
+    tell two requests apart; not enough to reconstruct what somebody typed.
+    """
+
+    __tablename__ = "edit_plan_versions"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_version_project_version"),
+        # One head per project, enforced by the database rather than by whoever
+        # remembers to clear the old one. A partial index, so the many
+        # not-current rows do not collide with each other.
+        Index(
+            "uq_version_project_current",
+            "project_id",
+            unique=True,
+            postgresql_where=text("is_current"),
+        ),
+        Index("ix_versions_project_created", "project_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = _uuid_pk()
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: The plan this version resolves to. Several versions may point at one plan
+    #: -- an undo and the version it restored are the same edit.
+    edit_plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("edit_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: The version this one was made from. Null for the first.
+    parent_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("edit_plan_versions.id", ondelete="SET NULL"), nullable=True
+    )
+
+    #: Monotonic per project, and the tiebreak redo uses to pick the newest
+    #: child of a branch point.
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: generated | manual | co_edit | undo | redo
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    is_current: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+    # --- what the change was ---
+    #: The validated operations, as they were applied. A closed vocabulary of
+    #: integers and enum names -- there is no free text here but subtitle text.
+    operations: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    operation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: The diff the user was shown: what changed, and any adjustment the patcher
+    #: made on its own.
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    # --- how it was produced ---
+    #: rules | llm | client. Which resolver read the request.
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Fingerprint of the user's request, not the request.
+    request_digest: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_chars: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 # --------------------------------------------------------------------- llm runs

@@ -24,6 +24,7 @@ from visionforge.domain.media import DerivativeKind, MediaKind, MediaStatus
 from visionforge.domain.render import RenderStatus
 from visionforge.infra.db.models import (
     EditPlanRow,
+    EditPlanVersionRow,
     Event,
     Job,
     JobStep,
@@ -586,6 +587,153 @@ class EditPlanRepository:
         )
 
 
+class EditVersionRepository:
+    """The edit history: which plan a project is on, and how it got there.
+
+    Every method is project-scoped, like every other repository here. There is
+    no ``get_version(version_id)`` that skips ownership, and that absence is the
+    authorization design rather than an oversight.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_for_project(
+        self, project_id: UUID, *, limit: int = 100
+    ) -> Sequence[EditPlanVersionRow]:
+        """Every version, newest first. The input to the lineage rules."""
+        result = await self._session.execute(
+            select(EditPlanVersionRow)
+            .where(EditPlanVersionRow.project_id == project_id)
+            .order_by(EditPlanVersionRow.version.desc())
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def current(self, project_id: UUID) -> EditPlanVersionRow | None:
+        result = await self._session.execute(
+            select(EditPlanVersionRow).where(
+                EditPlanVersionRow.project_id == project_id,
+                EditPlanVersionRow.is_current.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_in_project(self, version_id: UUID, project_id: UUID) -> EditPlanVersionRow | None:
+        result = await self._session.execute(
+            select(EditPlanVersionRow).where(
+                EditPlanVersionRow.id == version_id,
+                EditPlanVersionRow.project_id == project_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def for_plan(self, edit_plan_id: UUID, project_id: UUID) -> EditPlanVersionRow | None:
+        """The newest version pointing at a given plan.
+
+        How a plan created by a route that predates versioning -- the planner
+        and the manual editor -- is found again once it has been recorded.
+        """
+        result = await self._session.execute(
+            select(EditPlanVersionRow)
+            .where(
+                EditPlanVersionRow.edit_plan_id == edit_plan_id,
+                EditPlanVersionRow.project_id == project_id,
+            )
+            .order_by(EditPlanVersionRow.version.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def append(
+        self,
+        *,
+        project_id: UUID,
+        edit_plan_id: UUID,
+        origin: str,
+        parent_version_id: UUID | None = None,
+        operations: list[dict[str, Any]] | None = None,
+        summary: dict[str, Any] | None = None,
+        source: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        prompt_version: str | None = None,
+        latency_ms: float | None = None,
+        request_digest: str | None = None,
+        request_chars: int = 0,
+    ) -> EditPlanVersionRow:
+        """Add a version and make it the head.
+
+        The old head is cleared in the same transaction as the insert, because
+        the partial unique index means a project cannot briefly have two heads
+        -- and a flush that violated it would abort the whole change, which is
+        the behaviour that makes this safe rather than the behaviour to work
+        around.
+        """
+        await self._clear_head(project_id)
+
+        # MAX + 1 rather than a sequence: version numbers are per project and
+        # have to be dense enough for a person to say "version 3".
+        next_version = await self._session.scalar(
+            select(func.coalesce(func.max(EditPlanVersionRow.version), 0) + 1).where(
+                EditPlanVersionRow.project_id == project_id
+            )
+        )
+
+        row = EditPlanVersionRow(
+            project_id=project_id,
+            edit_plan_id=edit_plan_id,
+            parent_version_id=parent_version_id,
+            version=int(next_version or 1),
+            origin=origin[:16],
+            is_current=True,
+            operations={"items": operations} if operations else None,
+            operation_count=len(operations or []),
+            summary=summary,
+            source=source[:16] if source else None,
+            provider=provider[:32] if provider else None,
+            model=model[:128] if model else None,
+            prompt_version=prompt_version[:16] if prompt_version else None,
+            latency_ms=latency_ms,
+            request_digest=request_digest[:32] if request_digest else None,
+            request_chars=request_chars,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def set_current(self, project_id: UUID, version_id: UUID) -> None:
+        """Move the head. What undo and redo actually do.
+
+        No plan is written and no row is created: the versions already exist and
+        one of them becomes current again. That is why undo is instant and why
+        it restores exactly what was there.
+        """
+        await self._clear_head(project_id)
+        await self._session.execute(
+            update(EditPlanVersionRow)
+            .where(
+                EditPlanVersionRow.id == version_id,
+                EditPlanVersionRow.project_id == project_id,
+            )
+            .values(is_current=True)
+        )
+        await self._session.flush()
+
+    async def _clear_head(self, project_id: UUID) -> None:
+        await self._session.execute(
+            update(EditPlanVersionRow)
+            .where(
+                EditPlanVersionRow.project_id == project_id,
+                EditPlanVersionRow.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        # Flushed before the new head is written, so the partial unique index
+        # never sees two.
+        await self._session.flush()
+
+
 class LlmRunRepository:
     """Planning calls to a language model, successful or not."""
 
@@ -663,6 +811,7 @@ class EventRepository:
 __all__ = [
     "AnalysisRepository",
     "EditPlanRepository",
+    "EditVersionRepository",
     "EventRepository",
     "JobRepository",
     "MediaRepository",

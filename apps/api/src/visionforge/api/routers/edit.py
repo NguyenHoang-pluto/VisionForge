@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from visionforge.api.dependencies import (
     EditServiceFactory,
+    get_coedit_service,
     get_edit_plan_repo,
     get_edit_service,
     get_edit_service_factory,
@@ -29,17 +30,24 @@ from visionforge.api.dependencies import (
     get_media_service,
     get_project_repo,
     get_session,
+    get_version_repo,
     require_project,
 )
 from visionforge.api.schemas.edit import (
+    CoEditApplyResponse,
+    CoEditPreviewResponse,
+    CoEditRequest,
     EditPlanDetail,
     EditPlanListResponse,
     EditPlanSummary,
+    EditVersionListResponse,
+    EditVersionResponse,
     EffectBoundsResponse,
     ManualPlanCreateRequest,
     MeasurementResponse,
     MusicRequest,
     PlanCreateRequest,
+    PlanDiffResponse,
     PlannerCapabilities,
     ReferenceProfileResponse,
     ReferenceRequest,
@@ -53,6 +61,7 @@ from visionforge.api.schemas.edit import (
     SubtitleTrackRequest,
 )
 from visionforge.api.serializers import serialize_edit_plan, serialize_render
+from visionforge.application.coedit_service import CoEditRejected, CoEditService
 from visionforge.application.edit_service import EditService
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import DOWNLOAD_URL_TTL_S, MediaService
@@ -65,7 +74,9 @@ from visionforge.domain.beats import (
     BeatGrid,
     grid_from_payload,
 )
+from visionforge.domain.coeditor import COEDIT_PROMPT_VERSION
 from visionforge.domain.editbrief import MAX_REQUEST_CHARS
+from visionforge.domain.editdelta import vocabulary as delta_vocabulary
 from visionforge.domain.editplan import (
     MAX_FADE_MS,
     MAX_GAIN,
@@ -95,6 +106,7 @@ from visionforge.domain.ids import ProjectId
 from visionforge.domain.jobs import JobType
 from visionforge.domain.llm import LlmProvider
 from visionforge.domain.llm_planner import PlannerMode
+from visionforge.domain.patch import PlanDiff
 from visionforge.domain.planner import ClipOrder, PlanRequest
 from visionforge.domain.policy import StyleStrength, blend
 from visionforge.domain.prompts import PROMPT_VERSION
@@ -115,9 +127,17 @@ from visionforge.domain.subtitles import (
     STYLE_PRESETS,
     SubtitlePosition,
 )
+from visionforge.domain.versions import (
+    VersionNode,
+    VersionSummary,
+    current_of,
+    redo_target,
+    undo_target,
+)
 from visionforge.infra.db.models import Project
 from visionforge.infra.db.repositories import (
     EditPlanRepository,
+    EditVersionRepository,
     LlmRunRepository,
     MediaRepository,
     ProjectRepository,
@@ -223,6 +243,10 @@ async def planner_capabilities(
             for preset in STYLE_PRESETS.values()
         ],
         subtitle_positions=[position.value for position in SubtitlePosition],
+        # Phase 10: the closed operation vocabulary, generated from the enum
+        # so the editor offers exactly what the parser accepts.
+        operations=delta_vocabulary(),
+        coedit_prompt_version=COEDIT_PROMPT_VERSION,
         subtitle_bounds={
             "min_cue_ms": MIN_CUE_MS,
             "max_cue_ms": MAX_CUE_MS,
@@ -464,6 +488,200 @@ async def suggest_plan_subtitles(
         prompt_version=suggestion.prompt_version,
         latency_ms=round(suggestion.latency_ms, 1),
     )
+
+
+# ------------------------------------------------------- co-editor (Phase 10)
+#
+# Declared before ``/edit-plan/{edit_plan_id}``, and that ordering is load
+# bearing: a router matches in declaration order, so with the parameterised
+# route first the literal path ``/edit-plan/versions`` is read as a plan id and
+# every history request becomes a 422 about a malformed UUID.
+def _version_response(summary: VersionSummary) -> EditVersionResponse:
+    return EditVersionResponse(**summary.as_payload())
+
+
+def _diff_response(diff: PlanDiff) -> PlanDiffResponse:
+    return PlanDiffResponse(**diff.as_payload())
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/co-edit/preview",
+    response_model=CoEditPreviewResponse,
+)
+async def preview_co_edit(
+    body: CoEditRequest,
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+    provider: LlmProvider | None = Depends(get_llm_provider),
+) -> CoEditPreviewResponse:
+    """Work out what a change would do, without doing it.
+
+    Read-only, and read-only in the strong sense: the whole pipeline runs --
+    resolve the sentence, parse the operations, apply them to the current plan,
+    validate the result against the real media rows -- and then everything but
+    the diff is thrown away. Nothing is written, so a preview of a change the
+    user then cancels leaves no trace but an unchanged plan.
+
+    The same code produces the committed version, so the diff shown here cannot
+    disagree with what applying it does.
+    """
+    preview = await service.preview(
+        project_id=ProjectId(project.id),
+        request_text=body.request_text,
+        operations=body.operations,
+        provider=provider,
+    )
+    return CoEditPreviewResponse(**preview.as_payload())
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/co-edit",
+    response_model=CoEditApplyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def apply_co_edit(
+    body: CoEditRequest,
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+    provider: LlmProvider | None = Depends(get_llm_provider),
+) -> CoEditApplyResponse:
+    """Apply a change to the current edit and store it as a new version.
+
+    201, and the thing created is a *version*, not a render. A plan change must
+    not queue an encode: the user asks for the render separately, through the
+    route that already exists, when they are happy with what they see.
+
+    A change that cannot be made is a 422 carrying every reason, and nothing is
+    written -- the previous version stays current and its plan stays
+    byte-identical. That is what makes a failed AI request safe.
+    """
+    try:
+        applied = await service.apply(
+            project_id=ProjectId(project.id),
+            request_text=body.request_text,
+            operations=body.operations,
+            base_version_id=body.base_version_id,
+            provider=provider,
+        )
+    except CoEditRejected as exc:
+        raise ValidationError(
+            "this change could not be applied; the edit is unchanged",
+            hint="; ".join(
+                [violation.message for violation in exc.violations] or [exc.outcome.detail]
+            )
+            or "the request could not be read",
+        ) from exc
+
+    summaries = await service.history(project_id=ProjectId(project.id), limit=1)
+    return CoEditApplyResponse(
+        version=_version_response(summaries[0]),
+        plan=serialize_edit_plan(applied.plan_row, include_plan=True),
+        diff=_diff_response(applied.diff),
+        rationale=applied.outcome.delta.rationale if applied.outcome.delta else "",
+        source=applied.outcome.source.value,
+        provider=applied.outcome.provider,
+        model=applied.outcome.model,
+        latency_ms=round(applied.outcome.latency_ms, 1),
+    )
+
+
+@router.get(
+    "/projects/{project_id}/edit-plan/versions",
+    response_model=EditVersionListResponse,
+)
+async def list_edit_versions(
+    limit: int = Query(default=50, ge=1, le=200),
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+    repo: EditVersionRepository = Depends(get_version_repo),
+) -> EditVersionListResponse:
+    """The edit history, newest first.
+
+    ``can_undo``/``can_redo`` are computed here, by the server that owns the
+    history, rather than inferred by the client from the list. A button whose
+    enabled state is a guess is a button that sometimes produces a 409.
+    """
+    summaries = await service.history(project_id=ProjectId(project.id), limit=limit)
+    rows = await repo.list_for_project(project.id, limit=limit)
+    nodes = [
+        VersionNode(
+            id=row.id,
+            version=row.version,
+            parent_id=row.parent_version_id,
+            edit_plan_id=row.edit_plan_id,
+            is_current=row.is_current,
+        )
+        for row in rows
+    ]
+    current = current_of(nodes)
+    return EditVersionListResponse(
+        items=[_version_response(summary) for summary in summaries],
+        total=len(summaries),
+        current_version_id=current.id if current else None,
+        can_undo=undo_target(nodes) is not None,
+        can_redo=redo_target(nodes) is not None,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/versions/undo",
+    response_model=EditVersionResponse,
+)
+async def undo_edit_version(
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+) -> EditVersionResponse:
+    """Step back one version.
+
+    Writes no plan. The version being restored already points at a stored plan,
+    so what comes back is the exact edit that was there rather than a
+    recomputation of it -- and the server stays authoritative about which
+    version is current, so a second browser sees the same thing.
+    """
+    await service.undo(ProjectId(project.id))
+    return await _current_version_response(service, project)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/versions/redo",
+    response_model=EditVersionResponse,
+)
+async def redo_edit_version(
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+) -> EditVersionResponse:
+    await service.redo(ProjectId(project.id))
+    return await _current_version_response(service, project)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/versions/{version_id}/restore",
+    response_model=EditVersionResponse,
+)
+async def restore_edit_version(
+    version_id: UUID,
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+) -> EditVersionResponse:
+    """Jump to any version. The generalisation of undo, by the same mechanism."""
+    await service.restore(ProjectId(project.id), version_id)
+    return await _current_version_response(service, project)
+
+
+async def _current_version_response(
+    service: CoEditService, project: Project
+) -> EditVersionResponse:
+    """The head, as the history describes it.
+
+    Read back through ``history`` rather than built from the row, so an undo and
+    a listing report a version identically -- including its render status, which
+    is what the panel needs to know whether the restored edit has a file.
+    """
+    summaries = await service.history(project_id=ProjectId(project.id), limit=200)
+    current = next((summary for summary in summaries if summary.is_current), None)
+    if current is None:
+        raise NotFoundError("this project has no current edit version")
+    return _version_response(current)
 
 
 @router.get("/projects/{project_id}/edit-plan", response_model=EditPlanListResponse)

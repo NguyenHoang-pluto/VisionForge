@@ -57,6 +57,7 @@ from visionforge.domain.subtitle_ai import (
 )
 from visionforge.domain.subtitles import SubtitlePosition, SubtitleStyle, SubtitleTrack
 from visionforge.domain.timeline import compile_timeline
+from visionforge.domain.versions import VersionOrigin, digest_of
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,7 @@ class EditService:
         planner: Planner,
         llm_runs: Any = None,
         mode_decision: Any = None,
+        versions: Any = None,
     ) -> None:
         self._session = session
         self._media = media_repo
@@ -184,6 +186,12 @@ class EditService:
         self._planner = planner
         self._llm_runs = llm_runs
         self._mode_decision = mode_decision
+        #: The edit history (Phase 10). Optional, because two of this class's
+        #: three callers predate it and a plan is still a plan without one --
+        #: but when it is wired, every plan this service stores becomes a
+        #: version, which is what gives the co-editor something to patch and an
+        #: undo something to step back to.
+        self._versions = versions
 
     # ------------------------------------------------------------------ plan
     async def create_plan(
@@ -252,6 +260,15 @@ class EditService:
             project_id=project_id,
             plan=outcome.plan,
             selection=selection_payload(outcome.selection),
+        )
+
+        await self._record_version(
+            project_id=project_id,
+            edit_plan_id=row.id,
+            origin=VersionOrigin.GENERATED,
+            request_text=request.request_text,
+            provider=run.provider if run else None,
+            model=run.model if run else None,
         )
 
         # Recorded even when the model succeeded, and especially when it did
@@ -343,6 +360,12 @@ class EditService:
             # reader of this column sees one shape.
             selection={"selected": [], "rejected": [], "duplicate_groups": []},
         )
+        # A hand-cut edit joins the same history an AI change moves through.
+        # That is what lets the two interleave: the co-editor always patches
+        # whatever is current, whoever last changed it.
+        await self._record_version(
+            project_id=project_id, edit_plan_id=row.id, origin=VersionOrigin.MANUAL
+        )
         await self._events.record(
             kind="editplan.created",
             actor="dev-user",
@@ -427,6 +450,38 @@ class EditService:
                 },
             )
         return suggestion
+
+    # ------------------------------------------------------------- versions
+    async def _record_version(
+        self,
+        *,
+        project_id: ProjectId,
+        edit_plan_id: UUID,
+        origin: VersionOrigin,
+        request_text: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Append this plan to the project's edit history, if there is one.
+
+        Branches from whatever is current, so generating a fresh plan while
+        sitting on version 2 makes version 3 a child of 2 rather than a new root
+        -- the history stays one story even when the user switches between
+        planning, hand-cutting and asking for changes.
+        """
+        if self._versions is None:
+            return
+        parent = await self._versions.current(project_id)
+        await self._versions.append(
+            project_id=project_id,
+            edit_plan_id=edit_plan_id,
+            origin=origin.value,
+            parent_version_id=parent.id if parent else None,
+            provider=provider,
+            model=model,
+            request_digest=digest_of(request_text),
+            request_chars=len(request_text or ""),
+        )
 
     # ---------------------------------------------------------------- render
     async def create_render(self, *, project_id: ProjectId, edit_plan_id: UUID) -> Any:
