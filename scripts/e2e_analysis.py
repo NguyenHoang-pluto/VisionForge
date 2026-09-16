@@ -129,11 +129,25 @@ def scenario_pipeline() -> tuple[str, dict[str, str]]:
     return project_id, media
 
 
+#: Every analyzer that must record a verdict for a piece of media.
+#:
+#: By name rather than by count. A count passes when one analyzer disappears and
+#: another arrives, which is the failure it exists to catch. Phase 3 shipped
+#: five; ``beats`` arrived in Phase 7 and ``dynamics`` in Phase 8, and both
+#: record a verdict for every asset like the rest.
+ANALYZERS = {"quality", "phash", "clip", "faces", "scenes", "beats", "dynamics"}
+
+#: What an *audio* file gets. Everything that looks at pictures is unsupported,
+#: which is a verdict and not a failure -- and ``beats`` is the exception,
+#: because from Phase 7 detecting a tempo in audio is exactly its job.
+AUDIO_OK = {"beats"}
+
+
 def scenario_image(project_id: str, media_id: str) -> None:
     step("2. Image - quality, blur, exposure, contrast, pHash, CLIP, faces")
     rows = analysis_for(project_id, media_id)
 
-    check("all five analyzers recorded", len(rows) == 5, ",".join(sorted(rows)))
+    check("every analyzer recorded", set(rows) == ANALYZERS, ",".join(sorted(rows)))
 
     quality = rows["quality"]
     check("quality: ok", quality["status"] == "ok", quality["status"])
@@ -209,8 +223,14 @@ def scenario_audio(project_id: str, media_id: str) -> None:
     step("4. Audio - unsupported, never a failure")
     rows = analysis_for(project_id, media_id)
 
-    check("all five analyzers recorded a verdict", len(rows) == 5, ",".join(sorted(rows)))
+    check("every analyzer recorded a verdict", set(rows) == ANALYZERS, ",".join(sorted(rows)))
     for name, row in sorted(rows.items()):
+        if name in AUDIO_OK:
+            # Beat detection on an audio file is the one analyzer that has
+            # something to say here. "ok" is the pass; a failure is still a
+            # failure.
+            check(f"{name}: ok on audio", row["status"] == "ok", row["status"])
+            continue
         check(
             f"{name}: unsupported (not failed)",
             row["status"] == "unsupported",
