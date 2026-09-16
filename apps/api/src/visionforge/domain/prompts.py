@@ -1,10 +1,16 @@
 """The planning prompt, versioned.
 
 The prompt is domain policy, not infrastructure. It encodes what the model is
-being asked to decide and, just as importantly, what it is not: it may choose
-clips, order and pacing, and nothing else. Geometry, codecs, quality and paths
-are decided by the server and are not mentioned, because a model cannot be
-tempted by a control it was never shown.
+being asked to decide and, just as importantly, what it is not: from Phase 9 it
+may choose clips, order, pacing, how each clip enters, and a small number of
+effects on it -- and nothing else. Geometry, codecs, quality and paths are
+decided by the server and are not mentioned, because a model cannot be tempted
+by a control it was never shown.
+
+The two new words are given to it as enumerations, listed in full, and the list
+is generated from the same tables the parser validates against. A prompt that
+offered a kind the parser rejects would waste a round trip on every plan, and a
+prompt that omitted one would make a capability unreachable through language.
 
 ``PROMPT_VERSION`` is stored on every plan and every run. A prompt change is a
 behaviour change, and an edit that looks different next week needs to be
@@ -21,15 +27,20 @@ import json
 
 from visionforge.domain.directive import MAX_RATIONALE_CHARS
 from visionforge.domain.editbrief import EditBrief
-from visionforge.domain.editplan import MAX_SEGMENTS
+from visionforge.domain.editplan import (
+    MAX_SEGMENTS,
+    MAX_TRANSITION_MS,
+    MIN_TRANSITION_MS,
+)
+from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, EffectKind
 from visionforge.domain.policy import StylePolicy
 from visionforge.domain.style import EditStyle, StyleProfile
 
 #: Bumped on every material change to the text below.
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"
 
 
-SYSTEM_PROMPT = """\
+_BASE_PROMPT = """\
 You are the shot-selection stage of a video editing pipeline. You choose which \
 clips appear in an edit, in what order, and how long each is held.
 
@@ -44,8 +55,9 @@ Return a single JSON object and nothing else:
 nature, social, custom>",
   "pacing": "<one of: slow, medium, fast>",
   "clips": [
-    {"ref": "c3", "duration_ms": 1800},
-    {"ref": "c1", "duration_ms": 2400}
+    {"ref": "c3", "duration_ms": 1800, "transition": "fade_in"},
+    {"ref": "c1", "duration_ms": 2400, "transition": "crossfade",
+     "transition_ms": 500, "effects": [{"kind": "slow_motion", "amount": 0.5}]}
   ],
   "rationale": "<one or two sentences explaining the cut, for the user to read>"
 }
@@ -58,11 +70,70 @@ are given. A clip cannot be held longer than its own duration.
 - Choose fewer, stronger clips over more, weaker ones. You do not have to use \
 every clip.
 - "rationale" is plain prose for a human. It is displayed, never executed.
-
-You have no other output. Do not describe filters, effects, transitions, \
-resolutions, frame rates, file formats, file names, or commands: those are \
-decided elsewhere and anything you say about them is discarded.\
 """
+
+
+#: How a clip enters. Optional; absent means a cut.
+_TRANSITION_PROMPT = """\
+"transition" is how a clip enters, and is optional. It must be one of:
+- "cut" -- the default. An instant change. Use it for most joins.
+- "crossfade" -- dissolve from the previous clip. Not valid on the first clip. \
+It overlaps the two clips, so it makes the whole edit shorter.
+- "fade_in" -- fade up from black. Usually only on the first clip.
+- "fade_to_black" -- fade down to black at the end of the clip. Usually only on \
+the last clip.
+"transition_ms" is how long it runs. Between {min_ms} and {max_ms} ms, and never \
+more than half of either clip it joins.\
+"""
+
+_CLOSING_PROMPT = """\
+You have no other output. Do not describe resolutions, frame rates, file \
+formats, file names, fonts, colours, positions, filter expressions, or \
+commands: those are decided elsewhere. There is no field for them and nothing \
+you write in one is read.\
+"""
+
+#: What each effect's number means, in words. The bounds themselves come from
+#: ``EFFECT_BOUNDS`` rather than being retyped, so the prompt cannot offer a
+#: range the parser then clamps away.
+_EFFECT_MEANING: dict[EffectKind, str] = {
+    EffectKind.ZOOM_IN: "a slow push in across the clip; 0 is no movement",
+    EffectKind.ZOOM_OUT: "a slow pull out across the clip; 0 is no movement",
+    EffectKind.SLOW_MOTION: "playback rate; below 1 is slower, 1 is unchanged",
+    EffectKind.SPEED_UP: "playback rate; above 1 is faster, 1 is unchanged",
+    EffectKind.BRIGHTNESS: "0 is unchanged, negative is darker",
+    EffectKind.CONTRAST: "1 is unchanged",
+    EffectKind.SATURATION: "1 is unchanged, 0 is greyscale",
+}
+
+
+def _effect_prompt() -> str:
+    lines = [
+        f'"effects" is optional, at most {MAX_EFFECTS_PER_SEGMENT} per clip, each an '
+        'object with a "kind" and an "amount". The only kinds are:',
+    ]
+    for kind in EffectKind:
+        low, high, _ = EFFECT_BOUNDS[kind]
+        lines.append(f'- "{kind.value}": amount {low} to {high} -- {_EFFECT_MEANING[kind]}')
+    lines.append(
+        "Use them sparingly. Most clips need none, and an effect left at its "
+        "neutral value is dropped."
+    )
+    return "\n".join(lines)
+
+
+#: Assembled once at import. Concatenated rather than ``format``-ed as a whole,
+#: because the prompt contains a JSON example and every brace in it would have
+#: to be doubled -- an example that does not look like its own output is an
+#: example a model copies wrongly.
+SYSTEM_PROMPT = "\n\n".join(
+    [
+        _BASE_PROMPT.rstrip(),
+        _TRANSITION_PROMPT.format(min_ms=MIN_TRANSITION_MS, max_ms=MAX_TRANSITION_MS).rstrip(),
+        _effect_prompt(),
+        _CLOSING_PROMPT.rstrip(),
+    ]
+)
 
 
 def build_user_prompt(

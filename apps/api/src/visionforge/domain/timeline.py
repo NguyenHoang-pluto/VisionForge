@@ -661,6 +661,12 @@ def build_render_spec(
         include_audio=timeline.audio is AudioMode.SOURCE,
         source_gain=timeline.source_gain,
         music=render_music,
+        # Carried through from the timeline, which carried it from the plan. It
+        # was missing here once, and nothing caught it until a real render
+        # produced a file whose frames were identical with and without the
+        # track -- the compiler maps [vout] rather than [vsub] when the spec
+        # says there are no subtitles, and it was telling the truth.
+        subtitles=timeline.subtitles,
     )
 
 

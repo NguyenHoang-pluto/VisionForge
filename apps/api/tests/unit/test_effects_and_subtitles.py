@@ -417,6 +417,70 @@ class TestSubtitleValidation:
         assert plan_from_payload(plan().as_payload()).subtitles is None
 
 
+class TestSubtitlesReachTheRenderer:
+    """The chain from plan to spec, which had a hole in it.
+
+    Subtitles were stored on the plan, carried onto the timeline, and then
+    dropped: ``build_render_spec`` never passed them to the ``RenderSpec``. The
+    compiler then correctly mapped ``[vout]`` instead of ``[vsub]`` -- it was
+    told there were no subtitles -- and the render came out clean, valid, the
+    right length, and with no text on it.
+
+    Nothing caught it. The unit tests built specs directly, the integration
+    tests built specs directly, and only a real render through the worker showed
+    two identical frames. These assertions walk the whole chain instead.
+    """
+
+    def track(self) -> SubtitleTrack:
+        return SubtitleTrack(cues=(SubtitleCue(0, 1_500, "hello"),))
+
+    def test_the_plan_carries_them_to_the_timeline(self) -> None:
+        from visionforge.domain.timeline import compile_timeline
+
+        timeline = compile_timeline(plan(subtitles=self.track()))
+        assert timeline.subtitles is not None
+        assert timeline.subtitles.cues[0].text == "hello"
+
+    def test_the_timeline_carries_them_to_the_spec(self) -> None:
+        from visionforge.domain.timeline import build_render_spec, compile_timeline
+
+        spec = build_render_spec(
+            compile_timeline(plan(subtitles=self.track())),
+            local_paths={MEDIA: "/tmp/x.mp4"},
+            output_path="/tmp/out.mp4",
+        )
+        assert spec.subtitles is not None
+        assert spec.subtitles.cues[0].text == "hello"
+
+    def test_the_compiler_maps_the_burned_output_when_given_a_document(self) -> None:
+        from visionforge.domain.timeline import build_render_spec, compile_timeline
+        from visionforge.infra.ffmpeg.compiler import compile_render_argv
+
+        spec = build_render_spec(
+            compile_timeline(plan(subtitles=self.track())),
+            local_paths={MEDIA: "/tmp/x.mp4"},
+            output_path="/tmp/out.mp4",
+        )
+        argv = compile_render_argv(spec, ass_path="/tmp/subs.ass")
+        assert "[vsub]" in argv
+        assert "[vout]" not in argv
+        assert "subtitles=" in argv[argv.index("-filter_complex") + 1]
+
+    def test_a_plan_without_subtitles_maps_the_plain_output(self) -> None:
+        from visionforge.domain.timeline import build_render_spec, compile_timeline
+        from visionforge.infra.ffmpeg.compiler import compile_render_argv
+
+        spec = build_render_spec(
+            compile_timeline(plan()),
+            local_paths={MEDIA: "/tmp/x.mp4"},
+            output_path="/tmp/out.mp4",
+        )
+        assert spec.subtitles is None
+        argv = compile_render_argv(spec)
+        assert "[vout]" in argv
+        assert "[vsub]" not in argv
+
+
 class TestAssDocument:
     def test_the_document_has_the_sections_libass_needs(self) -> None:
         document = build_ass(SubtitleTrack(cues=(SubtitleCue(0, 1_000, "hi"),)))

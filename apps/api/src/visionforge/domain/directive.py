@@ -8,8 +8,17 @@ it made up. So the model does not produce a plan. It produces a directive:
     EditDirective
       ├── style      one of a fixed enum
       ├── pacing     one of a fixed enum
-      ├── clips      [ {ref: "c3", duration_ms: 1800}, ... ]   handles, not ids
+      ├── clips      [ {ref: "c3", duration_ms: 1800,
+      │                 transition: "crossfade", transition_ms: 500,
+      │                 effects: [{kind: "slow_motion", amount: 0.5}]}, ... ]
       └── rationale  a short string, for the user, never interpreted
+
+Phase 9 widened the vocabulary by two words and not by one character more. A
+directive may now name a transition and some effects -- and both are enums with
+numeric parameters, resolved exactly the way clip handles are: a kind the server
+does not know is a violation, and a number outside the bounds is clamped. There
+is still no field in which a filter expression, a path or a command could
+arrive, because "a filter string" is not a member of any enum here.
 
 and deterministic code turns that into a plan:
 
@@ -42,8 +51,11 @@ from visionforge.domain.editplan import (
     MAX_OUTPUT_MS,
     MAX_SEGMENT_MS,
     MAX_SEGMENTS,
+    MAX_TRANSITION_MS,
+    MAX_TRANSITION_SHARE,
     MIN_OUTPUT_MS,
     MIN_SEGMENT_MS,
+    MIN_TRANSITION_MS,
     AspectRatio,
     AudioMode,
     EditPlan,
@@ -51,6 +63,12 @@ from visionforge.domain.editplan import (
     OutputSpec,
     Segment,
     TransitionKind,
+)
+from visionforge.domain.effects import (
+    EFFECT_BOUNDS,
+    MAX_EFFECTS_PER_SEGMENT,
+    Effect,
+    EffectKind,
 )
 from visionforge.domain.ids import MediaId, ProjectId
 from visionforge.domain.style import EditStyle, QualityPreset, StyleProfile
@@ -91,6 +109,16 @@ class DirectiveClip:
     #: What the model asked for. Advisory: it is clamped to the style bounds and
     #: then to the plan bounds, and it cannot exceed the source's real length.
     duration_ms: int | None = None
+    #: How this clip enters. ``None`` means the model did not say, which becomes
+    #: a cut -- the same default a hand-made plan gets.
+    transition: TransitionKind | None = None
+    #: Advisory, like ``duration_ms``: clamped to the hard bounds here and
+    #: re-clamped against the real neighbouring durations by the compiler.
+    transition_ms: int | None = None
+    #: Effects, already narrowed to the closed enum and the bounds. A model that
+    #: named something outside them did not get a weaker effect, it got a
+    #: violation -- see ``_parse_effects``.
+    effects: tuple[Effect, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +134,16 @@ class EditDirective:
         return {
             "style": self.style.value,
             "pacing": self.pacing.value,
-            "clips": [{"ref": clip.ref, "duration_ms": clip.duration_ms} for clip in self.clips],
+            "clips": [
+                {
+                    "ref": clip.ref,
+                    "duration_ms": clip.duration_ms,
+                    "transition": clip.transition.value if clip.transition else None,
+                    "transition_ms": clip.transition_ms,
+                    "effects": [effect.as_payload() for effect in clip.effects],
+                }
+                for clip in self.clips
+            ],
             "rationale": self.rationale,
         }
 
@@ -297,13 +334,132 @@ def _parse_clip(
     # ``bool`` is a subclass of ``int``, so a model answering
     # ``"duration_ms": true`` would otherwise become a 1 ms clip.
     duration = entry.get("duration_ms")
-    if (
-        duration is not None
+    wanted = (
+        int(duration)
+        if duration is not None
         and not isinstance(duration, bool)
         and isinstance(duration, int | float)
-    ):
-        return DirectiveClip(ref=ref, duration_ms=int(duration))
-    return DirectiveClip(ref=ref, duration_ms=None)
+        else None
+    )
+
+    transition, transition_ms = _parse_transition(entry, index, violations)
+    return DirectiveClip(
+        ref=ref,
+        duration_ms=wanted,
+        transition=transition,
+        transition_ms=transition_ms,
+        effects=_parse_effects(entry.get("effects"), index, violations),
+    )
+
+
+def _parse_transition(
+    entry: dict[str, Any], index: int, violations: list[DirectiveViolation]
+) -> tuple[TransitionKind | None, int | None]:
+    """Read a transition name, or record that it is not one we have.
+
+    An unknown name is a hard failure rather than a silent fall back to a cut.
+    A model that asked for "whip_pan" has described an edit this renderer cannot
+    make, and quietly delivering a straight cut instead would be the pipeline
+    telling the user it did something it did not do -- the repair prompt gets
+    told the real vocabulary and usually picks from it.
+    """
+    raw = entry.get("transition")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str):
+        violations.append(
+            DirectiveViolation("transition_not_string", f"clips[{index}].transition is not a name")
+        )
+        return None, None
+
+    try:
+        kind = TransitionKind(raw.strip().lower())
+    except ValueError:
+        violations.append(
+            DirectiveViolation(
+                "unknown_transition",
+                f"clips[{index}].transition {raw!r} is not one of: "
+                + ", ".join(member.value for member in TransitionKind),
+            )
+        )
+        return None, None
+
+    raw_ms = entry.get("transition_ms")
+    if isinstance(raw_ms, bool) or not isinstance(raw_ms, int | float):
+        return kind, None
+    # Clamped, not rejected: a number is the one thing a model can be wrong
+    # about without having invented a capability.
+    return kind, max(MIN_TRANSITION_MS, min(int(raw_ms), MAX_TRANSITION_MS))
+
+
+def _parse_effects(
+    raw: Any, index: int, violations: list[DirectiveViolation]
+) -> tuple[Effect, ...]:
+    """Read the effects array. Closed enum, clamped amounts, no dictionaries.
+
+    ``amount`` is the only number read per effect and it is clamped to that
+    kind's bounds. Nothing else in the object is looked at -- an entry carrying
+    ``{"kind": "brightness", "amount": 0.2, "filter": "..."}`` yields a
+    brightness effect and the ``filter`` key is not read, stored or seen again.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        violations.append(
+            DirectiveViolation("effects_not_array", f"clips[{index}].effects is not an array")
+        )
+        return ()
+
+    effects: list[Effect] = []
+    seen: set[EffectKind] = set()
+    for position, entry in enumerate(raw[:MAX_EFFECTS_PER_SEGMENT]):
+        if not isinstance(entry, dict):
+            violations.append(
+                DirectiveViolation(
+                    "effect_not_object", f"clips[{index}].effects[{position}] is not an object"
+                )
+            )
+            continue
+
+        name = entry.get("kind")
+        if not isinstance(name, str):
+            violations.append(
+                DirectiveViolation(
+                    "effect_no_kind", f"clips[{index}].effects[{position}] has no kind"
+                )
+            )
+            continue
+        try:
+            kind = EffectKind(name.strip().lower())
+        except ValueError:
+            violations.append(
+                DirectiveViolation(
+                    "unknown_effect",
+                    f"clips[{index}].effects[{position}].kind {name!r} is not one of: "
+                    + ", ".join(member.value for member in EffectKind),
+                )
+            )
+            continue
+
+        if kind in seen:
+            continue
+        seen.add(kind)
+
+        low, high, neutral = EFFECT_BOUNDS[kind]
+        amount = entry.get("amount")
+        value = (
+            float(amount)
+            if not isinstance(amount, bool) and isinstance(amount, int | float)
+            else neutral
+        )
+        value = max(low, min(value, high))
+        if value == neutral:
+            # An effect set to its neutral value is an instruction to do
+            # nothing. Dropping it keeps the plan a description of changes.
+            continue
+        effects.append(Effect(kind=kind, amount=value))
+
+    return tuple(effects)
 
 
 def _clean_rationale(value: Any) -> str:
@@ -378,13 +534,20 @@ def compile_directive(directive: EditDirective, context: CompileContext) -> Edit
         # Centre trim, exactly as the rules engine does it and for the same
         # reason: the head of a handheld clip is where the focus hunt lives.
         start = max(0, (source_ms - take) // 2)
+        order = len(segments)
+        effects = clip.effects[:MAX_EFFECTS_PER_SEGMENT]
+        transition, transition_ms = _fit_transition(
+            clip, order=order, own_ms=take, previous=segments[-1] if segments else None
+        )
         segments.append(
             Segment(
                 media_id=media_id,
-                order=len(segments),
+                order=order,
                 source_in_ms=start,
                 source_out_ms=start + take,
-                transition_in=TransitionKind.CUT,
+                transition_in=transition,
+                transition_ms=transition_ms,
+                effects=effects,
             )
         )
 
@@ -416,6 +579,42 @@ def compile_directive(directive: EditDirective, context: CompileContext) -> Edit
     )
 
 
+def _fit_transition(
+    clip: DirectiveClip,
+    *,
+    order: int,
+    own_ms: int,
+    previous: Segment | None,
+) -> tuple[TransitionKind, int]:
+    """Make the model's transition fit the clips it actually joins.
+
+    The directive is advisory about duration and the compiler is where that
+    stops being true. A transition may not exceed half of either side it
+    touches, and a crossfade on the first clip has nothing to fade *from*, so it
+    becomes a fade in from black -- the closest thing the vocabulary has to what
+    was asked for, rather than a validation failure the user cannot act on.
+    """
+    kind = clip.transition or TransitionKind.CUT
+    if kind is TransitionKind.CUT:
+        return TransitionKind.CUT, 0
+
+    if order == 0 and kind.needs_previous:
+        kind = TransitionKind.FADE_IN
+
+    neighbour = previous.output_duration_ms if previous is not None else own_ms
+    ceiling = min(
+        MAX_TRANSITION_MS,
+        int(min(own_ms, neighbour) * MAX_TRANSITION_SHARE),
+    )
+    if ceiling < MIN_TRANSITION_MS:
+        # The clips are too short to carry one. A cut is the honest outcome:
+        # the alternative is a plan the validator rejects on the next line.
+        return TransitionKind.CUT, 0
+
+    wanted = clip.transition_ms if clip.transition_ms is not None else MIN_TRANSITION_MS * 4
+    return kind, max(MIN_TRANSITION_MS, min(wanted, ceiling))
+
+
 def _resolved(clip: DirectiveClip, context: CompileContext) -> MediaId | None:
     """Handle to media id, through the brief's table and nothing else.
 
@@ -440,10 +639,12 @@ def _fit_total_duration(segments: list[Segment]) -> list[Segment]:
     kept: list[Segment] = []
     total = 0
     for segment in segments:
-        if total + segment.duration_ms > MAX_OUTPUT_MS:
+        # Played length, not trim length: a clip at 0.5x occupies twice its
+        # trim, and a budget measured in trims would overrun by the difference.
+        if total + segment.output_duration_ms > MAX_OUTPUT_MS:
             break
         kept.append(segment)
-        total += segment.duration_ms
+        total += segment.output_duration_ms
 
     if not kept:
         # A single segment longer than the whole output budget: keep it, capped.
@@ -456,6 +657,8 @@ def _fit_total_duration(segments: list[Segment]) -> list[Segment]:
                 source_in_ms=first.source_in_ms,
                 source_out_ms=first.source_in_ms + take,
                 transition_in=first.transition_in,
+                transition_ms=first.transition_ms,
+                effects=first.effects,
             )
         ]
         total = take
@@ -471,7 +674,15 @@ def _fit_total_duration(segments: list[Segment]) -> list[Segment]:
             order=index,
             source_in_ms=segment.source_in_ms,
             source_out_ms=segment.source_out_ms,
-            transition_in=segment.transition_in,
+            # Renumbering can make what was the second clip the first, and a
+            # crossfade there would have nothing to fade from.
+            transition_in=(
+                TransitionKind.FADE_IN
+                if index == 0 and segment.transition_in.needs_previous
+                else segment.transition_in
+            ),
+            transition_ms=segment.transition_ms,
+            effects=segment.effects,
         )
         for index, segment in enumerate(kept)
     ]

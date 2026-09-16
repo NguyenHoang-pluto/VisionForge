@@ -35,6 +35,7 @@ from visionforge.api.schemas.edit import (
     EditPlanDetail,
     EditPlanListResponse,
     EditPlanSummary,
+    EffectBoundsResponse,
     ManualPlanCreateRequest,
     MeasurementResponse,
     MusicRequest,
@@ -46,6 +47,10 @@ from visionforge.api.schemas.edit import (
     RenderCreateRequest,
     RenderListResponse,
     RenderResponse,
+    SubtitlePresetResponse,
+    SubtitleSuggestRequest,
+    SubtitleSuggestResponse,
+    SubtitleTrackRequest,
 )
 from visionforge.api.serializers import serialize_edit_plan, serialize_render
 from visionforge.application.edit_service import EditService
@@ -68,10 +73,13 @@ from visionforge.domain.editplan import (
     MAX_OUTPUT_MS,
     MAX_SEGMENT_MS,
     MAX_SEGMENTS,
+    MAX_TRANSITION_MS,
+    MAX_TRANSITION_SHARE,
     MIN_GAIN,
     MIN_MUSIC_MS,
     MIN_OUTPUT_MS,
     MIN_SEGMENT_MS,
+    MIN_TRANSITION_MS,
     AspectRatio,
     AudioMode,
     Cut,
@@ -79,8 +87,10 @@ from visionforge.domain.editplan import (
     MusicCue,
     OutputSpec,
     PlanInvalidError,
+    TransitionKind,
     media_id_from,
 )
+from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, EffectKind
 from visionforge.domain.errors import NotFoundError, ValidationError
 from visionforge.domain.ids import ProjectId
 from visionforge.domain.jobs import JobType
@@ -92,6 +102,14 @@ from visionforge.domain.prompts import PROMPT_VERSION
 from visionforge.domain.reference import Measurement, ReferenceProfile
 from visionforge.domain.render import RenderStatus
 from visionforge.domain.style import FPS_PRESETS, STYLE_PROFILES, QualityPreset, profile_for
+from visionforge.domain.subtitles import (
+    MAX_CUE_CHARS,
+    MAX_CUE_MS,
+    MAX_CUES,
+    MIN_CUE_MS,
+    STYLE_PRESETS,
+    SubtitlePosition,
+)
 from visionforge.infra.db.models import Project
 from visionforge.infra.db.repositories import (
     EditPlanRepository,
@@ -174,6 +192,48 @@ async def planner_capabilities(
             "min_bpm": MIN_BPM,
             "max_bpm": MAX_BPM,
             "min_confidence": MIN_BEAT_CONFIDENCE,
+        },
+        # Phase 9. Every one of these is read from the domain's own tables
+        # rather than retyped, so a kind added there appears here without an
+        # edit and a kind removed there stops being offered.
+        transitions=[
+            {
+                "value": kind.value,
+                "consumes_time": kind.consumes_time,
+                "needs_previous": kind.needs_previous,
+                "min_ms": 0 if kind is TransitionKind.CUT else MIN_TRANSITION_MS,
+                "max_ms": 0 if kind is TransitionKind.CUT else MAX_TRANSITION_MS,
+                "max_share": MAX_TRANSITION_SHARE,
+            }
+            for kind in TransitionKind
+        ],
+        effects=[
+            EffectBoundsResponse(
+                kind=kind.value,
+                minimum=EFFECT_BOUNDS[kind][0],
+                maximum=EFFECT_BOUNDS[kind][1],
+                neutral=EFFECT_BOUNDS[kind][2],
+                whole_segment_only=kind.spans_whole_segment,
+            )
+            for kind in EffectKind
+        ],
+        subtitle_styles=[
+            SubtitlePresetResponse(
+                id=preset.style.value,
+                label=preset.label,
+                font=preset.font,
+                size=preset.size,
+                bold=preset.bold,
+            )
+            for preset in STYLE_PRESETS.values()
+        ],
+        subtitle_positions=[position.value for position in SubtitlePosition],
+        subtitle_bounds={
+            "min_cue_ms": MIN_CUE_MS,
+            "max_cue_ms": MAX_CUE_MS,
+            "max_chars": MAX_CUE_CHARS,
+            "max_cues": MAX_CUES,
+            "max_effects_per_clip": MAX_EFFECTS_PER_SEGMENT,
         },
     )
 
@@ -346,6 +406,69 @@ async def create_manual_edit_plan(
         ) from exc
 
     return serialize_edit_plan(row, include_plan=True)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/{edit_plan_id}/subtitles/suggest",
+    response_model=SubtitleSuggestResponse,
+)
+async def suggest_plan_subtitles(
+    edit_plan_id: UUID,
+    body: SubtitleSuggestRequest,
+    project: Project = Depends(require_project),
+    service: EditService = Depends(get_edit_service),
+    provider: LlmProvider | None = Depends(get_llm_provider),
+) -> SubtitleSuggestResponse:
+    """Ask a model to draft cues for a stored plan.
+
+    Read-only. Nothing here writes a plan, a render or a cue: the suggestion
+    comes back to the editor, and the lines reach the database only if the user
+    submits a plan containing them. A model proposes and a person accepts --
+    the same boundary the planner has had since Phase 5.
+
+    The model is given the compiled timing of *this* plan and the user's own
+    words, and nothing else: no media ids, no filenames, no storage keys, no
+    project identity. What comes back is read as three keys per cue, each
+    bounded, with the text stripped to display characters. It cannot name a
+    font, a colour or a position, because this response has no field for one --
+    the look comes from the plan's recorded style through the server's preset
+    table.
+
+    A failure is a state, not an exception: ``ok: false`` with a named reason.
+    Inventing subtitles for footage nobody transcribed would be worse than an
+    empty panel, so nothing is filled in.
+    """
+    suggestion = await service.suggest_subtitles(
+        project_id=ProjectId(project.id),
+        edit_plan_id=edit_plan_id,
+        provider=provider,
+        request_text=body.request_text,
+        style=body.style,
+        position=body.position,
+    )
+
+    track = suggestion.track
+    return SubtitleSuggestResponse(
+        ok=suggestion.ok,
+        subtitles=(
+            SubtitleTrackRequest(
+                cues=[
+                    {"start_ms": cue.start_ms, "end_ms": cue.end_ms, "text": cue.text}
+                    for cue in track.ordered
+                ],
+                style=track.style,
+                position=track.position,
+            )
+            if track
+            else None
+        ),
+        failure=suggestion.failure.value if suggestion.failure else None,
+        detail=suggestion.detail,
+        provider=suggestion.provider,
+        model=suggestion.model,
+        prompt_version=suggestion.prompt_version,
+        latency_ms=round(suggestion.latency_ms, 1),
+    )
 
 
 @router.get("/projects/{project_id}/edit-plan", response_model=EditPlanListResponse)

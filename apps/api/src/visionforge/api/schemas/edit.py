@@ -283,6 +283,21 @@ class PlannerCapabilities(BaseModel):
     #: toggle that silently does nothing.
     beat_sync: dict[str, Any]
 
+    # ---------------------------------------------------------- Phase 9
+    #: The closed transition vocabulary and its timing bounds. Declared for the
+    #: same reason the segment bounds are: the editor has to grey out a
+    #: transition the clips are too short for while the pointer is moving.
+    transitions: list[dict[str, Any]]
+    #: Every effect kind with its range and neutral value. The editor draws a
+    #: slider per entry; a kind this server does not have is a slider that does
+    #: not appear, rather than one that produces a 422.
+    effects: list[EffectBoundsResponse]
+    #: What each subtitle preset looks like, so the panel can preview it
+    #: honestly instead of guessing at the font it will be rendered in.
+    subtitle_styles: list[SubtitlePresetResponse]
+    subtitle_positions: list[str]
+    subtitle_bounds: dict[str, int]
+
 
 class EditPlanListResponse(BaseModel):
     items: list[EditPlanSummary]
@@ -468,13 +483,51 @@ class SubtitleTrackRequest(BaseModel):
 
 
 class SubtitlePresetResponse(BaseModel):
-    """What a preset looks like, so the editor can preview it honestly."""
+    """What a preset looks like, so the editor can preview it honestly.
+
+    A description of a decision the server has already made, not a set of
+    parameters the client may send back. There is no route that accepts this
+    shape: a client names a preset by id and the table above decides the rest.
+    """
 
     id: str
     label: str
     font: str
     size: int
     bold: bool
+
+
+class SubtitleSuggestRequest(BaseModel):
+    """Ask a model to write cues for a stored plan.
+
+    The plan is named in the path, so the timing the model is shown is the
+    timing that will be rendered. The only free text is the user's own
+    description, capped at the same length the planner accepts.
+    """
+
+    request_text: str | None = Field(default=None, max_length=MAX_REQUEST_CHARS)
+    style: SubtitleStyle | None = None
+    position: SubtitlePosition | None = None
+
+
+class SubtitleSuggestResponse(BaseModel):
+    """Cues, or the reason there are none.
+
+    ``ok`` is false and ``subtitles`` is null whenever the model could not
+    produce usable cues -- there is no third state and nothing is invented to
+    fill the gap. ``failure`` names which of the known failures happened so the
+    panel can say "the provider is not configured" rather than "something went
+    wrong".
+    """
+
+    ok: bool
+    subtitles: SubtitleTrackRequest | None = None
+    failure: str | None = None
+    detail: str = ""
+    provider: str = ""
+    model: str = ""
+    prompt_version: str = ""
+    latency_ms: float = 0.0
 
 
 class EffectBoundsResponse(BaseModel):

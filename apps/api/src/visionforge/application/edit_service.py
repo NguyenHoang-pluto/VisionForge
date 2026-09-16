@@ -32,10 +32,12 @@ from visionforge.domain.editplan import (
     OutputSpec,
     PlanInvalidError,
     plan_from_cuts,
+    plan_from_payload,
     validate_plan,
 )
 from visionforge.domain.errors import ConflictError, NotFoundError, ValidationError
 from visionforge.domain.ids import MediaId, ProjectId
+from visionforge.domain.llm import LlmProvider
 from visionforge.domain.llm_planner import FallbackPlanner, LlmRunRecord
 from visionforge.domain.media import MediaKind, MediaStatus
 from visionforge.domain.planner import (
@@ -46,7 +48,15 @@ from visionforge.domain.planner import (
 )
 from visionforge.domain.reference import without_reference
 from visionforge.domain.selection import Candidate, SelectionResult
-from visionforge.domain.subtitles import SubtitleTrack
+from visionforge.domain.style import EditStyle, subtitle_position_for, subtitle_style_for
+from visionforge.domain.subtitle_ai import (
+    SubtitleSuggestion,
+    SuggestionFailure,
+    shape_of,
+    suggest_subtitles,
+)
+from visionforge.domain.subtitles import SubtitlePosition, SubtitleStyle, SubtitleTrack
+from visionforge.domain.timeline import compile_timeline
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +358,76 @@ class EditService:
         await self._session.commit()
         return row
 
+    # ------------------------------------------------------------- subtitles
+    async def suggest_subtitles(
+        self,
+        *,
+        project_id: ProjectId,
+        edit_plan_id: UUID,
+        provider: LlmProvider | None,
+        request_text: str | None = None,
+        style: SubtitleStyle | None = None,
+        position: SubtitlePosition | None = None,
+        timeout_s: float = 30.0,
+        max_output_tokens: int = 2_000,
+    ) -> SubtitleSuggestion:
+        """Ask a model for cues against a plan that already exists.
+
+        Against a *stored* plan, not a draft, and that is the point: the model
+        is shown the timing the renderer will produce -- compiled through the
+        same ``compile_timeline`` the render uses, so crossfade overlap and
+        speed changes are already in the numbers -- rather than a client's guess
+        at it. A cue written to land on a cut lands on the cut.
+
+        Nothing is written. The suggestion comes back to the editor, the user
+        keeps or edits the lines, and the cues reach the database only when they
+        submit a plan containing them. A model does not get to modify a stored
+        edit, which is the same boundary the planner has: it proposes, the user
+        accepts.
+        """
+        row = await self._plans.get_in_project(edit_plan_id, project_id)
+        if row is None:
+            raise NotFoundError("edit plan not found in this project")
+
+        plan = plan_from_payload(row.plan)
+        timeline = compile_timeline(plan)
+
+        # The look is chosen here, server-side, from the style the plan recorded
+        # -- Phase 8's reference influence reaching subtitles as a *preference*.
+        # The user's explicit choice wins over it; the preset table wins over
+        # both, because neither of them says what "cinematic" means.
+        recorded = row.plan.get("metadata", {}).get("style") if isinstance(row.plan, dict) else None
+        edit_style = _as_edit_style(recorded)
+        chosen_style = style or subtitle_style_for(edit_style)
+        chosen_position = position or subtitle_position_for(plan.output.aspect_ratio.value)
+
+        suggestion = await anyio.to_thread.run_sync(
+            lambda: suggest_subtitles(
+                provider,
+                shape_of(timeline),
+                request_text=request_text,
+                style=edit_style,
+                subtitle_style=chosen_style,
+                position=chosen_position,
+                timeout_s=timeout_s,
+                max_output_tokens=max_output_tokens,
+            )
+        )
+
+        if not suggestion.ok:
+            logger.info(
+                "subtitle suggestion produced nothing",
+                extra={
+                    "edit_plan_id": str(edit_plan_id),
+                    "failure": (
+                        suggestion.failure.value
+                        if suggestion.failure
+                        else SuggestionFailure.UNREADABLE.value
+                    ),
+                },
+            )
+        return suggestion
+
     # ---------------------------------------------------------------- render
     async def create_render(self, *, project_id: ProjectId, edit_plan_id: UUID) -> Any:
         """Create a pending render row for a plan.
@@ -363,6 +443,21 @@ class EditService:
         render = await self._plans.create_render(project_id=project_id, edit_plan_id=edit_plan_id)
         await self._session.commit()
         return render
+
+
+def _as_edit_style(value: Any) -> EditStyle | None:
+    """The style a plan recorded, if it recorded one this server knows.
+
+    Plans are JSONB and outlive the code that wrote them, so an unrecognised
+    value is a plan from another version rather than an error. It becomes
+    ``None``, which means the neutral preset.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return EditStyle(value)
+    except ValueError:
+        return None
 
 
 def _media_facts(project_id: ProjectId, records: Sequence[MediaRecord]) -> dict[MediaId, MediaFact]:

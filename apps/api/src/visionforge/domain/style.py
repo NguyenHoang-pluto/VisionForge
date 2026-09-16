@@ -26,6 +26,7 @@ from enum import StrEnum
 
 from visionforge.domain.editplan import AspectRatio, AudioMode, QualityPreset
 from visionforge.domain.selection import DEFAULT_SELECTION_WEIGHTS, SelectionWeights
+from visionforge.domain.subtitles import SubtitlePosition, SubtitleStyle
 
 
 class EditStyle(StrEnum):
@@ -304,14 +305,61 @@ def infer_style(text: str | None) -> EditStyle | None:
     return None
 
 
+# ------------------------------------------------ style profile -> preset (§7)
+#: Which look suits which edit style.
+#:
+#: This is the whole of the reference-style influence on subtitles, and note
+#: what it maps *to*: a preset id. A cinematic reference makes the editor open
+#: on the cinematic preset; it does not make the reference's own typography,
+#: colours or margins reach the renderer, because there is no path by which a
+#: measurement of somebody else's video could become a font size here. The
+#: preset table above stays the only authority on what a look means.
+#:
+#: A preference, too, not a decision: whatever this returns is the value the UI
+#: starts on, and the user's own choice replaces it.
+STYLE_SUBTITLE_PRESET: dict[EditStyle, SubtitleStyle] = {
+    EditStyle.CINEMATIC: SubtitleStyle.CINEMATIC,
+    EditStyle.FAST_MONTAGE: SubtitleStyle.BOLD,
+    EditStyle.SPORTS_HIGHLIGHT: SubtitleStyle.BOLD,
+    EditStyle.GAMING: SubtitleStyle.BOLD,
+    EditStyle.ANIME: SubtitleStyle.CLEAN,
+    EditStyle.NATURE: SubtitleStyle.MINIMAL,
+    EditStyle.SOCIAL: SubtitleStyle.SOCIAL,
+    EditStyle.CUSTOM: SubtitleStyle.CLEAN,
+}
+
+
+def subtitle_style_for(style: EditStyle | None) -> SubtitleStyle:
+    """The preset an edit style suggests. ``CLEAN`` when nothing was chosen."""
+    if style is None:
+        return SubtitleStyle.CLEAN
+    return STYLE_SUBTITLE_PRESET.get(style, SubtitleStyle.CLEAN)
+
+
+def subtitle_position_for(aspect: str | None) -> SubtitlePosition:
+    """Where the text sits, given the output shape.
+
+    Vertical output is the one case where the default moves: a 9:16 frame is
+    played in an interface that draws its own controls over the bottom of the
+    picture, so the bottom margin that is correct on a 16:9 master puts the
+    line underneath a share button. Every other ratio gets the bottom.
+    """
+    if aspect in {"9:16", "4:5"}:
+        return SubtitlePosition.CENTER
+    return SubtitlePosition.BOTTOM
+
+
 __all__ = [
     "FPS_PRESETS",
     "NEUTRAL_PROFILE",
     "QUALITY_SETTINGS",
     "STYLE_PROFILES",
+    "STYLE_SUBTITLE_PRESET",
     "EditStyle",
     "QualityPreset",
     "StyleProfile",
     "infer_style",
     "profile_for",
+    "subtitle_position_for",
+    "subtitle_style_for",
 ]
