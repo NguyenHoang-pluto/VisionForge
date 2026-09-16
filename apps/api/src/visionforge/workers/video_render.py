@@ -33,6 +33,7 @@ from visionforge.infra.db.models import EditPlanRow, MediaAsset, MediaDerivative
 from visionforge.infra.ffmpeg import probe_media
 from visionforge.infra.ffmpeg.compiler import compile_render_argv
 from visionforge.infra.ffmpeg.runner import FFMPEG, resolve_binary
+from visionforge.infra.ffmpeg.subtitles import build_ass
 from visionforge.infra.storage import S3ObjectStore
 from visionforge.workers.runtime import JobContext
 
@@ -188,8 +189,20 @@ def step_compile(ctx: JobContext) -> None:
     output_path = os.path.join(_workdir(ctx), "output.mp4")
     spec = build_render_spec(timeline, local_paths=ctx.data["local_paths"], output_path=output_path)
 
+    # Subtitles become a document on disk, here rather than in the compiler,
+    # because writing a file is I/O and the compiler is pure -- which is what
+    # lets the whole FFmpeg command be asserted in a test. The path is built
+    # from this render's own scratch directory and a fixed name, so nothing a
+    # client sent reaches the filesystem.
+    ass_path: str | None = None
+    if plan.subtitles is not None and plan.subtitles.cues:
+        ass_path = os.path.join(_workdir(ctx), "subtitles.ass")
+        with open(ass_path, "w", encoding="utf-8") as handle:
+            handle.write(build_ass(plan.subtitles))
+
     ctx.data["timeline"] = timeline
     ctx.data["spec"] = spec
+    ctx.data["ass_path"] = ass_path
     render.timeline = timeline.as_payload()
     render.spec = spec.as_payload()
 
@@ -204,7 +217,7 @@ def step_render(ctx: JobContext) -> None:
     magnitude between a static shot and a handheld pan.
     """
     spec = ctx.data["spec"]
-    args = compile_render_argv(spec)
+    args = compile_render_argv(spec, ass_path=ctx.data.get("ass_path"))
     executable = resolve_binary(FFMPEG)
 
     started = time.perf_counter()

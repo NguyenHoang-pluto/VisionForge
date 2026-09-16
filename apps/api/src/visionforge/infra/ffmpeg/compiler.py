@@ -392,6 +392,15 @@ def _join_with_transitions(spec: RenderSpec, labels: list[str], output_label: st
     Cuts inside a transitioned spec become two-input concats rather than being
     batched, which is exactly equivalent and keeps one code path.
     """
+    # Every join re-states the timebase.
+    #
+    # `concat` emits 1/1000000 whatever its inputs were, while a segment chain
+    # ending in `fps=` emits 1/fps -- and `xfade` refuses two inputs whose
+    # timebases differ. That only bites when a cut precedes a dissolve, which is
+    # why it survived the first round of testing and was caught by the case that
+    # mixes the two.
+    timebase = f"settb=1/{spec.fps}"
+
     parts: list[str] = []
     current = labels[0]
     accumulated = spec.segments[0].duration_ms
@@ -408,11 +417,12 @@ def _join_with_transitions(spec: RenderSpec, labels: list[str], output_label: st
                 f"[{current}][{nxt}]"
                 f"xfade=transition=fade:duration={segment.transition_ms / 1000:g}"
                 f":offset={offset_s:g}"
+                f",{timebase}"
                 f"[{out}]"
             )
             accumulated = accumulated + segment.duration_ms - segment.transition_ms
         else:
-            parts.append(f"[{current}][{nxt}]concat=n=2:v=1:a=0[{out}]")
+            parts.append(f"[{current}][{nxt}]concat=n=2:v=1:a=0,{timebase}[{out}]")
             accumulated += segment.duration_ms
 
         current = out

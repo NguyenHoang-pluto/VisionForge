@@ -403,6 +403,7 @@ class EditPlan:
                 "source_gain": round(self.output.source_gain, 4),
             },
             "music": self.music.as_payload() if self.music else None,
+            "subtitles": self.subtitles.as_payload() if self.subtitles else None,
             "segments": [
                 {
                     "media_id": str(segment.media_id),
@@ -1179,10 +1180,24 @@ def plan_from_payload(payload: dict[str, Any]) -> EditPlan:
             source_gain=float(output.get("source_gain", 1.0)),
         ),
         music=_music_from_payload(payload.get("music")),
+        subtitles=_subtitles_from_payload(payload.get("subtitles")),
         planner=str(payload.get("planner", "unknown")),
         planner_version=str(payload.get("planner_version", "0")),
         metadata=dict(payload.get("metadata", {})),
     )
+
+
+def _subtitles_from_payload(raw: Any) -> SubtitleTrack | None:
+    """Rebuild a subtitle track, or ``None`` for a plan written before Phase 9.
+
+    An unknown style or position raises rather than falling back to a default:
+    a stored plan naming a preset this build does not have is a plan that would
+    render differently from the one that was approved, and silently substituting
+    "clean" for it is the wrong kind of resilience.
+    """
+    if not isinstance(raw, dict):
+        return None
+    return SubtitleTrack.from_payload(raw)
 
 
 def _music_from_payload(raw: Any) -> MusicCue | None:
