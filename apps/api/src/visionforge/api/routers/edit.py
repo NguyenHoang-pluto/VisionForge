@@ -80,7 +80,6 @@ from visionforge.domain.editplan import (
     MIN_OUTPUT_MS,
     MIN_SEGMENT_MS,
     MIN_TRANSITION_MS,
-    AspectRatio,
     AudioMode,
     Cut,
     FitMode,
@@ -101,7 +100,13 @@ from visionforge.domain.policy import StyleStrength, blend
 from visionforge.domain.prompts import PROMPT_VERSION
 from visionforge.domain.reference import Measurement, ReferenceProfile
 from visionforge.domain.render import RenderStatus
-from visionforge.domain.style import FPS_PRESETS, STYLE_PROFILES, QualityPreset, profile_for
+from visionforge.domain.style import (
+    FPS_PRESETS,
+    PRESET_DIMENSIONS,
+    STYLE_PROFILES,
+    QualityPreset,
+    profile_for,
+)
 from visionforge.domain.subtitles import (
     MAX_CUE_CHARS,
     MAX_CUE_MS,
@@ -122,16 +127,6 @@ from visionforge.infra.llm import describe_capabilities
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["edit"])
-
-#: Output geometry per aspect ratio. A closed map rather than free width/height:
-#: the caller picks a shape, the server picks dimensions that are even (required
-#: by H.264 4:2:0) and sane for this hardware. Arbitrary geometry from a client
-#: is exactly what the plan validator would then have to defend against.
-PRESET_DIMENSIONS: dict[AspectRatio, tuple[int, int]] = {
-    AspectRatio.LANDSCAPE_16_9: (1280, 720),
-    AspectRatio.PORTRAIT_9_16: (720, 1280),
-    AspectRatio.SQUARE_1_1: (720, 720),
-}
 
 
 @router.get("/planner/capabilities", response_model=PlannerCapabilities)

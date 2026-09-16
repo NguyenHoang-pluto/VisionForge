@@ -63,6 +63,21 @@ QUALITY_SETTINGS: dict[QualityPreset, tuple[int, str]] = {
 #: from a dropdown.
 FPS_PRESETS: tuple[int, ...] = (24, 30, 60)
 
+#: Output geometry per aspect ratio. A closed map rather than free width/height:
+#: the caller picks a shape, the server picks dimensions that are even (required
+#: by H.264 4:2:0) and sane for this hardware. Arbitrary geometry from a client
+#: is exactly what the plan validator would then have to defend against.
+#:
+#: In the domain rather than in the route that first needed it, because Phase 10
+#: gave it a second caller: a ``CHANGE_OUTPUT_PRESET`` operation names a shape
+#: and the patcher has to resolve it to pixels. Two copies of a table whose
+#: whole purpose is that clients cannot choose geometry is one copy too many.
+PRESET_DIMENSIONS: dict[AspectRatio, tuple[int, int]] = {
+    AspectRatio.LANDSCAPE_16_9: (1280, 720),
+    AspectRatio.PORTRAIT_9_16: (720, 1280),
+    AspectRatio.SQUARE_1_1: (720, 720),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class StyleProfile:
@@ -352,6 +367,7 @@ def subtitle_position_for(aspect: str | None) -> SubtitlePosition:
 __all__ = [
     "FPS_PRESETS",
     "NEUTRAL_PROFILE",
+    "PRESET_DIMENSIONS",
     "QUALITY_SETTINGS",
     "STYLE_PROFILES",
     "STYLE_SUBTITLE_PRESET",
