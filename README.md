@@ -7,14 +7,15 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 7 — music, beat synchronisation and the audio mix.**
-> A media browser, a preview viewer that plays the timeline, a timeline you can
-> trim, reorder, split and delete on, an inspector, and an export panel. The
-> automatic edit is now one tab inside the editor rather than the whole
-> application. A hand-cut timeline is stored through the same validator and
-> rendered by the same worker as a planned one — the backend stays
-> authoritative, and the browser never gains a rendering model of its own.
-> See [Roadmap](#roadmap).
+> **Current phase: Phase 9 — subtitles, transitions and core visual effects.**
+> Clips can now be joined with a crossfade or a fade instead of only a cut,
+> carry a speed change, a zoom or a colour adjustment, and be subtitled in a
+> closed set of server-decided styles. A crossfade genuinely shortens the
+> programme, and the plan, the timeline, the render spec and the editor all
+> compute that the same way. The renderer is still the only component that
+> knows FFmpeg syntax, and subtitle text never reaches a filter expression.
+> See [Roadmap](#roadmap) and
+> [ADR-0013](docs/adr/0013-transitions-effects-subtitles.md).
 
 ---
 
@@ -1046,6 +1047,54 @@ exposes no sample data and drawing one would be fiction), per-clip colour or
 transform controls, and anything belonging to Phase 8.
 
 ---
+
+**Phase 9 — subtitles, transitions and core visual effects.**
+
+- [x] **`TransitionKind`** grew from one member to four: cut, crossfade, fade in,
+      fade to black. `consumes_time` is a property of the kind, so a fifth member
+      cannot silently default to "free" and make a plan's duration a lie
+- [x] **Crossfades shorten the programme**, and the plan, the compiled timeline,
+      the render spec and the editor all subtract the same overlap. A test pins
+      the three server numbers equal; `place` makes the browser agree
+- [x] Transitions bounded at 80–4000 ms and never more than half of either clip
+      they join; a crossfade on the first clip is refused, because there is
+      nothing to fade from
+- [x] **`Effect`** — a kind from a closed enum of seven and one bounded number.
+      No parameter dictionary, because a free-form bag on a renderer instruction
+      is a hole in the shape of an arbitrary filter argument
+- [x] Zoom is `crop` + `scale`, not `zoompan`, which regenerates timestamps and
+      turned a 4 s clip into a 1,024,000 ms one. Found by rendering, not reading
+- [x] Speed via `setpts` and chained `atempo`, and `output_duration_ms` is
+      speed-aware everywhere the programme is measured
+- [x] **Subtitles are an ASS document**, not `drawtext`. The text lives in a data
+      file libass parses as text; the only thing on the command line is a
+      filename the server generated. `drawtext` would put user text inside a
+      filter string where `:`, `\`, `'` and `%` are syntax
+- [x] **Style is a preset id, never a parameter** — five looks, five positions,
+      and no font, size, colour, outline, margin or coordinate accepted from a
+      client. Sizes are given at 1080 lines and scaled to the real output height
+- [x] Cues in output coordinates, 400 ms–10 s, 120 characters, 300 per plan,
+      ordered and non-overlapping; text stripped to display characters
+- [x] The planner's directive gained `transition` and `effects`. An invented
+      kind is a violation carrying the real vocabulary; a number is clamped
+- [x] **AI subtitles against a stored plan** — the model is told how long the
+      edit is and where the cuts fall, and nothing else. A failure is a named
+      state with no cues, never invented subtitle text. The route writes nothing
+- [x] Reference style suggests a subtitle preset by id; the server's preset table
+      still decides what that id means
+- [x] The editor: transition and effect sections under the selected clip, a Text
+      tab, crossfades drawn as the overlap they are, speed and effect badges, an
+      effect-range bar, and a fourth lane for cues. 93 new message keys in
+      English and Vietnamese (619, exact parity)
+- [x] `/planner/capabilities` declares every transition, effect bound, preset and
+      cue bound, asserted equal to the domain's own tables
+- [x] 1018 unit tests and 190 integration tests, including real-FFmpeg renders
+      that decode fully and a subtitle burn proven visible by frame comparison
+
+Deliberately **not** in Phase 9: wipes, irises and other transitions that are
+each a filter plus a timing rule; a keyframe editor; shaders, particles, 3D,
+motion tracking or lip sync; per-cue styling; overlapping cues; arbitrary pixel
+positions; and any path by which a client could name a font file.
 
 **Phase 8 — reference video style intelligence.**
 

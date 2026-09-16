@@ -165,9 +165,12 @@ class TestCuePrompt:
             def __init__(self, start: int) -> None:
                 self.timeline_start_ms = start
 
+        class FakeTrack:
+            clips = (FakeClip(0), FakeClip(3_000), FakeClip(6_500))
+
         class FakeTimeline:
             duration_ms = 9_500
-            clips = (FakeClip(0), FakeClip(3_000), FakeClip(6_500))
+            video_track = FakeTrack()
 
         shape = shape_of(FakeTimeline())
 

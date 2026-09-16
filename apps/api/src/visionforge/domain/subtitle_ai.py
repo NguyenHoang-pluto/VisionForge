@@ -167,9 +167,14 @@ def shape_of(timeline: Any) -> TimelineShape:
     """Read a compiled ``Timeline`` down to its shape.
 
     Typed loosely on purpose: this module has no reason to import the timeline
-    module, and the two attributes it reads are the timeline's most stable.
+    module, and the three attributes it reads are the timeline's most stable.
+
+    The cut offsets come off the *compiled* clips, so crossfade overlap and
+    speed changes are already in them -- a cue written to land on a cut lands on
+    the cut that will be rendered, not on where a butt-joined sum would have put
+    it.
     """
-    clips = list(timeline.clips)
+    clips = list(timeline.video_track.clips)
     return TimelineShape(
         total_ms=int(timeline.duration_ms),
         cuts=tuple(int(clip.timeline_start_ms) for clip in clips[1:]),

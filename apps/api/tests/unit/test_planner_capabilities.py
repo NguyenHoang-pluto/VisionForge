@@ -21,10 +21,23 @@ from visionforge.domain.editplan import (
     MAX_OUTPUT_MS,
     MAX_SEGMENT_MS,
     MAX_SEGMENTS,
+    MAX_TRANSITION_MS,
+    MAX_TRANSITION_SHARE,
     MIN_OUTPUT_MS,
     MIN_SEGMENT_MS,
+    MIN_TRANSITION_MS,
+    TransitionKind,
 )
+from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, EffectKind
 from visionforge.domain.style import FPS_PRESETS
+from visionforge.domain.subtitles import (
+    MAX_CUE_CHARS,
+    MAX_CUE_MS,
+    MAX_CUES,
+    MIN_CUE_MS,
+    SubtitlePosition,
+    SubtitleStyle,
+)
 
 
 @pytest.fixture
@@ -102,3 +115,89 @@ class TestPlannerCapabilities:
 
         for forbidden in ("api_key", "apikey", "secret", "token", "authorization", "sk-"):
             assert forbidden not in body
+
+
+class TestPhase9Vocabulary:
+    """The transitions, effects and subtitle presets the editor draws from.
+
+    Same argument as ``segment_bounds``: the inspector greys out a transition
+    the clips are too short for and clamps a slider while the pointer is
+    moving, so it needs these numbers client-side. Asserting them against the
+    domain's own tables is what stops the browser's copy from drifting.
+    """
+
+    def test_every_transition_the_domain_has_is_declared(self, capabilities: dict) -> None:
+        declared = {item["value"] for item in capabilities["transitions"]}
+
+        assert declared == {kind.value for kind in TransitionKind}
+
+    def test_each_transition_says_whether_it_costs_time(self, capabilities: dict) -> None:
+        """The single question the editor's arithmetic asks."""
+        by_value = {item["value"]: item for item in capabilities["transitions"]}
+
+        assert by_value["crossfade"]["consumes_time"] is True
+        assert by_value["crossfade"]["needs_previous"] is True
+        assert by_value["cut"]["consumes_time"] is False
+        assert by_value["fade_in"]["consumes_time"] is False
+
+    def test_transition_bounds_match_the_validator(self, capabilities: dict) -> None:
+        for item in capabilities["transitions"]:
+            if item["value"] == "cut":
+                assert item["min_ms"] == 0 and item["max_ms"] == 0
+            else:
+                assert item["min_ms"] == MIN_TRANSITION_MS
+                assert item["max_ms"] == MAX_TRANSITION_MS
+            assert item["max_share"] == MAX_TRANSITION_SHARE
+
+    def test_every_effect_kind_is_declared_with_its_range(self, capabilities: dict) -> None:
+        declared = {item["kind"]: item for item in capabilities["effects"]}
+
+        assert set(declared) == {kind.value for kind in EffectKind}
+        for kind in EffectKind:
+            low, high, neutral = EFFECT_BOUNDS[kind]
+            item = declared[kind.value]
+            assert item["minimum"] == low
+            assert item["maximum"] == high
+            assert item["neutral"] == neutral
+            assert item["whole_segment_only"] is kind.spans_whole_segment
+
+    def test_the_neutral_value_of_every_effect_is_inside_its_range(
+        self, capabilities: dict
+    ) -> None:
+        """A slider whose off position is outside its track cannot be turned off."""
+        for item in capabilities["effects"]:
+            assert item["minimum"] <= item["neutral"] <= item["maximum"]
+
+    def test_every_subtitle_preset_is_described(self, capabilities: dict) -> None:
+        declared = {item["id"] for item in capabilities["subtitle_styles"]}
+
+        assert declared == {style.value for style in SubtitleStyle}
+        for item in capabilities["subtitle_styles"]:
+            assert item["label"]
+            assert item["font"]
+            assert item["size"] > 0
+
+    def test_a_preset_declares_a_font_family_and_never_a_path(self, capabilities: dict) -> None:
+        """The client is told which family the server chose, not where it lives.
+
+        A path here would be a path the client could send back, and the whole
+        design of the preset table is that it cannot.
+        """
+        for item in capabilities["subtitle_styles"]:
+            assert "/" not in item["font"]
+            assert "\\" not in item["font"]
+            assert "." not in item["font"]
+
+    def test_every_position_is_a_name_not_a_coordinate(self, capabilities: dict) -> None:
+        assert set(capabilities["subtitle_positions"]) == {
+            position.value for position in SubtitlePosition
+        }
+
+    def test_subtitle_bounds_match_the_validator(self, capabilities: dict) -> None:
+        assert capabilities["subtitle_bounds"] == {
+            "min_cue_ms": MIN_CUE_MS,
+            "max_cue_ms": MAX_CUE_MS,
+            "max_chars": MAX_CUE_CHARS,
+            "max_cues": MAX_CUES,
+            "max_effects_per_clip": MAX_EFFECTS_PER_SEGMENT,
+        }
