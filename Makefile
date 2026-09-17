@@ -8,7 +8,7 @@ WEB_DIR := apps/web
 .PHONY: help setup infra-up infra-down infra-reset infra-status migrate \
         api web worker-cpu worker-gpu worker-render \
         e2e e2e-analysis e2e-edit e2e-llm e2e-editor e2e-music \
-        e2e-style e2e-effects e2e-coedit \
+        e2e-style e2e-effects e2e-coedit e2e-editorial \
         test test-integration lint format typecheck \
         contracts web-lint web-build compose-check check
 
@@ -16,7 +16,7 @@ help:
 	@echo "setup infra-up infra-down infra-reset infra-status migrate"
 	@echo "api web worker-cpu worker-gpu worker-render"
 	@echo "e2e e2e-analysis e2e-edit e2e-llm e2e-editor e2e-music"
-	@echo "e2e-style e2e-effects e2e-coedit"
+	@echo "e2e-style e2e-effects e2e-coedit e2e-editorial"
 	@echo "check test test-integration lint format typecheck contracts"
 	@echo "web-lint web-build compose-check"
 
@@ -103,6 +103,13 @@ e2e-effects:    # Phase 9: same stack as e2e-edit
 # run it a second time with LLM_ENABLED=true to exercise the model path too.
 e2e-coedit:     # Phase 10: same stack as e2e-edit
 	$(PYTHON) scripts/e2e_coedit.py
+
+# Phase 11: the creative auto-editing engine -- twelve clips analysed, given
+# events and roles, selected, paced and cut under a genre policy, then rendered.
+# Three scenarios; run them one at a time on a small machine, because each one
+# analyses a library and encodes an MP4.
+e2e-editorial:  # Phase 11: same stack as e2e-analysis plus a render worker
+	$(PYTHON) scripts/e2e_editorial.py
 
 test:
 	cd $(API_DIR) && $(PYTHON) -m pytest -m "not integration and not gpu"

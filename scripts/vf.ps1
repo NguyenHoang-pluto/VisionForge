@@ -13,10 +13,17 @@ param(
     [ValidateSet('setup', 'infra-up', 'infra-down', 'infra-reset', 'infra-status',
                  'migrate', 'api', 'web', 'worker-cpu', 'worker-gpu', 'worker-render',
                  'e2e', 'e2e-analysis', 'e2e-edit', 'e2e-llm', 'e2e-editor', 'e2e-music',
-                 'e2e-style', 'e2e-effects', 'e2e-coedit',
+                 'e2e-style', 'e2e-effects', 'e2e-coedit', 'e2e-editorial',
                  'test', 'test-integration', 'lint', 'format', 'typecheck',
                  'contracts', 'web-lint', 'web-build', 'compose-check', 'check', 'help')]
-    [string]$Command = 'help'
+    [string]$Command = 'help',
+
+    # Anything after the command, handed to the script it runs. Only the
+    # acceptance scripts take arguments, and only to narrow what they do --
+    # `e2e-editorial football` runs one scenario instead of three, which is how
+    # a machine with 7.4 GB gets through them.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Rest = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -140,6 +147,16 @@ switch ($Command) {
         # with LLM_ENABLED=true to exercise the model path as well.
         & $Python (Join-Path $Root 'scripts\e2e_coedit.py')
     }
+
+    'e2e-editorial' {
+        # Phase 11. The creative auto-editing engine: twelve clips analysed,
+        # given editorial events and story roles, selected for quality and
+        # diversity, paced on an energy curve, cut under a genre policy and
+        # rendered. Three scenarios -- football, nature, gaming -- and on a
+        # small machine they are meant to be run one at a time:
+        #     .\scriptsf.ps1 e2e-editorial football
+        & $Python (Join-Path $Root 'scripts\e2e_editorial.py') @Rest
+    }
     'test'             { Invoke-Api { & $Python -m pytest -m 'not integration and not gpu' } }
     'test-integration' { Invoke-Api { & $Python -m pytest -m integration } }
     'lint' {
@@ -197,6 +214,7 @@ switch ($Command) {
         Write-Host "    e2e-style          Phase 8 acceptance test (reference style -> plan)"
         Write-Host "    e2e-effects        Phase 9 acceptance test (transitions, effects, subtitles)"
         Write-Host "    e2e-coedit         Phase 10 acceptance test (AI co-editor, versions, undo)"
+        Write-Host "    e2e-editorial      Phase 11 acceptance test (editorial engine -> render)"
         Write-Host ""
         Write-Host "  Quality"
         Write-Host "    check              Run everything CI runs"

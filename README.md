@@ -7,15 +7,16 @@ selects the strongest assets, infers a theme, recommends a template and a
 soundtrack, builds a timeline, renders a video, evaluates the result, and lets
 you take over manually at any point.
 
-> **Current phase: Phase 10 — the AI co-editor.**
-> AI is no longer a one-shot generator. An edit that already exists can be
-> changed by asking — "lower the music to 40%", "remove the third clip and use
-> bold subtitles" — and the change arrives as a validated `EditDelta` over a
-> closed vocabulary of sixteen operations, applied deterministically and
-> all-or-nothing to the current plan. Every change is a version, undo restores
-> the previous plan byte for byte, and most requests never reach a model at all.
+> **Current phase: Phase 11 — the editorial decision engine.**
+> Automatic editing stopped being "select N clips and concatenate them". Media
+> now becomes an edit through five stages — signals and editorial events, a
+> story arc, creative selection, a pacing curve, and typed editorial decisions
+> — before it reaches the unchanged `EditPlan`. Shot lengths come from an
+> energy curve rather than from division; ten genre policies and three variants
+> cut the same footage materially differently; and every clip kept or rejected
+> says why in structured reasons. A model sets direction and never names a clip.
 > See [Roadmap](#roadmap) and
-> [ADR-0014](docs/adr/0014-ai-co-editor.md).
+> [ADR-0015](docs/adr/0015-editorial-decision-engine.md).
 
 ---
 
@@ -907,6 +908,7 @@ VisionForge/
 ├─ scripts/e2e_style.py         Phase 8 acceptance test (reference style)
 ├─ scripts/e2e_effects.py       Phase 9 acceptance test (transitions, subtitles)
 ├─ scripts/e2e_coedit.py        Phase 10 acceptance test (AI co-editor)
+├─ scripts/e2e_editorial.py     Phase 11 acceptance test (editorial engine)
 ├─ .github/workflows/ci.yml
 ├─ docker-compose.yml           postgres · redis · minio
 ├─ Makefile                     same targets for Linux/WSL/CI
@@ -1054,6 +1056,91 @@ exposes no sample data and drawing one would be fiction), per-clip colour or
 transform controls, and anything belonging to Phase 8.
 
 ---
+
+**Phase 11 — the editorial decision engine.**
+
+- [x] **Five stages between media and `EditPlan`**, each a pure function with its
+      own version: derived signals → editorial events → story roles → creative
+      selection → a pacing curve → typed decisions. Nothing downstream changed;
+      the plan, the timeline, the compiler and the renderer are Phase 4's and
+      Phase 9's, which is what makes the claim "the edit is different" checkable
+      rather than a matter of taste
+- [x] **Signals are derived, never re-measured.** Quality, visual energy, motion,
+      face presence, semantic similarity, duplicate distance, beat relation and
+      reference-style match all come from analyses Phase 3 and Phase 8 already
+      wrote. No new model, no second pass over the footage, nothing new on the
+      4 GB card
+- [x] **A closed, versioned editorial event vocabulary** of twelve members plus
+      `UNKNOWN` — establishing, close-up, subject entry and exit, action, peak
+      motion, impact, reaction, celebration, dialogue, transition moment, ending.
+      Every event carries a confidence, a clip carries at most three, and
+      `UNKNOWN` is an answer rather than a failure: an unknown clip is still
+      selectable, it simply argues for no particular place in the edit
+- [x] **Selection is creative, and diversity can outvote quality.** Six weighted
+      terms — quality, relevance, diversity, role fit, energy fit, style match —
+      with a per-policy diversity floor, so the second-best angle on a goal loses
+      to a merely-good shot of something else. Near-duplicates are *rejected with
+      a reason*, not quietly ranked down
+- [x] **CLIP embeddings tell "two angles on one goal" from "two different
+      shots"** — a question pHash cannot answer, because those two frames are not
+      similar in any pixel sense. The vector is lifted out of the typed pgvector
+      column the GPU lane already fills
+- [x] **A story arc, not an ordering:** hook, setup, build, peak, reaction,
+      ending. Three arc shapes (event, observational, showcase) and the policy
+      picks one. Where the arc departs from shoot order the plan says so, rather
+      than presenting a reorder as chronology
+- [x] **Pacing is an explicit energy curve** — ramp, build, wave, steady, decay —
+      turned into per-shot lengths by shape, scale, emphasis, clamp-and-
+      redistribute, then beat quantisation. An even split is what this replaces,
+      and a plan whose durations are all equal is a bug the tests catch
+- [x] **Ten genre policies** — football, gaming, anime, cinematic travel, nature,
+      vlog, social, product, fashion, automotive, plus neutral. A policy is a
+      table of numbers and weights, so a new genre is data, not a code path
+- [x] **`EditorialDecisionEngine` emits eleven typed decision kinds** — keep,
+      reject, trim, reorder, emphasize, slow, speed up, place on beat,
+      transition, add effect, add subtitle. Planning data with bounded numbers;
+      there is no field in any of them that could hold a path, a storage key, a
+      filter expression or an FFmpeg argument
+- [x] **The model sets direction; the engine chooses the clips.** An LLM answers
+      with a validated `EditorialIntent` — a policy name, an energy, an emphasis,
+      a pacing shape — and never a media id. The prompt contains no per-clip row
+      and no identifier at all, so there is nothing for a model to point at.
+      One repair attempt, then the deterministic engine
+- [x] **Explainable, not confessional.** Every kept clip carries a role and a
+      short list of structured reason codes (`high_motion`, `unique_content`,
+      `peak_moment`, …), and every rejected clip carries why. Concise structured
+      reasons only — no hidden chain-of-thought is stored or exposed
+- [x] **Three variants that are not shuffles.** High Energy, Cinematic and Social
+      Fast Cut are policy modifiers, so they differ in shot count, shot length,
+      selection, emphasis and treatment. Previewed four at a time through a route
+      that **stores nothing** — affordable because the engine is deterministic,
+      so picking one reproduces exactly what was shown
+- [x] **Eight editorial metrics** with declared directions, so a client can
+      render them without knowing which way is good
+- [x] **Deterministic without a provider.** No key configured means the editorial
+      engine runs alone and produces the same edit every time. A model failure
+      degrades to it rather than to a failed request
+- [x] **Both generations stay reachable.** `engine: "rules"` selects Phase 4's
+      even split with Phase 5's directive planner in front of it, which is how
+      "the new engine is not the old one carrying extra metadata" is a test
+      rather than an assertion: on the same footage the rules engine returns one
+      distinct duration and the editorial engine returns several
+- [x] The editor: an Auto Edit workflow over the existing inspector — editorial
+      plan preview, roles, pacing, selection reasons, variants, regenerate,
+      accept, render. No new tab, no redesign
+- [x] 1371 unit tests and 243 integration tests; `scripts/e2e_editorial.py`
+      drives football, nature and gaming libraries through analysis, events,
+      story, selection, pacing, decisions, effects and render to an MP4 verified
+      with `ffprobe` and a full decode — and then compares the three, which must
+      differ in shot count, shot length and pacing shape. They do: 5 shots at a
+      4.0 s mean on a ramp, 3 at 6.7 s on a wave, 6 at 3.3 s on a build
+
+Deliberately **not** in Phase 11: any new model or weights (the machine has
+7.4 GB of RAM and a 4 GB card, and every signal is derived from analyses that
+already exist); audio understanding beyond beats, so `dialogue` is inferred from
+framing and channel count and is the weakest claim in the vocabulary; per-shot
+colour grading; and learning from what the user accepts, which needs a feedback
+store that does not exist yet.
 
 **Phase 10 — the AI co-editor.**
 
