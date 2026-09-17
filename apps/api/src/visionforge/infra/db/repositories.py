@@ -211,10 +211,18 @@ class MediaRepository:
             .order_by(MediaAnalysis.analyzer_version)
         )
         by_media: dict[UUID, dict[AnalyzerName, dict[str, Any]]] = {}
+        embeddings: dict[UUID, tuple[float, ...]] = {}
         for row in analysis_result.scalars().all():
             # Ordered by version ascending, so the last write wins and each
             # analyzer ends up represented by its newest result.
             by_media.setdefault(row.media_id, {})[AnalyzerName(row.analyzer)] = row.payload
+            # The CLIP vector lives in a typed pgvector column rather than in
+            # the JSON payload, so it is lifted out here. Phase 11's editorial
+            # layer needs it to tell "two angles on one goal" from "two
+            # different shots" -- a question pHash cannot answer, because those
+            # two frames are not similar in any pixel sense.
+            if row.embedding is not None:
+                embeddings[row.media_id] = tuple(float(value) for value in row.embedding)
 
         return [
             MediaRecord(
@@ -230,6 +238,7 @@ class MediaRepository:
                 # audio" -- no second probe, no analyzer needed.
                 channels=row.channels,
                 analysis=by_media.get(row.id, {}),
+                embedding=embeddings.get(row.id),
             )
             for index, row in enumerate(media_rows)
         ]

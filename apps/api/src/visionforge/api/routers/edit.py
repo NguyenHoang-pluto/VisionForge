@@ -14,6 +14,7 @@ import logging
 from typing import Annotated, Any
 from uuid import UUID
 
+import anyio.to_thread
 from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +38,9 @@ from visionforge.api.schemas.edit import (
     CoEditApplyResponse,
     CoEditPreviewResponse,
     CoEditRequest,
+    EditorialVariantResponse,
+    EditorialVariantsRequest,
+    EditorialVariantsResponse,
     EditPlanDetail,
     EditPlanListResponse,
     EditPlanSummary,
@@ -62,7 +66,7 @@ from visionforge.api.schemas.edit import (
 )
 from visionforge.api.serializers import serialize_edit_plan, serialize_render
 from visionforge.application.coedit_service import CoEditRejected, CoEditService
-from visionforge.application.edit_service import EditService
+from visionforge.application.edit_service import EditService, build_candidate
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import DOWNLOAD_URL_TTL_S, MediaService
 from visionforge.application.reference_service import PROFILE_ANALYZERS, ReferenceService
@@ -75,8 +79,15 @@ from visionforge.domain.beats import (
     grid_from_payload,
 )
 from visionforge.domain.coeditor import COEDIT_PROMPT_VERSION
+from visionforge.domain.decisions import DECISION_ENGINE_VERSION, ReasonCode
 from visionforge.domain.editbrief import MAX_REQUEST_CHARS
 from visionforge.domain.editdelta import vocabulary as delta_vocabulary
+from visionforge.domain.editorial import (
+    EVENT_VOCABULARY_VERSION,
+    SIGNAL_VERSION,
+    EditorialEvent,
+)
+from visionforge.domain.editorial_planner import EditorialPlanner
 from visionforge.domain.editplan import (
     MAX_FADE_MS,
     MAX_GAIN,
@@ -101,17 +112,24 @@ from visionforge.domain.editplan import (
     media_id_from,
 )
 from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, EffectKind
-from visionforge.domain.errors import NotFoundError, ValidationError
+from visionforge.domain.errors import ConflictError, NotFoundError, ValidationError
 from visionforge.domain.ids import ProjectId
 from visionforge.domain.jobs import JobType
 from visionforge.domain.llm import LlmProvider
 from visionforge.domain.llm_planner import PlannerMode
+from visionforge.domain.metrics import METRIC_DIRECTIONS
+from visionforge.domain.pacing import PACING_CURVES, PacingShape
 from visionforge.domain.patch import PlanDiff
-from visionforge.domain.planner import ClipOrder, PlanRequest
+from visionforge.domain.planner import ClipOrder, NoUsableMediaError, PlanRequest
 from visionforge.domain.policy import StyleStrength, blend
 from visionforge.domain.prompts import PROMPT_VERSION
-from visionforge.domain.reference import Measurement, ReferenceProfile
+from visionforge.domain.reference import Measurement, ReferenceProfile, without_reference
 from visionforge.domain.render import RenderStatus
+from visionforge.domain.story import (
+    EDITORIAL_POLICIES,
+    POLICY_VERSION,
+    StoryRole,
+)
 from visionforge.domain.style import (
     FPS_PRESETS,
     PRESET_DIMENSIONS,
@@ -127,6 +145,7 @@ from visionforge.domain.subtitles import (
     STYLE_PRESETS,
     SubtitlePosition,
 )
+from visionforge.domain.variants import VARIANTS, VariantId, describe_variants
 from visionforge.domain.versions import (
     VersionNode,
     VersionSummary,
@@ -254,6 +273,27 @@ async def planner_capabilities(
             "max_cues": MAX_CUES,
             "max_effects_per_clip": MAX_EFFECTS_PER_SEGMENT,
         },
+        # Phase 11. Every list below is read from the domain's own tables rather
+        # than retyped here, so the editor offers exactly the policies, variants,
+        # roles and curves this build has -- and one removed from a table stops
+        # being offered instead of becoming a 422.
+        editorial_policies=[policy.as_payload() for policy in EDITORIAL_POLICIES.values()],
+        variants=describe_variants(),
+        story_roles=[role.value for role in StoryRole],
+        pacing_shapes=[
+            {"value": shape.value, "points": [round(point, 3) for point in PACING_CURVES[shape]]}
+            for shape in PacingShape
+        ],
+        editorial_events=[event.value for event in EditorialEvent],
+        editorial_reasons=[reason.value for reason in ReasonCode],
+        editorial_metrics=[
+            {"name": name, "direction": direction.value}
+            for name, direction in METRIC_DIRECTIONS.items()
+        ],
+        editorial_version=(
+            f"{DECISION_ENGINE_VERSION}.{SIGNAL_VERSION}."
+            f"{EVENT_VOCABULARY_VERSION}.{POLICY_VERSION}"
+        ),
     )
 
 
@@ -334,10 +374,15 @@ async def create_edit_plan(
         music_gain=body.music.volume if body.music else 0.7,
         music_fade_in_ms=body.music.fade_in_ms if body.music else 0,
         music_fade_out_ms=body.music.fade_out_ms if body.music else 1_500,
+        editorial_policy=body.editorial_policy,
+        variant=body.variant,
     )
 
     service, _selection = factory.for_request(
-        mode=body.mode, style=body.style, request_text=body.request_text
+        mode=body.mode,
+        style=body.style,
+        request_text=body.request_text,
+        engine=body.engine,
     )
 
     try:
@@ -356,6 +401,129 @@ async def create_edit_plan(
         ) from exc
 
     return serialize_edit_plan(row, include_plan=True)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/variants",
+    response_model=EditorialVariantsResponse,
+)
+async def preview_edit_variants(
+    body: EditorialVariantsRequest,
+    project: Project = Depends(require_project),
+    repo: MediaRepository = Depends(get_media_repo),
+    projects: ProjectRepository = Depends(get_project_repo),
+) -> EditorialVariantsResponse:
+    """Four editorial plans over the same footage, previewed and not stored.
+
+    The base edit and each named variant, each one a complete editorial decision
+    -- roles, pacing, trims, treatment, reasons and metrics -- so the user can
+    compare alternatives before anything is written.
+
+    **Nothing is persisted.** No plan row, no version, no event. That is
+    affordable because the engine is deterministic: whichever variant the user
+    picks, asking for it through the ordinary plan route reproduces exactly what
+    was previewed, byte for byte. Storing three plans per click would put two
+    versions in everyone's history that nobody ever looks at again.
+
+    No model is involved either, whatever the mode. A variant is a modification
+    of a policy table, and asking a model four times to produce four
+    deliberately-different edits would be slower, costlier, and less different.
+    """
+    profile = profile_for(body.style)
+    reference = ReferenceService(projects, repo)
+    reference_profile = await reference.profile_for_project(project)
+    policy = blend(profile, reference_profile, body.style_strength)
+
+    aspect = body.aspect_ratio or profile.default_aspect
+    width, height = PRESET_DIMENSIONS[aspect]
+
+    music_duration_ms, beats = (
+        await _music_facts(repo, ProjectId(project.id), body.music.media_id)
+        if body.music is not None
+        else (None, None)
+    )
+
+    records = await repo.records_with_analysis(ProjectId(project.id))
+    if not records:
+        raise ValidationError(
+            "project has no analysed media",
+            hint="Upload media and run analysis before previewing variants.",
+        )
+    candidates = without_reference(
+        [build_candidate(record) for record in records],
+        ReferenceService.reference_id(project),
+    )
+
+    def build(variant: VariantId | None) -> PlanRequest:
+        return PlanRequest(
+            project_id=ProjectId(project.id),
+            target_duration_ms=body.target_duration_ms or profile.default_duration_ms,
+            max_clips=body.max_clips,
+            min_clips=body.min_clips,
+            aspect_ratio=aspect,
+            width=width,
+            height=height,
+            fps=body.fps,
+            fit=body.fit,
+            audio=body.audio or profile.default_audio,
+            quality=body.quality,
+            style=body.style,
+            request_text=body.request_text,
+            style_policy=policy,
+            reference_media_id=ReferenceService.reference_id(project),
+            music_media_id=media_id_from(body.music.media_id) if body.music else None,
+            music_duration_ms=music_duration_ms,
+            beats=beats,
+            beat_sync=body.beat_sync,
+            editorial_policy=body.editorial_policy,
+            variant=variant,
+        )
+
+    planner = EditorialPlanner()
+
+    def compose_all() -> list[EditorialVariantResponse]:
+        """Every variant, on a worker thread.
+
+        Four compositions of a forty-clip project is a few hundred milliseconds
+        of pure arithmetic -- small, but not small enough to run on the event
+        loop while other requests wait behind it.
+        """
+        items: list[EditorialVariantResponse] = []
+        wanted: list[VariantId | None] = [None, *VARIANTS]
+        for variant in wanted:
+            try:
+                outcome, _selection = planner.compose(build(variant), list(candidates))
+            except NoUsableMediaError:
+                # One variant can fail where another succeeds: a policy that
+                # insists on more diversity may find nothing left. The others
+                # are still worth showing, so this one is simply absent rather
+                # than failing the whole request.
+                logger.info(
+                    "variant produced no usable edit",
+                    extra={"variant": variant.value if variant else "base"},
+                )
+                continue
+            meta = VARIANTS[variant] if variant is not None else None
+            items.append(
+                EditorialVariantResponse(
+                    variant=variant.value if variant else None,
+                    label=meta.label if meta else "Base edit",
+                    description=(meta.description if meta else outcome.policy.description),
+                    policy=outcome.policy.id.value,
+                    clip_count=len(outcome.plan.segments),
+                    total_duration_ms=outcome.plan.total_output_ms,
+                    editorial=outcome.as_payload(),
+                )
+            )
+        return items
+
+    items = await anyio.to_thread.run_sync(compose_all)
+    if not items:
+        raise ConflictError(
+            "no usable edit could be composed from this project's media",
+            hint="Add more footage, or lower the clip requirement.",
+        )
+    return EditorialVariantsResponse(items=items)
 
 
 @router.post(

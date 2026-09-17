@@ -23,7 +23,7 @@ from visionforge.domain.errors import NotFoundError
 from visionforge.domain.health import HealthProbe
 from visionforge.domain.ids import ProjectId, UserId
 from visionforge.domain.llm import LlmProvider
-from visionforge.domain.llm_planner import PlannerMode
+from visionforge.domain.llm_planner import PlannerEngine, PlannerMode
 from visionforge.domain.planner import Planner, RulesEnginePlanner
 from visionforge.domain.storage import ObjectStore
 from visionforge.domain.style import EditStyle
@@ -176,12 +176,14 @@ class EditServiceFactory:
         mode: PlannerMode,
         style: EditStyle | None,
         request_text: str | None,
+        engine: PlannerEngine = PlannerEngine.EDITORIAL,
     ) -> tuple[EditService, PlannerSelection]:
         selection = build_planner(
             mode=mode,
             style=style,
             request_text=request_text,
             provider=self._provider,
+            editorial=engine is PlannerEngine.EDITORIAL,
         )
         service = EditService(
             self._session,

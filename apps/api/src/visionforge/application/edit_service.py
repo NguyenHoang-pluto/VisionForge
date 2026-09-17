@@ -83,6 +83,13 @@ class MediaRecord:
     #: output means anything.
     channels: int | None = None
 
+    #: The CLIP vector, when one was computed (Phase 11). It lives in a typed
+    #: pgvector column rather than in the JSON payload, so the repository reads
+    #: it separately and hands it over here. ``None`` means the GPU lane has not
+    #: reached this asset, which the editorial layer treats as "no semantic
+    #: evidence" rather than as "unlike everything".
+    embedding: tuple[float, ...] | None = None
+
 
 def build_candidate(record: MediaRecord) -> Candidate:
     """Flatten one asset's analysis into the signals selection uses.
@@ -95,6 +102,10 @@ def build_candidate(record: MediaRecord) -> Candidate:
     phash = record.analysis.get(AnalyzerName.PHASH, {})
     scenes = record.analysis.get(AnalyzerName.SCENES, {})
     faces = record.analysis.get(AnalyzerName.FACES, {})
+    dynamics = record.analysis.get(AnalyzerName.DYNAMICS, {})
+
+    boundaries, mean_scene_ms = _scene_shape(scenes)
+    face_frames, face_area = _face_shape(faces)
 
     clipped: float | None = None
     under = quality.get("frames", [{}])[0].get("underexposed_ratio") if quality else None
@@ -123,7 +134,106 @@ def build_candidate(record: MediaRecord) -> Candidate:
         has_faces=(bool(faces.get("face_count", 0)) if faces else None),
         has_audio=bool(record.channels),
         sequence=record.created_order,
+        # --- Phase 11 ---
+        #
+        # Motion and saturation were written by the Phase 8 dynamics analyzer
+        # and read by nothing until now: reference style compared against them,
+        # but a candidate never carried them. They are the strongest signal the
+        # editorial layer has and they were already on disk.
+        motion=_as_float(dynamics.get("motion")) if dynamics else None,
+        saturation=_as_float(dynamics.get("saturation")) if dynamics else None,
+        motion_spread=_as_float(dynamics.get("motion_spread")) if dynamics else None,
+        motion_peak_ms=_motion_peak_ms(dynamics),
+        face_frames=face_frames,
+        face_area=face_area,
+        scene_boundaries_ms=boundaries,
+        mean_scene_ms=mean_scene_ms,
+        embedding=record.embedding,
     )
+
+
+def _scene_shape(scenes: dict[str, Any]) -> tuple[tuple[int, ...], int | None]:
+    """Where this clip cuts internally, and how long its own shots run.
+
+    A scene's *start* is a cut; the clip's own start is not, so the first entry
+    is dropped. The editorial trimmer uses these to avoid cutting a window that
+    straddles a boundary, which would put a jump in the middle of what the plan
+    calls one shot.
+    """
+    if not scenes:
+        return (), None
+    raw = scenes.get("scenes")
+    entries = [entry for entry in raw if isinstance(entry, dict)] if isinstance(raw, list) else []
+    boundaries = tuple(
+        int(entry["start_ms"])
+        for entry in entries[1:]
+        if isinstance(entry.get("start_ms"), int | float)
+    )
+    mean = scenes.get("mean_scene_ms")
+    return boundaries, int(mean) if isinstance(mean, int | float) and mean > 0 else None
+
+
+def _face_shape(faces: dict[str, Any]) -> tuple[tuple[bool, ...], float | None]:
+    """Who was on screen when, and how large they were.
+
+    Still no identity and still no recognition (ADR-0008): a presence flag per
+    sampled frame and the area of the largest box. That is enough to tell a
+    close-up from a wide shot and to notice somebody arriving, and it is the
+    strongest claim the stored analysis supports.
+    """
+    if not faces:
+        return (), None
+    raw = faces.get("frames")
+    if not isinstance(raw, list):
+        return (), None
+
+    frames = [entry for entry in raw if isinstance(entry, dict)]
+    # Sorted by timestamp, because "the subject arrives" is a claim about order
+    # and reading it off whatever order the rows came back in is how that claim
+    # becomes noise.
+    frames.sort(key=lambda entry: entry.get("timestamp_ms", 0))
+
+    presence = tuple(bool(entry.get("face_count", 0)) for entry in frames)
+    largest = 0.0
+    for entry in frames:
+        boxes = entry.get("faces")
+        if not isinstance(boxes, list):
+            continue
+        for box in boxes:
+            if not isinstance(box, dict):
+                continue
+            width, height = box.get("width"), box.get("height")
+            if isinstance(width, int | float) and isinstance(height, int | float):
+                largest = max(largest, float(width) * float(height))
+    return presence, round(largest, 6) if largest > 0 else None
+
+
+def _motion_peak_ms(dynamics: dict[str, Any]) -> int | None:
+    """The timestamp of the busiest sampled moment in a clip.
+
+    Five samples, so this names a fifth of the clip rather than a frame. Coarse,
+    and still the difference between trimming the goal and trimming the run-up
+    to it -- which is why it is worth reading at all.
+    """
+    if not dynamics:
+        return None
+    samples = dynamics.get("samples")
+    if not isinstance(samples, list) or not samples:
+        return None
+
+    best_ms: int | None = None
+    best_motion = float("-inf")
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        motion, timestamp = sample.get("motion"), sample.get("timestamp_ms")
+        if (
+            isinstance(motion, int | float)
+            and isinstance(timestamp, int | float)
+            and float(motion) > best_motion
+        ):
+            best_motion, best_ms = float(motion), int(timestamp)
+    return best_ms
 
 
 def _as_float(value: Any) -> float | None:

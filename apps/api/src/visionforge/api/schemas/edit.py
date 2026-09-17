@@ -27,9 +27,10 @@ from visionforge.domain.editplan import (
     TransitionKind,
 )
 from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, Effect, EffectKind
-from visionforge.domain.llm_planner import PlannerMode
+from visionforge.domain.llm_planner import PlannerEngine, PlannerMode
 from visionforge.domain.planner import ClipOrder
 from visionforge.domain.policy import StyleStrength
+from visionforge.domain.story import PolicyId
 from visionforge.domain.style import FPS_PRESETS, EditStyle
 from visionforge.domain.subtitles import (
     MAX_CUE_CHARS,
@@ -40,6 +41,7 @@ from visionforge.domain.subtitles import (
     SubtitleTrack,
     clean_text,
 )
+from visionforge.domain.variants import VariantId
 
 
 class MusicRequest(BaseModel):
@@ -105,6 +107,13 @@ class PlanCreateRequest(BaseModel):
 
     # --- how to plan ---
     mode: PlannerMode = PlannerMode.AUTOMATIC
+    #: Which deterministic engine turns the request into clips. Defaults to the
+    #: Phase 11 editorial engine, which is what automatic editing now means.
+    #: ``"rules"`` selects the Phase 4 even split with Phase 5's directive
+    #: planner in front of it -- kept reachable so the two generations can be
+    #: run against the same footage, which is the only way to show that the new
+    #: engine is not the old one carrying extra metadata.
+    engine: PlannerEngine = PlannerEngine.EDITORIAL
     style: EditStyle | None = None
     #: What the user wants, in their own words. Bounded, and the only free text
     #: in the API. It reaches a model as data inside a delimited block, and it
@@ -146,6 +155,19 @@ class PlanCreateRequest(BaseModel):
     #: no music, no analysis, or analysis the server does not trust -- in which
     #: case the plan says so rather than pretending it applied.
     beat_sync: bool = False
+
+    # --- editorial engine (Phase 11) ---
+    #: Which genre policy to edit under. ``None`` derives one from the style,
+    #: which is what every caller before Phase 11 effectively asked for. A
+    #: closed set, so a caller names a policy and never supplies its numbers --
+    #: the same argument as the aspect-ratio preset map.
+    editorial_policy: PolicyId | None = None
+
+    #: Which named alternative to produce. ``None`` is the plain edit. Because
+    #: planning is deterministic, asking for the same variant twice produces the
+    #: same plan -- which is what makes previewing variants without storing them
+    #: safe, and what lets the client render one and then request it for real.
+    variant: VariantId | None = None
 
     @field_validator("fps")
     @classmethod
@@ -243,6 +265,18 @@ class EditPlanDetail(EditPlanSummary):
     #: a key, a prompt or a completion.
     llm: dict[str, Any] | None = None
 
+    #: The editorial account of the edit (Phase 11): the policy, the arc, each
+    #: segment's narrative role, energy, beat relationship and the short reasons
+    #: it was chosen, plus the eight quality metrics and every clip the engine
+    #: declined. Present on plans the editorial engine produced; ``None`` on a
+    #: hand-cut plan and on anything the Phase 4 rules engine made.
+    #:
+    #: A dictionary rather than a typed model, deliberately and for the same
+    #: reason ``plan`` is one: it is a versioned document that outlives this
+    #: build's schema, and a strict model here would make an older plan
+    #: unreadable rather than merely unfamiliar.
+    editorial: dict[str, Any] | None = None
+
 
 class PlannerCapabilities(BaseModel):
     """What this server can do, for the UI to render honestly.
@@ -305,6 +339,29 @@ class PlannerCapabilities(BaseModel):
     #: accepts, and a kind removed here stops being offered rather than becoming
     #: a 422.
     operations: list[dict[str, Any]] = Field(default_factory=list)
+
+    # ---------------------------------------------------------- Phase 11
+    #: The genre policies this build ships, with their arcs and pacing. Every
+    #: entry is generated from ``domain.story``'s own table, so a policy added
+    #: there appears in the UI without an edit here and one removed there stops
+    #: being offered.
+    editorial_policies: list[dict[str, Any]] = Field(default_factory=list)
+    #: The named alternatives the variants endpoint can produce.
+    variants: list[dict[str, Any]] = Field(default_factory=list)
+    #: The narrative roles, in narrative order, so the editor can draw the arc
+    #: without hard-coding the sequence.
+    story_roles: list[str] = Field(default_factory=list)
+    #: The pacing curve shapes, with their control points, so the UI can draw
+    #: the curve the server will actually use rather than an illustration of it.
+    pacing_shapes: list[dict[str, Any]] = Field(default_factory=list)
+    #: The closed event vocabulary and the closed reason vocabulary, with their
+    #: versions. The editor renders these as localised text, so it needs to know
+    #: which tokens exist; a token it has no translation for is shown raw rather
+    #: than hidden.
+    editorial_events: list[str] = Field(default_factory=list)
+    editorial_reasons: list[str] = Field(default_factory=list)
+    editorial_metrics: list[dict[str, str]] = Field(default_factory=list)
+    editorial_version: str = ""
     coedit_prompt_version: str = ""
 
 
@@ -671,3 +728,42 @@ class EffectBoundsResponse(BaseModel):
     neutral: float
     #: False for the colour effects, which may be applied to part of a clip.
     whole_segment_only: bool
+
+
+# ------------------------------------------------------- editorial (Phase 11)
+class EditorialVariantResponse(BaseModel):
+    """One editorial plan, previewed and not stored.
+
+    A preview rather than a plan row, and that is the whole design of the
+    variants endpoint: three alternatives would otherwise mean three plan rows
+    and three versions per click, two of which the user never looks at again.
+    Because the engine is deterministic, asking for the chosen variant through
+    the ordinary plan route reproduces exactly what was previewed.
+    """
+
+    variant: str | None = None
+    label: str
+    description: str
+    policy: str
+    clip_count: int
+    total_duration_ms: int
+    #: The full editorial document: segments with roles, reasons and energies,
+    #: the pacing plan, the metrics, and every clip the engine declined.
+    editorial: dict[str, Any] = Field(default_factory=dict)
+
+
+class EditorialVariantsResponse(BaseModel):
+    items: list[EditorialVariantResponse] = Field(default_factory=list)
+
+
+class EditorialVariantsRequest(PlanCreateRequest):
+    """The same preferences as a plan request, previewed across variants.
+
+    Subclassed rather than duplicated so the two routes cannot drift: a field
+    added to planning is a field the preview honours, and a preview that
+    silently ignored the target duration would be previewing a different edit
+    from the one the user would get.
+
+    ``variant`` is inherited and ignored -- the endpoint produces the base edit
+    and every variant, which is what "show me the alternatives" means.
+    """
