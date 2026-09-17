@@ -38,6 +38,21 @@ class RejectionReason(StrEnum):
     TOO_SHORT = "too_short"
     NEAR_DUPLICATE = "near_duplicate"
 
+    # --- editorial (Phase 11) ---
+    #
+    # The reasons above are about usability: a clip rejected for any of them is
+    # one nobody could watch. These three are about *editing* -- the clip is
+    # fine and the edit is better without it, which is a different claim and
+    # says so rather than being filed under "duplicate".
+    #: Semantically the same shot as one already in the edit. Distinct from
+    #: ``NEAR_DUPLICATE``, which is a pixel-level match: two angles on one goal
+    #: are not near-duplicates and are the same moment.
+    SEMANTIC_DUPLICATE = "semantic_duplicate"
+    #: Nothing wrong with it; the story was already told.
+    NOT_NEEDED = "not_needed"
+    #: It argued for no role as well as the clips that took them.
+    WEAK_FOR_ROLE = "weak_for_role"
+
 
 @dataclass(frozen=True, slots=True)
 class SelectionWeights:
@@ -156,6 +171,52 @@ class Candidate:
 
     #: Tie-break key. The upload order is stable and meaningful; a UUID is not.
     sequence: int = 0
+
+    # --- editorial signals (Phase 11) ---
+    #
+    # Every field below is optional and defaults to "not measured". Selection
+    # itself does not read any of them, and a candidate built the Phase 4 way
+    # scores byte-identically -- they exist so the editorial layer can ask
+    # questions of the *same* object the ranker sees rather than needing a
+    # second, parallel view of the footage that could drift out of step.
+
+    #: Standard deviation of motion across the sampled points, 0..1. Separate
+    #: from ``motion`` because the two answer different questions: a steady pan
+    #: and a clip where nothing happens until something suddenly does can share
+    #: a median and are not the same shot.
+    motion_spread: float | None = None
+
+    #: Largest detected face box as a fraction of the frame's area. The one
+    #: piece of evidence that separates a close-up from a wide shot that
+    #: happens to contain a person. Still no identity: a box area, not a face.
+    face_area: float | None = None
+
+    #: Whether anyone was on screen at each deterministic sample point, in time
+    #: order. Five booleans, which is the only evidence available for "someone
+    #: walks into frame" -- and weak evidence, which is why the events derived
+    #: from it carry low confidence.
+    face_frames: tuple[bool, ...] = ()
+
+    #: Cut positions *inside* this clip, in ms from its own start. A clip that
+    #: already contains a cut is a different editorial object from one that
+    #: does not, and trimming across its boundary produces a jump nobody asked
+    #: for.
+    scene_boundaries_ms: tuple[int, ...] = ()
+
+    #: Mean shot length within the clip, when scene detection ran.
+    mean_scene_ms: int | None = None
+
+    #: Where in this clip the most movement was measured, ms from its start.
+    #: The dynamics analyzer samples five points; this is the busiest of them.
+    #: Coarse -- it names a fifth of the clip, not a frame -- but it is the
+    #: difference between trimming a goal and trimming the run-up to one.
+    motion_peak_ms: int | None = None
+
+    #: The CLIP embedding, L2-normalised. Used for semantic distance between
+    #: candidates -- "these two clips show the same thing" -- which pHash
+    #: cannot answer: two shots of the same goal from different angles are not
+    #: near-duplicates by any pixel measure and are near-identical editorially.
+    embedding: tuple[float, ...] | None = None
 
     @property
     def has_quality(self) -> bool:

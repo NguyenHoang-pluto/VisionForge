@@ -51,7 +51,9 @@ from visionforge.domain.selection import (
     select,
     weights_payload,
 )
+from visionforge.domain.story import PolicyId
 from visionforge.domain.style import EditStyle
+from visionforge.domain.variants import VariantId
 
 
 class ClipOrder(StrEnum):
@@ -131,6 +133,18 @@ class PlanRequest:
     music_gain: float = 0.7
     music_fade_in_ms: int = 0
     music_fade_out_ms: int = 1_500
+
+    # --- editorial engine (Phase 11) ---
+    #: Which editorial policy to plan under. ``None`` means "derive it from the
+    #: style", which is what every caller before Phase 11 effectively asked for.
+    #: Only ``EditorialPlanner`` reads it; the rules engine ignores it entirely,
+    #: so a request carrying one still plans identically through the old path.
+    editorial_policy: PolicyId | None = None
+
+    #: Which named alternative to produce. ``None`` is the plain edit. A variant
+    #: modifies the *policy*, so it changes which clips are chosen as well as how
+    #: they are cut -- see ``domain.variants``.
+    variant: VariantId | None = None
 
     def __post_init__(self) -> None:
         if self.max_clips < self.min_clips:
@@ -419,41 +433,7 @@ class RulesEnginePlanner:
     def _music_cue(
         request: PlanRequest, grid: BeatGrid | None, timeline_ms: int
     ) -> MusicCue | None:
-        """The bed, trimmed to the cut it will play under.
-
-        When there is a usable grid the cue starts at its first beat rather than
-        at the head of the file, so the downbeat coincides with the first cut.
-        Without one it starts at zero, which is the only defensible guess.
-
-        The cue is taken slightly longer than the timeline where the track
-        allows, so the compiler has material to trim rather than silence to pad.
-        """
-        if request.music_media_id is None:
-            return None
-
-        start = grid.first_beat_ms if grid is not None else 0
-        available = request.music_duration_ms
-        if available is not None:
-            start = min(start, max(0, available - 1))
-            end = min(available, start + timeline_ms)
-        else:
-            end = start + timeline_ms
-
-        # A cue the validator would reject is worse than no cue: it would fail
-        # the whole plan over the bed rather than dropping it.
-        if end - start < MIN_MUSIC_MS:
-            return None
-
-        fade_out = min(request.music_fade_out_ms, max(0, (end - start) - request.music_fade_in_ms))
-        return MusicCue(
-            media_id=request.music_media_id,
-            source_in_ms=start,
-            source_out_ms=end,
-            timeline_start_ms=0,
-            gain=request.music_gain,
-            fade_in_ms=request.music_fade_in_ms,
-            fade_out_ms=fade_out,
-        )
+        return build_music_cue(request, grid, timeline_ms)
 
     @staticmethod
     def _beat_sync_payload(
@@ -558,6 +538,48 @@ class RulesEnginePlanner:
         return start, end
 
 
+def build_music_cue(
+    request: PlanRequest, grid: BeatGrid | None, timeline_ms: int
+) -> MusicCue | None:
+    """The bed, trimmed to the cut it will play under.
+
+    When there is a usable grid the cue starts at its first beat rather than at
+    the head of the file, so the downbeat coincides with the first cut. Without
+    one it starts at zero, which is the only defensible guess.
+
+    A cue the validator would reject is worse than no cue: it would fail the
+    whole plan over the bed rather than dropping it.
+
+    Module-level since Phase 11, because the editorial planner needs exactly
+    this and a second copy of it is a guarantee that the two planners will one
+    day disagree about where the music starts.
+    """
+    if request.music_media_id is None:
+        return None
+
+    start = grid.first_beat_ms if grid is not None else 0
+    available = request.music_duration_ms
+    if available is not None:
+        start = min(start, max(0, available - 1))
+        end = min(available, start + timeline_ms)
+    else:
+        end = start + timeline_ms
+
+    if end - start < MIN_MUSIC_MS:
+        return None
+
+    fade_out = min(request.music_fade_out_ms, max(0, (end - start) - request.music_fade_in_ms))
+    return MusicCue(
+        media_id=request.music_media_id,
+        source_in_ms=start,
+        source_out_ms=end,
+        timeline_start_ms=0,
+        gain=request.music_gain,
+        fade_in_ms=request.music_fade_in_ms,
+        fade_out_ms=fade_out,
+    )
+
+
 __all__ = [
     "ClipOrder",
     "EditStyle",
@@ -566,4 +588,5 @@ __all__ = [
     "PlanRequest",
     "Planner",
     "RulesEnginePlanner",
+    "build_music_cue",
 ]

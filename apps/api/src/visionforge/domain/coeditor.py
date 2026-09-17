@@ -40,6 +40,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -69,6 +70,7 @@ from visionforge.domain.editplan import (
     MAX_FADE_MS,
     MAX_GAIN,
     MAX_OUTPUT_MS,
+    MAX_SEGMENT_MS,
     MIN_SEGMENT_MS,
     AspectRatio,
     EditPlan,
@@ -91,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 #: Bumped whenever the co-editor prompt changes in a way that could alter what a
 #: model proposes. Stored on every run, like the planner's own prompt version.
-COEDIT_PROMPT_VERSION = "1"
+COEDIT_PROMPT_VERSION = "2"
 
 #: How the deterministic resolver reads a bare "faster" or "slower". Written
 #: down rather than left to a model because a named default is reproducible and
@@ -176,6 +178,17 @@ class ClipShape:
     transition: str
     transition_ms: int
     effects: tuple[str, ...]
+    #: The narrative role the editorial engine gave this clip, when one did
+    #: (Phase 11). Empty on a hand-cut plan and on anything the Phase 4 rules
+    #: engine produced, which is why every rule that reads it checks first.
+    #:
+    #: A role name is not an identifier: "peak" says what a clip is *for*, not
+    #: which file it is. It carries no more information about the user's media
+    #: than "clip 3" does, which is what makes it safe to put in the prompt.
+    role: str = ""
+    #: The clip's measured energy, 0..1. Rounded to two places: the model is
+    #: being told roughly how busy a shot is, not handed a measurement.
+    energy: float | None = None
 
     def as_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -183,6 +196,10 @@ class ClipShape:
             "clip": self.segment + 1,
             "duration_ms": self.duration_ms,
         }
+        if self.role:
+            payload["role"] = self.role
+        if self.energy is not None:
+            payload["energy"] = round(self.energy, 2)
         if self.transition != TransitionKind.CUT.value:
             payload["transition"] = self.transition
             payload["transition_ms"] = self.transition_ms
@@ -262,6 +279,7 @@ def shape_of(plan: EditPlan) -> PlanShape:
     ``PlanShape``, so there is none in the prompt.
     """
     track = plan.subtitles
+    roles, energies = _editorial_shape(plan)
     return PlanShape(
         clips=tuple(
             ClipShape(
@@ -274,6 +292,8 @@ def shape_of(plan: EditPlan) -> PlanShape:
                 effects=tuple(
                     f"{effect.kind.value} {effect.amount:g}" for effect in segment.effects
                 ),
+                role=roles[index] if index < len(roles) else "",
+                energy=energies[index] if index < len(energies) else None,
             )
             for index, segment in enumerate(plan.ordered_segments)
         ),
@@ -292,6 +312,40 @@ def shape_of(plan: EditPlan) -> PlanShape:
         style_strength=str(plan.metadata.get("style_strength", "0")),
         beat_sync=bool(plan.metadata.get("beat_sync")),
     )
+
+
+def _editorial_shape(plan: EditPlan) -> tuple[tuple[str, ...], tuple[float | None, ...]]:
+    """The narrative role and energy of each segment, when the plan records them.
+
+    Read from what the plan *stored*, never recomputed. The roles are a property
+    of the decision that produced this edit; recomputing them would answer "what
+    would we decide now", which is a different question and occasionally a
+    different answer -- and the user is asking about the edit in front of them.
+
+    Two empty tuples for a plan with no editorial payload, which is every plan
+    written before Phase 11 and every hand-cut one. Callers treat that as "this
+    edit has no roles", not as an error, so the co-editor still understands
+    "remove clip 2" on a plan it knows nothing else about.
+    """
+    editorial = plan.metadata.get("editorial")
+    if not isinstance(editorial, dict):
+        return (), ()
+    segments = editorial.get("segments")
+    if not isinstance(segments, list):
+        return (), ()
+
+    roles: list[str] = []
+    energies: list[float | None] = []
+    for entry in segments:
+        if not isinstance(entry, dict):
+            roles.append("")
+            energies.append(None)
+            continue
+        role = entry.get("role")
+        energy = entry.get("energy")
+        roles.append(role if isinstance(role, str) else "")
+        energies.append(float(energy) if isinstance(energy, int | float) else None)
+    return tuple(roles), tuple(energies)
 
 
 # ------------------------------------------------------- deterministic resolver
@@ -347,10 +401,55 @@ class _NoTarget(Exception):
     """A clause named a clip in a way this resolver will not guess at."""
 
 
+#: Words that name a narrative role, and the role they name.
+#:
+#: The vocabulary a person actually uses about an edit. "The climax" and "the
+#: money shot" both mean the peak, and neither is a clip number -- before Phase
+#: 11 there was nothing in a plan for them to refer to, and now there is.
+_ROLE_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("peak", ("peak", "climax", "money shot", "highlight moment", "best bit", "best moment")),
+    ("hook", ("hook", "first shot", "opening shot")),
+    ("setup", ("setup", "set-up", "context", "establishing")),
+    ("build", ("build", "build-up", "buildup", "middle")),
+    ("reaction", ("reaction", "celebration", "aftermath")),
+    ("ending", ("ending shot", "closing shot", "final beat")),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _Clause:
     text: str
     clip_count: int
+    #: The narrative role of each clip, when the plan records them. Empty for a
+    #: plan with no editorial payload, which is what makes every role rule below
+    #: decline rather than guess on an older edit.
+    roles: tuple[str, ...] = ()
+    #: Each clip's played length, so a rule that says "longer" has something to
+    #: be longer *than*.
+    durations: tuple[int, ...] = ()
+
+    def role_target(self) -> int | None:
+        """Which clip this clause names by its narrative role, if it names one.
+
+        The *first* clip carrying the role. An arc can give a role to more than
+        one clip -- three builds, two peaks -- and "give the peak more time"
+        means the moment, not a policy about every clip sharing its label. A
+        request that meant all of them would say so, and this resolver does not
+        guess at that.
+        """
+        if not self.roles:
+            return None
+        for role, words in _ROLE_WORDS:
+            if any(re.search(rf"\b{re.escape(word)}\b", self.text) for word in words):
+                for index, actual in enumerate(self.roles):
+                    if actual == role:
+                        return index
+                # The word was used and this edit has no such part. Declining is
+                # better than acting on the nearest thing: "give the peak more
+                # time" on an edit with no peak is a request nobody can satisfy
+                # by shortening the setup.
+                raise _NoTarget(f"this edit has no {role}")
+        return None
 
     def target(self) -> int | None:
         """Which clip this clause is about. ``None`` means every clip.
@@ -363,6 +462,12 @@ class _Clause:
 
         if any(phrase in text for phrase in _EVERYTHING):
             return None
+
+        # Roles first: "the peak" is more specific than "the last clip", and an
+        # edit where the peak happens to be last must resolve it as the peak.
+        by_role = self.role_target()
+        if by_role is not None:
+            return by_role
 
         match = re.search(r"\bclips?\s+(\d{1,2})\b", text)
         if match:
@@ -644,10 +749,143 @@ def _output(clause: _Clause) -> EditOperation | None:
     return ChangeOutputPreset(aspect_ratio=aspect, quality=quality, fps=fps)
 
 
+# ------------------------------------------------------- editorial (Phase 11)
+#
+# The vocabulary people actually use about a cut -- "give the climax more time",
+# "make the opening more aggressive", "use fewer shots" -- names no number and
+# no clip. Before Phase 11 there was nothing in a plan for those words to refer
+# to, so every one of them went to the model; now a plan records which clip is
+# the peak and how long each one runs, and the rules can resolve them.
+#
+# They resolve to a *documented step*, not to an invented amount. That is the
+# one place this module departs from its own "no number, no rule" discipline,
+# and the departure is deliberate: "lower the music" has a continuum of correct
+# answers and no way to pick one, while "hold the peak longer" has an editorial
+# convention behind it. The step is a constant below, it is the same every time,
+# and the rationale says a step was applied -- which is the difference between a
+# documented decision and a guess.
+
+#: How much longer an emphasised shot is held, and how much shorter a sharpened
+#: one is cut. Roughly a third either way: enough to be felt on a three-second
+#: shot, small enough that saying it twice is still a sensible edit rather than
+#: a runaway.
+EDITORIAL_STEP = 1.35
+
+#: What share of the shots "use fewer shots" removes. A quarter, rounded up, so
+#: an eight-shot edit loses two and a three-shot edit loses one.
+FEWER_SHOTS_SHARE = 0.25
+
+_LONGER = ("more time", "more room", "longer", "hold longer", "breathe", "linger", "extend")
+#: Words this rule owns, and deliberately *not* the ones ``_speed`` owns.
+#:
+#: "faster", "quicker" and "snappier" are absent on purpose. They already mean
+#: a playback-rate change, ``_speed`` resolves them, and a rate outside the
+#: effect bounds is a request this resolver declines so the model can look at
+#: it. Repeating them here would quietly convert "make clip 2 10x faster" into a
+#: trim -- an edit nobody asked for, arrived at by a rule that only fired
+#: because another one gave up.
+_SHORTER = (
+    "more aggressive",
+    "punchier",
+    "tighter",
+    "shorter",
+    "cut it down",
+    "trim it",
+)
+
+
+def _editorial_hold(clause: _Clause) -> EditOperation | None:
+    """ "Give the climax more time", "let the ending breathe".
+
+    Declines on a plan with no roles *and* no clip named, because "give it more
+    time" with no target is a request about the whole edit's length, which
+    ``_duration`` already handles when a number is present and the model handles
+    when one is not.
+    """
+    if not any(phrase in clause.text for phrase in _LONGER):
+        return None
+    if any(word in clause.text for word in _SUBTITLE_WORDS + _MUSIC_WORDS):
+        return None
+    if clause.milliseconds() is not None:
+        # A stated duration is not a step. ``_duration`` owns that sentence.
+        return None
+    return _stepped(clause, EDITORIAL_STEP)
+
+
+def _editorial_energy(clause: _Clause) -> EditOperation | None:
+    """ "Make the opening more aggressive", "tighten the build"."""
+    if not any(phrase in clause.text for phrase in _SHORTER):
+        return None
+    if any(word in clause.text for word in _SUBTITLE_WORDS + _MUSIC_WORDS):
+        return None
+    if clause.milliseconds() is not None:
+        return None
+    return _stepped(clause, 1.0 / EDITORIAL_STEP)
+
+
+def _stepped(clause: _Clause, factor: float) -> EditOperation | None:
+    """One clip's length, multiplied by a documented step and clamped.
+
+    ``None`` -- rather than a raise -- when there is nothing to step: no target,
+    or a plan that does not record how long its clips are. The caller then tries
+    the next rule and, failing that, asks the model, which is the right
+    escalation for a sentence this resolver cannot ground in a number.
+    """
+    target = clause.target()
+    if target is None or target >= len(clause.durations):
+        return None
+    current = clause.durations[target]
+    if current <= 0:
+        return None
+    wanted = int(round(current * factor))
+    wanted = max(MIN_SEGMENT_MS, min(MAX_SEGMENT_MS, wanted))
+    if wanted == current:
+        return None
+    return ChangeDuration(duration_ms=wanted, segment=target)
+
+
+def _fewer_shots(clause: _Clause) -> tuple[EditOperation, ...] | None:
+    """ "Use fewer shots", "cut some clips".
+
+    Removes the weakest quarter, and "weakest" means *last in the arc's
+    priority*: the setup and the build go before the peak, the reaction and the
+    ending, because those are the parts an edit can lose and still be the same
+    edit. A plan with no roles has no such ordering, so the rule declines and
+    the model is asked.
+
+    Indices are emitted descending. Each removal renumbers what follows, so
+    removing 5 then 2 is the pair the user meant and removing 2 then 5 is not.
+    """
+    if not re.search(r"\b(fewer|less)\s+(shots?|clips?|cuts?)\b", clause.text):
+        return None
+    if not clause.roles or clause.clip_count < 3:
+        return None
+
+    drop_count = max(1, int(-(-clause.clip_count * FEWER_SHOTS_SHARE // 1)))
+    droppable = [index for index, role in enumerate(clause.roles) if role in _DROPPABLE_ROLES]
+    if not droppable:
+        return None
+
+    # Latest first within the droppable set: an edit that loses its third build
+    # shot reads better than one that loses its first, because the first is what
+    # established the sequence.
+    chosen = sorted(droppable, reverse=True)[:drop_count]
+    return tuple(RemoveSegment(segment=index) for index in sorted(chosen, reverse=True))
+
+
+#: Roles an edit can lose and still be the same edit, weakest first. Written as
+#: a set of names rather than imported from ``domain.story`` so that a plan
+#: recording a role this build has never heard of is simply not droppable,
+#: rather than raising while the user is asking for a smaller edit.
+_DROPPABLE_ROLES = frozenset({"setup", "build"})
+
+
 #: Order matters only where two rules could both match a clause. The music
 #: rules come before the generic ones so that "fade the music out over 2s" is
-#: an audio fade rather than a transition.
-_RULES = (
+#: an audio fade rather than a transition; the editorial rules come after the
+#: ones that read a stated number, so "make the peak 3 seconds" is a duration
+#: rather than a step.
+_RULES: tuple[Callable[[_Clause], EditOperation | tuple[EditOperation, ...] | None], ...] = (
     _music_volume,
     _music_fade,
     _beat_sync,
@@ -659,6 +897,9 @@ _RULES = (
     _speed,
     _duration,
     _output,
+    _fewer_shots,
+    _editorial_hold,
+    _editorial_energy,
 )
 
 #: What a clause is split on. Conservative: "and" and commas join requests in
@@ -716,7 +957,12 @@ def resolve_deterministic(text: str | None, shape: PlanShape) -> EditDelta | Non
 
     operations: list[EditOperation] = []
     for part in clauses:
-        clause = _Clause(text=part, clip_count=len(shape.clips))
+        clause = _Clause(
+            text=part,
+            clip_count=len(shape.clips),
+            roles=tuple(clip.role for clip in shape.clips),
+            durations=tuple(clip.duration_ms for clip in shape.clips),
+        )
         try:
             matched = next(
                 (operation for rule in _RULES if (operation := rule(clause)) is not None), None
@@ -727,7 +973,11 @@ def resolve_deterministic(text: str | None, shape: PlanShape) -> EditDelta | Non
             return None
         if matched is None:
             return None
-        operations.append(matched)
+        # A clause may resolve to more than one operation -- "use fewer shots"
+        # is several removals -- so the result is flattened rather than assumed
+        # to be single. Still all-or-nothing per clause: a rule that understood
+        # half of a sentence returns nothing at all.
+        operations.extend(matched if isinstance(matched, tuple) else (matched,))
 
     if not operations or len(operations) > MAX_OPERATIONS:
         return None
@@ -767,6 +1017,12 @@ Return a single JSON object and nothing else:
 _PROMPT_RULES = """\
 Clips are addressed by "segment", counting from 0. The shape you are given lists \
 every clip with its own "segment" number; use those numbers and no others.
+
+A clip may also carry a "role" -- hook, setup, build, peak, reaction or ending
+-- and an "energy" from 0 to 1. Those say what the clip is doing in the edit
+and how busy it is. Use them to work out which "segment" the user means when
+they say something like "the climax" or "the opening". They are not addresses:
+an operation still names a segment number.
 
 These are the only operations that exist. Anything else is discarded:
 

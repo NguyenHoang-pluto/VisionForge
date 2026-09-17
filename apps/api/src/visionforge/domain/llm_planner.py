@@ -31,7 +31,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from visionforge.domain.directive import (
     CompileContext,
@@ -86,6 +86,25 @@ class PlannerMode(StrEnum):
     AUTOMATIC = "automatic"
     RULES = "rules"
     AI = "ai"
+
+
+class PlannerEngine(StrEnum):
+    """Which deterministic engine plans the edit.
+
+    Two generations exist, and which one runs is a choice rather than a
+    migration. ``EDITORIAL`` is Phase 11's five-stage engine and the default,
+    because it is what automatic editing now means. ``RULES`` is Phase 4's even
+    split with Phase 5's directive planner in front of it, kept reachable so the
+    two can be compared against the same footage -- and so that a deployment
+    that wants the older, blunter behaviour can still ask for it by name rather
+    than by pinning an old build.
+
+    The engine is orthogonal to :class:`PlannerMode`: the mode says whether a
+    model is consulted, the engine says who turns the answer into clips.
+    """
+
+    EDITORIAL = "editorial"
+    RULES = "rules"
 
 
 class FallbackReason(StrEnum):
@@ -479,6 +498,25 @@ class LlmPlanner:
         )
 
 
+@runtime_checkable
+class RecordingPlanner(Protocol):
+    """A planner that keeps a provenance record of its last attempt.
+
+    Stated as a protocol rather than as ``LlmPlanner`` so that
+    ``FallbackPlanner`` can wrap any planner that talks to a model and records
+    what happened -- which since Phase 11 means the editorial intent planner as
+    well. The fallback policy is about *a model failing*, not about which
+    question the model was asked, and typing it to one implementation would have
+    meant a second, identical fallback class for the second one.
+    """
+
+    name: str
+    version: str
+    last_run: LlmRunRecord
+
+    def plan(self, request: PlanRequest, candidates: list[Candidate]) -> PlanOutcome: ...
+
+
 class FallbackPlanner:
     """Runs a primary planner, and the rules engine when it fails.
 
@@ -492,11 +530,14 @@ class FallbackPlanner:
     see is indistinguishable from an AI planner that quietly does nothing.
     """
 
-    name = "llm"
-
-    def __init__(self, primary: LlmPlanner, fallback: Planner) -> None:
+    def __init__(self, primary: RecordingPlanner, fallback: Planner) -> None:
         self._primary = primary
         self._fallback = fallback
+        # Named after whoever is actually in front, from construction rather
+        # than from the first successful plan: a fallback that reports "llm"
+        # while wrapping the editorial intent planner would make every plan's
+        # provenance wrong until the first one succeeded.
+        self.name = primary.name
         self.version = primary.version
         self.last_run: LlmRunRecord = primary.last_run
 
@@ -581,5 +622,6 @@ __all__ = [
     "ModeDecision",
     "NoUsableMediaError",
     "PlannerMode",
+    "RecordingPlanner",
     "resolve_mode",
 ]
