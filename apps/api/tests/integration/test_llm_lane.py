@@ -194,7 +194,24 @@ def analysed_project(rules_client: TestClient, db: Session) -> Iterator[UUID]:
 
 
 def _plan(client: TestClient, project_id: UUID, **body: Any) -> dict[str, Any]:
-    response = client.post(f"/api/projects/{project_id}/edit-plan", json=body)
+    """Plan through the route, on the engine this lane is about.
+
+    ``engine="rules"`` is supplied by default rather than left off. Since Phase
+    11 the default engine is the editorial one, and every assertion in this file
+    is about the *directive* planner in front of the Phase 4 rules engine: its
+    provenance record, its handle resolution, its clamping, and what it does
+    when a model answers with something hostile. Those are still the contract
+    for that planner, and pinning the engine keeps them tested against it rather
+    than silently re-pointing them at a different planner that would satisfy
+    some of them by accident.
+
+    The editorial engine's own equivalent of this lane is
+    ``test_editorial_lane.py``; a caller here can still pass ``engine`` to
+    override.
+    """
+    response = client.post(
+        f"/api/projects/{project_id}/edit-plan", json={"engine": "rules", **body}
+    )
     assert response.status_code == 201, response.text
     return response.json()
 
