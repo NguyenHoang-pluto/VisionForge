@@ -166,6 +166,162 @@ export type EditStyle =
   | "social"
   | "custom";
 
+/* ------------------------------------------------------ editorial (Phase 11) */
+
+/** Which genre policy an edit is cut under. A closed set, served by the API. */
+export type PolicyId =
+  | "football"
+  | "gaming"
+  | "anime"
+  | "cinematic_travel"
+  | "nature"
+  | "vlog"
+  | "social"
+  | "product"
+  | "fashion"
+  | "automotive"
+  | "neutral";
+
+/** What a clip is doing in the edit, in narrative order. */
+export type StoryRole = "hook" | "setup" | "build" | "peak" | "reaction" | "ending";
+
+/** The shape of the energy curve an edit is paced against. */
+export type PacingShape = "ramp" | "build" | "wave" | "steady" | "decay";
+
+/** The named alternatives the variants endpoint can produce. */
+export type VariantId = "high_energy" | "cinematic" | "social_fast_cut";
+
+export type MetricDirection = "higher_is_better" | "lower_is_better";
+
+export interface EditorialPolicyInfo {
+  id: PolicyId;
+  label: string;
+  description: string;
+  pacing: PacingShape;
+  min_clip_ms: number;
+  target_clip_ms: number;
+  max_clip_ms: number;
+  default_duration_ms: number;
+  prefer_chronological: boolean;
+  arc: { name: string; roles: StoryRole[] };
+}
+
+export interface EditorialVariantInfo {
+  id: VariantId;
+  label: string;
+  description: string;
+  pacing: PacingShape;
+}
+
+/** One observation about a clip, with how far it should be trusted. */
+export interface EditorialEventRecord {
+  event: string;
+  confidence: number;
+  evidence: string[];
+}
+
+/**
+ * One position in the finished edit, as the engine decided it.
+ *
+ * This is what the editorial panel draws: the role, the length, the energy, the
+ * beat relationship and the short structured reasons the clip was chosen. There
+ * is no prose here and no model output -- `reasons` are tokens from a closed
+ * vocabulary that the UI renders in the user's own language.
+ */
+export interface EditorialSegment {
+  slot: number;
+  role: StoryRole;
+  media_id: string;
+  sequence: number;
+  source_in_ms: number;
+  source_out_ms: number;
+  duration_ms: number;
+  output_ms: number;
+  energy: number;
+  target_energy: number;
+  events: EditorialEventRecord[];
+  reasons: string[];
+  score: number;
+  components: Record<string, number>;
+  beats: number | null;
+  on_beat: boolean;
+  transition: TransitionKind;
+  transition_ms: number;
+  effects: { kind: EffectKind; amount: number }[];
+}
+
+export interface EditorialRejection {
+  media_id: string;
+  reasons: string[];
+  similar_to?: string;
+  score?: number;
+}
+
+/**
+ * One measurement of an edit. `value` is null when it could not be measured --
+ * an edit with no music has no beat alignment, and reporting zero would read as
+ * "every cut missed".
+ */
+export interface EditMetric {
+  name: string;
+  value: number | null;
+  direction: MetricDirection;
+  sample_size: number;
+  unmeasurable: string | null;
+}
+
+export interface PacingSlotRecord {
+  index: number;
+  position: number;
+  energy: number;
+  duration_ms: number;
+  start_ms: number;
+  beats: number | null;
+  on_beat: boolean;
+  emphasis: number;
+}
+
+/** The editorial account of an edit, recorded on the plan that produced it. */
+export interface EditorialRecord {
+  version: string;
+  policy: PolicyId;
+  arc: string;
+  variant: VariantId | null;
+  segments: EditorialSegment[];
+  rejected: EditorialRejection[];
+  metrics: Record<string, EditMetric>;
+  pacing: {
+    curve: { shape: PacingShape; points: number[]; peak_position: number };
+    target_ms: number;
+    total_ms: number;
+    cut_count: number;
+    shot_density: number;
+    beat_sync: Record<string, unknown> | null;
+    slots: PacingSlotRecord[];
+  };
+  fit: {
+    requested_clips: number;
+    achieved_clips: number;
+    relaxed_max_clip_ms: number | null;
+    target_ms: number;
+    achieved_ms: number;
+    shortfall_ms: number;
+  };
+  policy_detail: EditorialPolicyInfo;
+  intent: Record<string, unknown> | null;
+}
+
+/** One previewed alternative. Nothing is stored until the user asks for it. */
+export interface EditorialVariantPreview {
+  variant: VariantId | null;
+  label: string;
+  description: string;
+  policy: PolicyId;
+  clip_count: number;
+  total_duration_ms: number;
+  editorial: EditorialRecord;
+}
+
 /** What the server can plan with. Never contains a credential. */
 export interface PlannerCapabilities {
   ai_available: boolean;
@@ -279,6 +435,24 @@ export interface PlannerCapabilities {
    */
   operations: { kind: OperationKind }[];
   coedit_prompt_version: string;
+
+  /**
+   * The editorial vocabulary (Phase 11).
+   *
+   * Policies, variants, roles, curves, events, reasons and metric directions,
+   * all generated server-side from the domain tables that actually drive the
+   * engine. The panel renders whatever is here: a policy added on the server
+   * appears without a change in the browser, and one removed stops being
+   * offered rather than producing a 422.
+   */
+  editorial_policies: EditorialPolicyInfo[];
+  variants: EditorialVariantInfo[];
+  story_roles: StoryRole[];
+  pacing_shapes: { value: PacingShape; points: number[] }[];
+  editorial_events: string[];
+  editorial_reasons: string[];
+  editorial_metrics: { name: string; direction: MetricDirection }[];
+  editorial_version: string;
 }
 
 /**
@@ -395,6 +569,11 @@ export interface EditPlan {
   selection: SelectionRecord;
   mode: ModeRecord | null;
   llm: LlmRecord | null;
+  /**
+   * How the edit was decided (Phase 11). Null on a hand-cut plan and on
+   * anything the Phase 4 rules engine produced, so every reader checks.
+   */
+  editorial: EditorialRecord | null;
 }
 
 export interface Render {
@@ -602,6 +781,17 @@ export interface PlanOptions {
    * point at media it does not own.
    */
   style_strength?: StyleStrength;
+
+  /**
+   * Which genre policy to edit under (Phase 11). Omitted means "derive one from
+   * the style", which is what every request before Phase 11 effectively said.
+   */
+  editorial_policy?: PolicyId | null;
+  /**
+   * Which previewed alternative to produce. Planning is deterministic, so
+   * asking for a variant reproduces exactly what the preview showed.
+   */
+  variant?: VariantId | null;
 }
 
 /** The five stops on the style dial. A closed set, validated server-side. */
@@ -981,6 +1171,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(options),
     }),
+
+  /**
+   * Four editorial plans over the same footage: the base edit and each variant.
+   *
+   * Nothing is stored. The user compares alternatives, then asks for the one
+   * they want through `createEditPlan` with the same options plus `variant` --
+   * which, because the engine is deterministic, reproduces what they saw.
+   */
+  editVariants: (projectId: string, options: PlanOptions = {}) =>
+    request<{ items: EditorialVariantPreview[] }>(
+      `/api/projects/${projectId}/edit-plan/variants`,
+      { method: "POST", body: JSON.stringify(options) },
+    ),
 
   /**
    * Plan summaries. Note the type: the listing carries no `plan` document, by

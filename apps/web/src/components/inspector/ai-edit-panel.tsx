@@ -10,9 +10,12 @@ import {
   type ClipOrder,
   type EditPlan,
   type EditStyle,
+  type EditorialVariantPreview,
   type MediaAsset,
   type PlannerMode,
+  type PolicyId,
   type QualityPreset,
+  type VariantId,
 } from "@/lib/api";
 import { useT, type MessageKey } from "@/lib/i18n";
 import { toDraft, toMusicRequest } from "@/lib/timeline";
@@ -30,6 +33,7 @@ import {
   TextArea,
 } from "@/components/ui";
 import { CoEditorPanel } from "@/components/inspector/co-editor-panel";
+import { EditorialPlanPanel } from "@/components/inspector/editorial-plan";
 import { ReferencePanel } from "@/components/inspector/reference-panel";
 
 /**
@@ -95,6 +99,7 @@ export function AiEditPanel({
   const musicBed = useEditorStore((s) => s.music);
   const beatSync = useEditorStore((s) => s.beatSync);
   const styleStrength = useEditorStore((s) => s.styleStrength);
+  const setInspectorTab = useEditorStore((s) => s.setInspectorTab);
 
   const [aiMode, setAiMode] = useState<AiMode>("create");
   const [mode, setMode] = useState<PlannerMode>("automatic");
@@ -103,6 +108,10 @@ export function AiEditPanel({
   const [targetSeconds, setTargetSeconds] = useState(25);
   const [maxClips, setMaxClips] = useState(6);
   const [order, setOrder] = useState<ClipOrder>("score_desc");
+  const [policy, setPolicy] = useState<PolicyId | "">("");
+  const [variant, setVariant] = useState<VariantId | null>(null);
+  const [variants, setVariants] = useState<EditorialVariantPreview[] | null>(null);
+  const [plan, setPlan] = useState<EditPlan | null>(null);
   const [error, setError] = useState<{ message: string; hint: string | null } | null>(null);
 
   // Server-declared, so every control reflects what this deployment can do.
@@ -117,48 +126,77 @@ export function AiEditPanel({
   const fpsPresets = capabilities.data?.fps_presets ?? [24, 30, 60];
   const activeMode: PlannerMode = mode === "ai" && !aiAvailable ? "rules" : mode;
 
+  /**
+   * Everything the server needs to decide an edit, assembled once.
+   *
+   * Both the plan request and the variant preview send exactly this, which is
+   * what makes the preview honest: a variant previewed with a different target
+   * duration from the one that will be planned is a preview of a different
+   * edit.
+   */
+  const planOptions = (chosen: VariantId | null) => ({
+    mode: activeMode,
+    style: style || null,
+    request_text: requestText.trim() || null,
+    target_duration_ms: targetSeconds * 1000,
+    max_clips: maxClips,
+    min_clips: 1,
+    aspect_ratio: aspect,
+    fps,
+    quality,
+    order,
+    // The planner needs the bed to align the cue to the first beat, and the
+    // flag to decide whether the tempo may move a cut at all.
+    music: toMusicRequest(musicBed),
+    beat_sync: beatSync,
+    // How much of the reference to apply. Which clip the reference is stays
+    // server-side; this is only the dial.
+    style_strength: styleStrength,
+    editorial_policy: policy || null,
+    variant: chosen,
+  });
+
+  const reportError = (caught: unknown) =>
+    setError(
+      caught instanceof ApiError
+        ? { message: caught.message, hint: caught.hint }
+        : { message: t("ai.error"), hint: null },
+    );
+
   const generate = useMutation({
-    mutationFn: () =>
-      api.createEditPlan(projectId, {
-        mode: activeMode,
-        style: style || null,
-        request_text: requestText.trim() || null,
-        target_duration_ms: targetSeconds * 1000,
-        max_clips: maxClips,
-        min_clips: 1,
-        aspect_ratio: aspect,
-        fps,
-        quality,
-        order,
-        // The planner needs the bed to align the cue to the first beat, and the
-        // flag to decide whether the tempo may move a cut at all.
-        music: toMusicRequest(musicBed),
-        beat_sync: beatSync,
-        // How much of the reference to apply. Which clip the reference is stays
-        // server-side; this is only the dial.
-        style_strength: styleStrength,
-      }),
-    onSuccess: (plan) => {
+    mutationFn: (chosen: VariantId | null) => api.createEditPlan(projectId, planOptions(chosen)),
+    onSuccess: (generated) => {
       setError(null);
+      setPlan(generated);
       // The plan becomes the timeline. From here it is an ordinary draft: it
       // can be trimmed, reordered and cut like one the user assembled, because
       // that is exactly what it now is.
-      const draft = toDraft(plan);
+      const draft = toDraft(generated);
       // The plan may have chosen its own cue -- trimmed to the cut, started on
       // the first beat. Accepting the plan takes that too, or the edit reviewed
       // is not the edit produced.
-      setClips(draft.clips, plan.id, plan.id, draft.music, draft.subtitles);
+      setClips(draft.clips, generated.id, generated.id, draft.music, draft.subtitles);
       setPreviewSource("program");
-      onPlanned(plan);
       void queryClient.invalidateQueries({ queryKey: ["edit-plans", projectId] });
       void queryClient.invalidateQueries({ queryKey: ["llm-runs", projectId] });
     },
-    onError: (caught: unknown) =>
-      setError(
-        caught instanceof ApiError
-          ? { message: caught.message, hint: caught.hint }
-          : { message: t("ai.error"), hint: null },
-      ),
+    onError: reportError,
+  });
+
+  /**
+   * The alternatives, previewed rather than stored.
+   *
+   * Four editorial plans come back and nothing is written. Choosing one asks
+   * for it through the ordinary plan route, which -- because planning is
+   * deterministic -- produces exactly the edit that was previewed.
+   */
+  const compare = useMutation({
+    mutationFn: () => api.editVariants(projectId, planOptions(null)),
+    onSuccess: (response) => {
+      setError(null);
+      setVariants(response.items);
+    },
+    onError: reportError,
   });
 
   const selectedStyle = styles.find((item) => item.value === style);
@@ -228,7 +266,11 @@ export function AiEditPanel({
           size="lg"
           className="mt-3 w-full"
           disabled={readyCount === 0 || generate.isPending}
-          onClick={() => generate.mutate()}
+          onClick={() => {
+            setVariant(null);
+            setVariants(null);
+            generate.mutate(null);
+          }}
         >
           {generate.isPending ? <Spinner size={13} /> : <Glyph name="spark" size={13} />}
           {generate.isPending ? t("ai.generating") : t("ai.generate")}
@@ -243,6 +285,39 @@ export function AiEditPanel({
           <p className="mt-2 text-2xs leading-snug text-warning">{t("ai.noMedia")}</p>
         )}
       </section>
+
+      {/* ------------------------------------------------ editorial plan ----
+          Directly under the brief, because it is the answer to the question the
+          button above just asked. Everything below it narrows what the next
+          generation may do; this is what the last one decided. */}
+      {plan?.editorial ? (
+        <EditorialPlanPanel
+          record={plan.editorial}
+          media={media}
+          variants={variants}
+          activeVariant={variant}
+          loadingVariants={compare.isPending}
+          onChooseVariant={(chosen) => {
+            // The first click on "Variants" has nothing to choose between yet,
+            // so it fetches; afterwards a click is a choice and re-plans.
+            if (!variants) {
+              compare.mutate();
+              return;
+            }
+            setVariant(chosen);
+            generate.mutate(chosen);
+          }}
+          onRegenerate={() => generate.mutate(variant)}
+          onAccept={() => {
+            onPlanned(plan);
+            setInspectorTab("export");
+          }}
+          onRender={() => setInspectorTab("export")}
+          busy={generate.isPending}
+        />
+      ) : (
+        <p className="text-2xs leading-snug text-faint">{t("ai.plan.none")}</p>
+      )}
 
       {/* ------------------------------------------------------ reference ----
           Between the brief and the mode: it shapes the edit like a style does,
@@ -393,6 +468,23 @@ export function AiEditPanel({
               {ORDERS.map((item) => (
                 <option key={item.value} value={item.value}>
                   {t(item.label)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {/* The genre policy. A dropdown rather than chips: there are eleven,
+              most users want the one their style already implies, and the
+              default says so rather than pretending nothing is chosen. */}
+          <Field label={t("ai.policy")}>
+            <Select
+              value={policy}
+              aria-label={t("ai.policy.label")}
+              onChange={(event) => setPolicy(event.target.value as PolicyId | "")}
+            >
+              <option value="">{t("ai.policy.auto")}</option>
+              {(capabilities.data?.editorial_policies ?? []).map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
                 </option>
               ))}
             </Select>
