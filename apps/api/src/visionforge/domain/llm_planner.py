@@ -50,6 +50,7 @@ from visionforge.domain.llm import (
     ProviderTransientError,
     ProviderUnavailableError,
 )
+from visionforge.domain.media import MediaKind
 from visionforge.domain.planner import (
     ClipOrder,
     NoUsableMediaError,
@@ -354,11 +355,17 @@ class LlmPlanner:
                 fit=request.fit,
                 audio=request.audio,
                 quality=request.quality,
+                encoder=request.encoder,
                 profile=profile,
                 handles=brief.handles,
                 source_durations={
                     candidate.media_id: candidate.duration_ms or 0 for candidate in candidates
                 },
+                stills=frozenset(
+                    candidate.media_id
+                    for candidate in candidates
+                    if candidate.kind is MediaKind.IMAGE
+                ),
                 target_duration_ms=request.target_duration_ms,
                 max_clips=request.max_clips,
                 planner=self.name,
@@ -391,9 +398,10 @@ class LlmPlanner:
                 media_id=candidate.media_id,
                 project_id=request.project_id,
                 is_renderable=candidate.is_ready,
-                duration_ms=candidate.duration_ms,
+                duration_ms=None if candidate.kind is MediaKind.IMAGE else candidate.duration_ms,
                 width=candidate.width,
                 height=candidate.height,
+                is_still=candidate.is_ready and candidate.kind is MediaKind.IMAGE,
             )
             for candidate in candidates
         }

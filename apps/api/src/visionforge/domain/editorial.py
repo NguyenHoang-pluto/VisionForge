@@ -44,11 +44,12 @@ from typing import Any
 from visionforge.domain.ids import MediaId
 from visionforge.domain.media import MediaKind
 from visionforge.domain.selection import Candidate, ScoredCandidate
+from visionforge.domain.stills import hold_span_ms, is_still
 
 #: Bumped whenever the meaning of a signal changes. Recorded on every plan, for
 #: the same reason analyzers are versioned: an edit that looks different next
 #: month must be attributable to a change somebody made rather than to drift.
-SIGNAL_VERSION = "1"
+SIGNAL_VERSION = "2"
 
 #: Bumped whenever an event is added, removed, or its evidence rule changes.
 #: Separate from ``SIGNAL_VERSION`` because the two move independently -- a
@@ -105,7 +106,15 @@ class EditorialSignals:
     version: str
     media_id: MediaId
     sequence: int
+    #: How much of the source the engine may take. For a still (Phase 12) that
+    #: is the longest permitted hold rather than a length the photo has.
     duration_ms: int
+    #: A photo rather than a video (Phase 12). Held from zero, never slowed,
+    #: and given a drift so it does not read as a freeze.
+    is_still: bool = False
+    #: Taller than wide, when the size is known. Decides which way a still
+    #: drifts.
+    is_portrait: bool = False
 
     # --- technical, from the quality analyzer ---
     sharpness: float | None = None
@@ -209,6 +218,8 @@ class EditorialSignals:
                 payload[name] = round(value, 4)
         payload["has_audio"] = self.has_audio
         payload["cuts_inside"] = len(self.scene_boundaries_ms)
+        if self.is_still:
+            payload["still"] = True
         return payload
 
 
@@ -238,7 +249,7 @@ def signals_for(
     """
     components = scored.components if scored is not None else {}
 
-    duration_ms = candidate.duration_ms or 0
+    duration_ms = hold_span_ms(candidate)
     density: float | None = None
     if candidate.mean_scene_ms and candidate.mean_scene_ms > 0:
         cuts_per_minute = 60_000.0 / float(candidate.mean_scene_ms)
@@ -259,6 +270,8 @@ def signals_for(
         media_id=candidate.media_id,
         sequence=candidate.sequence,
         duration_ms=duration_ms,
+        is_still=is_still(candidate),
+        is_portrait=(candidate.height or 0) > (candidate.width or 0),
         sharpness=_as_float(components.get("sharpness")),
         exposure=_as_float(components.get("exposure")),
         contrast=(

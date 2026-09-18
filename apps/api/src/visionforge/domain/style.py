@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from visionforge.domain.editplan import AspectRatio, AudioMode, QualityPreset
+from visionforge.domain.editplan import AspectRatio, AudioMode, QualityPreset, Resolution
 from visionforge.domain.selection import DEFAULT_SELECTION_WEIGHTS, SelectionWeights
 from visionforge.domain.subtitles import SubtitlePosition, SubtitleStyle
 
@@ -56,12 +56,45 @@ QUALITY_SETTINGS: dict[QualityPreset, tuple[int, str]] = {
     QualityPreset.DRAFT: (28, "ultrafast"),
     QualityPreset.BALANCED: (23, "veryfast"),
     QualityPreset.HIGH: (19, "medium"),
+    # CRF 16 is visually lossless for almost all footage; ``slow`` spends the
+    # time finding it. Roughly four times the encode of ``BALANCED``.
+    QualityPreset.MAX: (16, "slow"),
 }
 
-#: Frame rates a caller may choose. Also closed: 120 fps is inside the plan
-#: validator's bounds but is not something this hardware should be asked for
-#: from a dropdown.
-FPS_PRESETS: tuple[int, ...] = (24, 30, 60)
+#: The same levels on the GPU: an NVENC constant-quality target and a preset
+#: from ``p1`` (fastest) to ``p7`` (best). The targets match the CPU CRFs so a
+#: level means about the same picture on either encoder.
+GPU_QUALITY_SETTINGS: dict[QualityPreset, tuple[int, str]] = {
+    QualityPreset.DRAFT: (28, "p1"),
+    QualityPreset.BALANCED: (23, "p4"),
+    QualityPreset.HIGH: (19, "p6"),
+    QualityPreset.MAX: (16, "p7"),
+}
+
+#: How frames are resampled, per quality level. ``None`` keeps FFmpeg's default
+#: (bicubic), which is what every level rendered with before Phase 12 and what
+#: ``DRAFT`` and ``BALANCED`` still use, so their output is unchanged. Lanczos
+#: keeps more edge detail on both upscale and downscale, at a small cost.
+SCALE_FLAGS: dict[QualityPreset, str | None] = {
+    QualityPreset.DRAFT: None,
+    QualityPreset.BALANCED: None,
+    QualityPreset.HIGH: "lanczos",
+    QualityPreset.MAX: "lanczos",
+}
+
+#: Audio bitrate per quality level, in kbps. AAC at 128 is fine for a preview;
+#: music heard at the quality the picture is shown at wants more.
+AUDIO_KBPS: dict[QualityPreset, int] = {
+    QualityPreset.DRAFT: 128,
+    QualityPreset.BALANCED: 128,
+    QualityPreset.HIGH: 192,
+    QualityPreset.MAX: 256,
+}
+
+#: Frame rates a caller may choose. Also closed, and it goes up to the plan
+#: validator's own ceiling of 120. A rate above the source's is reached by
+#: repeating frames, so it only adds smoothness when the footage was shot fast.
+FPS_PRESETS: tuple[int, ...] = (24, 25, 30, 48, 50, 60, 120)
 
 #: Output geometry per aspect ratio. A closed map rather than free width/height:
 #: the caller picks a shape, the server picks dimensions that are even (required
@@ -77,6 +110,31 @@ PRESET_DIMENSIONS: dict[AspectRatio, tuple[int, int]] = {
     AspectRatio.PORTRAIT_9_16: (720, 1280),
     AspectRatio.SQUARE_1_1: (720, 720),
 }
+
+
+def dimensions_for(
+    aspect: AspectRatio, resolution: Resolution = Resolution.P720
+) -> tuple[int, int]:
+    """The pixels for a shape at a size.
+
+    ``PRESET_DIMENSIONS`` is the shape at 720 lines; any other size is that
+    shape scaled until its short side has ``resolution.lines`` lines.
+    """
+    return scale_to_lines(PRESET_DIMENSIONS[aspect], resolution.lines)
+
+
+def scale_to_lines(size: tuple[int, int], lines: int) -> tuple[int, int]:
+    """Scale ``size`` so its short side is ``lines``, keeping both sides even.
+
+    Even because H.264 4:2:0 cannot encode an odd dimension, and the plan
+    validator would reject one.
+    """
+    width, height = size
+    short = min(width, height)
+    return (
+        round(width * lines / short / 2) * 2,
+        round(height * lines / short / 2) * 2,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,17 +423,22 @@ def subtitle_position_for(aspect: str | None) -> SubtitlePosition:
 
 
 __all__ = [
+    "AUDIO_KBPS",
     "FPS_PRESETS",
     "NEUTRAL_PROFILE",
     "PRESET_DIMENSIONS",
     "QUALITY_SETTINGS",
+    "SCALE_FLAGS",
     "STYLE_PROFILES",
     "STYLE_SUBTITLE_PRESET",
     "EditStyle",
     "QualityPreset",
+    "Resolution",
     "StyleProfile",
+    "dimensions_for",
     "infer_style",
     "profile_for",
+    "scale_to_lines",
     "subtitle_position_for",
     "subtitle_style_for",
 ]

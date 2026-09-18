@@ -27,6 +27,7 @@ from visionforge.domain.editplan import (
     AspectRatio,
     AudioMode,
     EditPlan,
+    Encoder,
     FitMode,
     MusicCue,
     QualityPreset,
@@ -205,6 +206,7 @@ class Timeline:
     #: is an editorial intention, and only ``build_render_spec`` knows what it
     #: costs in CRF and preset. The timeline stays FFmpeg-free.
     quality: QualityPreset = QualityPreset.BALANCED
+    encoder: Encoder = Encoder.CPU
     #: Gain on the clips' own audio. Still not an encoder setting: a number the
     #: compiler turns into a filter, the way ``quality`` becomes a CRF.
     source_gain: float = 1.0
@@ -349,6 +351,7 @@ def compile_timeline(plan: EditPlan) -> Timeline:
         fit=plan.output.fit,
         audio=plan.output.audio,
         quality=plan.output.quality,
+        encoder=plan.output.encoder,
         source_gain=plan.output.source_gain,
         subtitles=plan.subtitles,
         metadata={
@@ -377,8 +380,14 @@ def _place_music(cue: MusicCue, *, timeline_ms: int) -> MusicPlacement:
 
 
 # --------------------------------------------------------------- render spec
+#: The largest side NVENC's H.264 encoder accepts.
+NVENC_H264_MAX = 4096
+
+
 class VideoCodec(StrEnum):
     H264 = "h264"
+    #: Used by the GPU encoder above 4096 a side, which NVENC's H.264 refuses.
+    HEVC = "hevc"
 
 
 class AudioCodec(StrEnum):
@@ -400,6 +409,13 @@ class RenderInput:
     media_id: MediaId
     index: int
     local_path: str
+    #: For a still (Phase 12), how long the looped picture must run. ``None``
+    #: for a video or audio file, which bring their own timeline.
+    still_ms: int | None = None
+
+    @property
+    def is_still(self) -> bool:
+        return self.still_ms is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,6 +500,14 @@ class RenderSpec:
     preset: str = "veryfast"
     pixel_format: str = "yuv420p"
     audio_bitrate_kbps: int = 128
+    #: Which hardware encodes. ``crf`` and ``preset`` are that encoder's own.
+    encoder: Encoder = Encoder.CPU
+    #: Resampling algorithm for every scale, or ``None`` for FFmpeg's default.
+    scale_flags: str | None = None
+    #: Scale a zoomed or panned segment *larger* than the output before
+    #: cropping, so the crop is taken from real pixels rather than upscaled
+    #: back into the frame. Off for the fast levels, whose output is unchanged.
+    supersample: bool = False
     #: Whether the clips' own audio is concatenated into the output.
     include_audio: bool = False
     #: Gain applied to that source audio. Ignored when it is not included.
@@ -573,6 +597,7 @@ def build_render_spec(
     *,
     local_paths: dict[MediaId, str],
     output_path: str,
+    still_ids: frozenset[MediaId] = frozenset(),
 ) -> RenderSpec:
     """Turn a timeline into an encoder-ready spec.
 
@@ -580,8 +605,12 @@ def build_render_spec(
     storage key and downloaded it. Nothing here accepts a path from anywhere
     else, which is what keeps arbitrary filesystem access out of the render path.
 
-    Distinct media become distinct inputs; a clip used twice is one input with
-    two segments, so the file is decoded once.
+    ``still_ids`` names the media that are photos (Phase 12). The worker knows
+    that from the media rows; a plan does not carry it. A still is decoded as a
+    looped picture, and has no audio stream to take sound from.
+
+    Every segment is an input of its own, a clip used twice included; see the
+    comment below for why that is memory rather than waste.
     """
     clips = timeline.video_track.clips
     music = timeline.music
@@ -592,47 +621,48 @@ def build_render_spec(
     if missing:
         raise ValueError(f"no local path resolved for media: {missing}")
 
-    input_index: dict[MediaId, int] = {}
-    inputs: list[RenderInput] = []
-    for clip in clips:
-        if clip.media_id not in input_index:
-            input_index[clip.media_id] = len(inputs)
-            inputs.append(
-                RenderInput(
-                    media_id=clip.media_id,
-                    index=len(inputs),
-                    local_path=local_paths[clip.media_id],
-                )
-            )
+    # One input per segment, even when a clip is used twice. Sharing one decoded
+    # stream between two segments makes FFmpeg queue every frame the later
+    # segment needs, already scaled to the output, until the edit reaches it --
+    # at 4K that is over a gigabyte for three seconds of one reused photo, and
+    # templates reuse clips by design. Opening the file again costs a second
+    # decode; queueing it costs the machine's memory.
+    inputs: list[RenderInput] = [
+        RenderInput(
+            media_id=clip.media_id,
+            index=position,
+            local_path=local_paths[clip.media_id],
+            # Long enough for this hold. A hold starts at zero, so that is
+            # its out point.
+            still_ms=clip.source_out_ms if clip.media_id in still_ids else None,
+        )
+        for position, clip in enumerate(clips)
+    ]
 
     segments = tuple(
         RenderSegment(
-            input_index=input_index[clip.media_id],
+            input_index=position,
             source_in_ms=clip.source_in_ms,
             source_out_ms=clip.source_out_ms,
             transition_in=clip.transition_in,
             transition_ms=clip.transition_ms,
             effects=clip.effects,
         )
-        for clip in clips
+        for position, clip in enumerate(clips)
     )
 
-    # The music file becomes an input like any other. If the same asset were
-    # somehow also a video source it would be decoded once and used twice,
-    # which is the same deduplication the clips get.
+    # The music file is an input of its own, after every clip.
     render_music: RenderMusic | None = None
     if music is not None:
-        if music.media_id not in input_index:
-            input_index[music.media_id] = len(inputs)
-            inputs.append(
-                RenderInput(
-                    media_id=music.media_id,
-                    index=len(inputs),
-                    local_path=local_paths[music.media_id],
-                )
+        inputs.append(
+            RenderInput(
+                media_id=music.media_id,
+                index=len(inputs),
+                local_path=local_paths[music.media_id],
             )
+        )
         render_music = RenderMusic(
-            input_index=input_index[music.media_id],
+            input_index=len(inputs) - 1,
             source_in_ms=music.source_in_ms,
             source_out_ms=music.source_out_ms,
             timeline_start_ms=music.timeline_start_ms,
@@ -644,9 +674,22 @@ def build_render_spec(
     # The only place a quality *level* becomes encoder *settings*. Imported
     # here rather than at module scope because ``style`` imports ``editplan``,
     # and a top-level import would make the domain's dependency graph circular.
-    from visionforge.domain.style import QUALITY_SETTINGS
+    from visionforge.domain.style import (
+        AUDIO_KBPS,
+        GPU_QUALITY_SETTINGS,
+        QUALITY_SETTINGS,
+        SCALE_FLAGS,
+    )
 
-    crf, preset = QUALITY_SETTINGS[timeline.quality]
+    gpu = timeline.encoder is Encoder.GPU
+    crf, preset = (GPU_QUALITY_SETTINGS if gpu else QUALITY_SETTINGS)[timeline.quality]
+    # NVENC's H.264 stops at 4096 a side; its HEVC goes to 8192.
+    codec = (
+        VideoCodec.HEVC
+        if gpu and max(timeline.width, timeline.height) > NVENC_H264_MAX
+        else VideoCodec.H264
+    )
+    scale_flags = SCALE_FLAGS[timeline.quality]
 
     return RenderSpec(
         inputs=tuple(inputs),
@@ -658,6 +701,11 @@ def build_render_spec(
         output_path=output_path,
         crf=crf,
         preset=preset,
+        encoder=timeline.encoder,
+        video_codec=codec,
+        audio_bitrate_kbps=AUDIO_KBPS[timeline.quality],
+        scale_flags=scale_flags,
+        supersample=scale_flags is not None,
         include_audio=timeline.audio is AudioMode.SOURCE,
         source_gain=timeline.source_gain,
         music=render_music,

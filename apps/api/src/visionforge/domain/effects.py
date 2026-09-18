@@ -33,6 +33,12 @@ class EffectKind(StrEnum):
 
     ZOOM_IN = "zoom_in"
     ZOOM_OUT = "zoom_out"
+    #: Slow drifts across the frame (Phase 12). With the zooms, these are the
+    #: movement a still is given so that a photo does not read as a freeze.
+    PAN_LEFT = "pan_left"
+    PAN_RIGHT = "pan_right"
+    PAN_UP = "pan_up"
+    PAN_DOWN = "pan_down"
     SLOW_MOTION = "slow_motion"
     SPEED_UP = "speed_up"
     BRIGHTNESS = "brightness"
@@ -80,6 +86,13 @@ EFFECT_BOUNDS: dict[EffectKind, tuple[float, float, float]] = {
     # well below anything that would show interpolation on 720p footage.
     EffectKind.ZOOM_IN: (0.0, 0.30, 0.0),
     EffectKind.ZOOM_OUT: (0.0, 0.30, 0.0),
+    # How far the view travels, as a fraction of the frame. The picture is
+    # cropped by this much and the crop slides across it, so 0.15 is a drift
+    # through 15% of the frame -- the same scale the zooms use.
+    EffectKind.PAN_LEFT: (0.0, 0.30, 0.0),
+    EffectKind.PAN_RIGHT: (0.0, 0.30, 0.0),
+    EffectKind.PAN_UP: (0.0, 0.30, 0.0),
+    EffectKind.PAN_DOWN: (0.0, 0.30, 0.0),
     # Playback rate. Below 0.25 the motion judders without frame interpolation,
     # which this phase does not do; above 4 the audio is unusable whatever
     # ``atempo`` is asked to do about it.

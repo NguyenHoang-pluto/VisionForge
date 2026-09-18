@@ -33,6 +33,7 @@ from visionforge.domain.editplan import (
     AspectRatio,
     AudioMode,
     EditPlan,
+    Encoder,
     FitMode,
     MusicCue,
     OutputSpec,
@@ -51,8 +52,10 @@ from visionforge.domain.selection import (
     select,
     weights_payload,
 )
+from visionforge.domain.stills import hold_span_ms, hold_start_ms, with_still_motion
 from visionforge.domain.story import PolicyId
 from visionforge.domain.style import EditStyle
+from visionforge.domain.template import EditTemplate
 from visionforge.domain.variants import VariantId
 
 
@@ -90,6 +93,7 @@ class PlanRequest:
     #: Encoder effort. Reaches the renderer through the plan's ``OutputSpec``;
     #: no planner ever sees a CRF.
     quality: QualityPreset = QualityPreset.BALANCED
+    encoder: Encoder = Encoder.CPU
 
     #: The style asked for, if any. ``None`` means "no stylistic bias", which is
     #: the Phase 4 behaviour and remains the default -- a style is something a
@@ -145,6 +149,12 @@ class PlanRequest:
     #: modifies the *policy*, so it changes which clips are chosen as well as how
     #: they are cut -- see ``domain.variants``.
     variant: VariantId | None = None
+
+    # --- templates (Phase 12) ---
+    #: The template to fill. Only ``EditorialPlanner`` reads it: the template
+    #: decides how many slots there are, how long each is and how they join, and
+    #: the engine decides which photo or video goes in each.
+    template: EditTemplate | None = None
 
     def __post_init__(self) -> None:
         if self.max_clips < self.min_clips:
@@ -282,6 +292,8 @@ class RulesEnginePlanner:
                     source_in_ms=source_in,
                     source_out_ms=source_out,
                     transition_in=TransitionKind.CUT,
+                    # A still is given a drift so it does not read as a freeze.
+                    effects=with_still_motion(scored.candidate, (), index),
                 )
             )
 
@@ -299,6 +311,7 @@ class RulesEnginePlanner:
                 source_in_ms=s.source_in_ms,
                 source_out_ms=s.source_out_ms,
                 transition_in=s.transition_in,
+                effects=s.effects,
             )
             for i, s in enumerate(segments)
         ]
@@ -317,6 +330,7 @@ class RulesEnginePlanner:
                 fit=request.fit,
                 audio=request.audio,
                 quality=request.quality,
+                encoder=request.encoder,
             ),
             music=music,
             planner=self.name,
@@ -405,7 +419,7 @@ class RulesEnginePlanner:
         ``_trim_window`` does and it is right when nothing is quantised; here it
         would put the clip -- and therefore every cut after it -- off the grid.
         """
-        source = candidate.duration_ms or 0
+        source = hold_span_ms(candidate)
         if source < MIN_SEGMENT_MS:
             return None
 
@@ -422,7 +436,7 @@ class RulesEnginePlanner:
             end_ms = grid.span_for_beats(placed_beats + beats)
             duration = end_ms - placed_ms
             if MIN_SEGMENT_MS <= duration <= MAX_SEGMENT_MS and duration <= source:
-                start = max(0, (source - duration) // 2)
+                start = hold_start_ms(candidate, source, duration)
                 return (start, start + duration), placed_beats + beats, end_ms
             beats -= 1
         return None
@@ -523,7 +537,7 @@ class RulesEnginePlanner:
         so the caller can drop it rather than emit something the validator would
         reject.
         """
-        duration = candidate.duration_ms or 0
+        duration = hold_span_ms(candidate)
         if duration < MIN_SEGMENT_MS:
             return None
 
@@ -531,7 +545,7 @@ class RulesEnginePlanner:
         if take < MIN_SEGMENT_MS:
             return None
 
-        start = max(0, (duration - take) // 2)
+        start = hold_start_ms(candidate, duration, take)
         end = start + take
         if end > duration:
             start, end = max(0, duration - take), duration

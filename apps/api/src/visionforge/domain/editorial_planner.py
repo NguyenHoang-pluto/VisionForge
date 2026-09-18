@@ -41,6 +41,7 @@ from visionforge.domain.decisions import (
     DECISION_ENGINE_VERSION,
     EditorialPlan,
     EngineInput,
+    ReasonCode,
     decide,
 )
 from visionforge.domain.editorial import (
@@ -110,6 +111,8 @@ from visionforge.domain.story import (
     policy_for,
     with_bounds,
 )
+from visionforge.domain.template import EditTemplate
+from visionforge.domain.template_fill import template_pacing
 from visionforge.domain.variants import apply_variant, variant_for
 
 logger = logging.getLogger(__name__)
@@ -226,6 +229,12 @@ class EditorialPlanner:
 
         policy = self._policy(request, style_policy, intent)
         intent_payload = self._intent_payload(request, intent, style_policy)
+
+        if request.template is not None:
+            return self._fill_template(
+                request, request.template, readings, board, policy, intent_payload, selection
+            )
+
         count = self._clip_count(request, policy, len(readings))
 
         def run(wanted: int, limits: tuple[int, ...] = ()) -> EditorialPlan:
@@ -321,6 +330,71 @@ class EditorialPlanner:
             self._explained(selection, editorial),
         )
 
+    # -------------------------------------------------------------- template
+    def _fill_template(
+        self,
+        request: PlanRequest,
+        template: EditTemplate,
+        readings: tuple[ClipReading, ...],
+        board: SignalBoard,
+        policy: EditorialPolicy,
+        intent_payload: dict[str, Any] | None,
+        selection: SelectionResult,
+    ) -> tuple[EditorialOutcome, SelectionResult]:
+        """Fill a template's slots. One pass, because the template fixed the rest.
+
+        None of the arc fitting ``compose`` does applies: the number of slots,
+        their lengths and their roles are the template's, and the point of a
+        template is that they are not renegotiated against the footage. What
+        the engine still decides is everything it is good at -- which clip goes
+        in which slot, where in it to cut, and why.
+        """
+        pacing = template_pacing(
+            template, grid=request.beats, beat_sync=request.beat_sync, shape=policy.pacing
+        )
+        editorial = decide(
+            EngineInput(
+                readings=readings,
+                board=board,
+                policy=policy,
+                pacing=pacing,
+                roles=tuple(slot.role for slot in template.slots),
+                variant=request.variant.value if request.variant else None,
+                intent=intent_payload,
+                template=template,
+            )
+        )
+        reused = sum(
+            1 for segment in editorial.segments if ReasonCode.REUSED_FOR_TEMPLATE in segment.reasons
+        )
+        fit = {
+            "requested_clips": len(template.slots),
+            "achieved_clips": len(editorial.segments),
+            "relaxed_max_clip_ms": None,
+            "target_ms": pacing.total_ms,
+            "achieved_ms": editorial.total_output_ms,
+            "shortfall_ms": max(0, pacing.total_ms - editorial.total_output_ms),
+            "template": {
+                "id": template.id,
+                "name": template.name,
+                "source": template.source.value,
+                "version": template.version,
+                "slots": len(template.slots),
+                "reused": reused,
+            },
+        }
+        return (
+            EditorialOutcome(
+                plan=editorial,
+                metrics=evaluate(editorial, board, policy),
+                board=board,
+                readings=readings,
+                policy=policy,
+                fit=fit,
+            ),
+            self._explained(selection, editorial),
+        )
+
     # --------------------------------------------------------------- compile
     def compile(
         self, request: PlanRequest, outcome: EditorialOutcome, selection: SelectionResult
@@ -362,6 +436,7 @@ class EditorialPlanner:
                 fit=request.fit,
                 audio=request.audio,
                 quality=request.quality,
+                encoder=request.encoder,
             ),
             planner=self.name,
             planner_version=self.version,

@@ -32,7 +32,7 @@ argument for doing this deterministically.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from itertools import pairwise
 from typing import Any
@@ -56,10 +56,17 @@ from visionforge.domain.editplan import (
 from visionforge.domain.effects import EFFECT_BOUNDS, Effect, EffectKind
 from visionforge.domain.ids import MediaId
 from visionforge.domain.pacing import PacingPlan, PacingSlot
+from visionforge.domain.stills import drifted
 from visionforge.domain.story import EditorialPolicy, StoryRole
+from visionforge.domain.template import (
+    SLOT_MOTION_AMOUNT,
+    EditTemplate,
+    SlotPreference,
+    TemplateSlot,
+)
 
 #: Bumped when the engine's behaviour changes in a way that could alter an edit.
-DECISION_ENGINE_VERSION = "1"
+DECISION_ENGINE_VERSION = "2"
 
 
 class DecisionKind(StrEnum):
@@ -128,6 +135,17 @@ class ReasonCode(StrEnum):
     NARRATIVE_ORDER = "narrative_order"
     STYLE_POLICY = "style_policy"
     LIKELY_SPEECH = "likely_speech"
+    #: A photo, held from its start for the slot's length (Phase 12).
+    STILL_HOLD = "still_hold"
+    #: A photo given a slow zoom or pan so it does not read as a freeze.
+    STILL_MOTION = "still_motion"
+    #: The kind of media the template's slot asked for (Phase 12).
+    TEMPLATE_SLOT_FIT = "template_slot_fit"
+    #: Used again, because the template has more slots than the project has
+    #: distinct clips.
+    REUSED_FOR_TEMPLATE = "reused_for_template"
+    #: How the template joins this slot to the one before it.
+    TEMPLATE_TRANSITION = "template_transition"
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +394,12 @@ class EngineInput:
     #: that wants structure alone -- the acceptance scripts use it to prove the
     #: structure is doing the work rather than the decoration.
     treatments: bool = True
+    #: The template being filled (Phase 12). When present, ``roles`` and
+    #: ``pacing`` are the template's own, one per slot, and three things change:
+    #: each slot's energy and media preference steer selection, a clip may be
+    #: reused when the template has more slots than the project has clips, and
+    #: joins and still motion come from the template rather than the policy.
+    template: EditTemplate | None = None
 
 
 def decide(inputs: EngineInput) -> EditorialPlan:
@@ -398,6 +422,7 @@ def decide(inputs: EngineInput) -> EditorialPlan:
     segments: list[EditorialSegment] = []
     for index, (reading, role, pick) in enumerate(chosen):
         slot = inputs.pacing.slots[index] if index < len(inputs.pacing.slots) else None
+        wish = inputs.template.slots[index] if inputs.template is not None else None
         segment, trim_decisions = _cut(
             reading=reading,
             role=role,
@@ -406,11 +431,15 @@ def decide(inputs: EngineInput) -> EditorialPlan:
             index=index,
             policy=inputs.policy,
             treatments=inputs.treatments,
+            motion=wish.motion if wish is not None else None,
         )
         segments.append(segment)
         decisions.extend(trim_decisions)
 
-    if inputs.treatments:
+    if inputs.template is not None:
+        segments, seam_decisions = _template_seams(segments, inputs.template)
+        decisions.extend(seam_decisions)
+    elif inputs.treatments:
         segments, seam_decisions = _seams(segments, inputs.policy)
         decisions.extend(seam_decisions)
 
@@ -481,15 +510,31 @@ def _select(
     # to right and the order two runs produce is identical.
     order = sorted(range(len(roles)), key=lambda i: (-policy.priority_for(roles[i]), i))
 
+    template = inputs.template
     for position in order:
+        wish = template.slots[position] if template is not None else None
+        reusing = False
         if not available:
-            break
+            if wish is None:
+                break
+            # A template's slots are its structure, so every one is filled:
+            # with more slots than clips, the clips are used again.
+            reusing = True
         role = roles[position]
+        pool = list(inputs.readings) if reusing else available
 
         scored: list[tuple[ClipReading, _Pick, float]] = []
-        for reading in available:
+        for reading in pool:
             distinct = inputs.board.distinctiveness(reading.media_id, tuple(taken))
-            pick = _score(reading, role, policy, distinct, relevance.get(reading.media_id))
+            pick = _score(
+                reading,
+                role,
+                policy,
+                distinct,
+                relevance.get(reading.media_id),
+                wish=wish,
+                uses=taken.count(reading.media_id),
+            )
             scored.append((reading, pick, distinct))
 
         scored.sort(key=lambda item: (-item[1].score, item[0].signals.sequence))
@@ -497,7 +542,7 @@ def _select(
         leader = scored[0][1].score
         winner: tuple[ClipReading, _Pick, float] | None = None
         for reading, pick, distinct in scored:
-            if distinct >= policy.min_diversity:
+            if reusing or distinct >= policy.min_diversity:
                 winner = (reading, pick, distinct)
                 break
             # Too similar to something already in the edit. Recorded against the
@@ -506,6 +551,11 @@ def _select(
             if nearest is not None:
                 suppressed[reading.media_id] = nearest
 
+        if winner is None and wish is not None:
+            # A template slot is never left empty; the best clip is taken even
+            # though it repeats one already in the edit, and says so.
+            winner = scored[0]
+            reusing = True
         if winner is None:
             # Every remaining clip repeats something already chosen. Taking the
             # best of them anyway would fill the arc with duplicates; leaving the
@@ -513,6 +563,10 @@ def _select(
             continue
 
         reading, pick, _distinct = winner
+        if reusing:
+            pick = _Pick(
+                pick.score, pick.components, (*pick.reasons, ReasonCode.REUSED_FOR_TEMPLATE)
+            )
         if pick.score < leader - CONTENDER_MARGIN:
             # The leader was gated out and the survivor is much weaker. Still
             # taken -- a role wants filling -- but the reason says so.
@@ -520,10 +574,13 @@ def _select(
 
         filled[position] = (reading, role, pick)
         taken.append(reading.media_id)
-        available.remove(reading)
+        if reading in available:
+            available.remove(reading)
 
     chosen = [entry for entry in filled if entry is not None]
-    if policy.prefer_chronological:
+    # Not for a template: its slots differ from each other in length, energy and
+    # the media they ask for, so swapping clips between them undoes the fit.
+    if policy.prefer_chronological and template is None:
         chosen = _chronological_within_roles(chosen)
 
     decisions: list[EditorialDecision] = [
@@ -609,6 +666,9 @@ def _score(
     policy: EditorialPolicy,
     distinctiveness: float,
     relevance: float | None,
+    *,
+    wish: TemplateSlot | None = None,
+    uses: int = 0,
 ) -> _Pick:
     """A clip's case for one role, on six weighted axes.
 
@@ -626,7 +686,9 @@ def _score(
 
     quality = signals.quality if signals.quality is not None else 0.5
     role_fit = policy.fit_for(role, events)
-    wanted = policy.energy_for(role)
+    # A template slot says how much should be going on in it; that replaces
+    # the policy's per-role guess.
+    wanted = wish.energy if wish is not None else policy.energy_for(role)
     energy_fit = 1.0 - abs(signals.energy - wanted)
     style = signals.style_match if signals.style_match is not None else 1.0
     relevant = relevance if relevance is not None else 1.0
@@ -648,11 +710,43 @@ def _score(
         + components["relevance"] * weights.relevance
     )
 
+    reasons = _reasons_for(reading, role, components, events)
+    if wish is not None:
+        # Multiplied, not added as a seventh weighted axis: the six weights are
+        # the policy's and sum to one, and a template's media preference is a
+        # separate question from how good the clip is.
+        fit = _slot_fit(wish, signals.is_still)
+        components["slot_fit"] = round(fit, 4)
+        score *= fit
+        if fit >= 1.0 and wish.prefer is not SlotPreference.ANY:
+            reasons = (*reasons, ReasonCode.TEMPLATE_SLOT_FIT)
+        # Each earlier use costs a little, so a reused clip is the one that
+        # fits best *and* has been seen least.
+        score *= REUSE_PENALTY**uses
+
     return _Pick(
         score=round(score, 6),
         components=components,
-        reasons=_reasons_for(reading, role, components, events),
+        reasons=reasons,
     )
+
+
+#: How much a template slot's media preference is worth. A slot asking for a
+#: video takes a photo only when nothing better is left; a slot asking for a
+#: photo is less strict, because a calm video fills it well.
+_WRONG_KIND_FOR_VIDEO_SLOT = 0.55
+_WRONG_KIND_FOR_STILL_SLOT = 0.8
+
+#: Score kept per earlier use of a clip when a template reuses it.
+REUSE_PENALTY = 0.7
+
+
+def _slot_fit(wish: TemplateSlot, is_still: bool) -> float:
+    if wish.prefer is SlotPreference.VIDEO and is_still:
+        return _WRONG_KIND_FOR_VIDEO_SLOT
+    if wish.prefer is SlotPreference.STILL and not is_still:
+        return _WRONG_KIND_FOR_STILL_SLOT
+    return 1.0
 
 
 def _reasons_for(
@@ -767,6 +861,7 @@ def _cut(
     index: int,
     policy: EditorialPolicy,
     treatments: bool,
+    motion: EffectKind | None = None,
 ) -> tuple[EditorialSegment, list[EditorialDecision]]:
     """Decide which part of one clip is used, how long, and at what rate.
 
@@ -791,7 +886,7 @@ def _cut(
     # slow motion silently becomes twice as long as the pacing asked for.
     effects: list[Effect] = []
     rate = 1.0
-    if treatments and role is StoryRole.PEAK and policy.slow_motion_peak:
+    if treatments and role is StoryRole.PEAK and policy.slow_motion_peak and not signals.is_still:
         low, _high, _neutral = EFFECT_BOUNDS[EffectKind.SLOW_MOTION]
         rate = max(low, PEAK_SLOW_RATE)
         take_needed = int(round(wanted * rate))
@@ -818,7 +913,12 @@ def _cut(
     take = min(take, max(source_ms, MIN_SEGMENT_MS))
 
     # --- where in the source ----------------------------------------------
-    start, trim_reasons = _window(signals, role, take, source_ms)
+    # A still has no head, centre or action: it is held from its start.
+    start, trim_reasons = (
+        (0, (ReasonCode.STILL_HOLD,))
+        if signals.is_still
+        else _window(signals, role, take, source_ms)
+    )
     end = start + min(take, max(source_ms - start, MIN_SEGMENT_MS))
     if end > source_ms:
         start, end = max(0, source_ms - take), source_ms
@@ -889,6 +989,30 @@ def _cut(
                     amount=extra.amount,
                     reasons=(ReasonCode.STYLE_POLICY,),
                     confidence=0.5,
+                )
+            )
+
+    # --- a drift, so a still does not read as a freeze ----------------------
+    #
+    # Always, not only with treatments on: a photo held motionless for three
+    # seconds looks like the render stalled, which is a defect rather than a
+    # stylistic choice.
+    if signals.is_still:
+        own = (Effect(kind=motion, amount=SLOT_MOTION_AMOUNT),) if motion is not None else ()
+        drift = drifted((*own, *effects), index, portrait=signals.is_portrait)
+        added = [effect for effect in drift if effect not in effects]
+        effects = list(drift)
+        for effect in added:
+            decisions.append(
+                EditorialDecision(
+                    kind=DecisionKind.ADD_EFFECT,
+                    media_id=reading.media_id,
+                    slot=index,
+                    role=role,
+                    effect=effect.kind,
+                    amount=effect.amount,
+                    reasons=(ReasonCode.STILL_MOTION,),
+                    confidence=1.0,
                 )
             )
 
@@ -1117,6 +1241,45 @@ def _seams(
             )
         )
 
+    return result, decisions
+
+
+def _template_seams(
+    segments: list[EditorialSegment], template: EditTemplate
+) -> tuple[list[EditorialSegment], list[EditorialDecision]]:
+    """Join each slot the way the template does.
+
+    The template's length is a wish, and a slot filled by a clip shorter than
+    the slot came out shorter. A join is therefore re-checked against the
+    real neighbours with the plan validator's own rule, and becomes a cut
+    rather than a transition the gate would refuse.
+    """
+    decisions: list[EditorialDecision] = []
+    result: list[EditorialSegment] = []
+    for index, segment in enumerate(segments):
+        wish = template.slots[index]
+        kind, length = wish.transition_in, wish.transition_ms
+        if kind is not TransitionKind.CUT:
+            left = segments[index - 1].output_ms if index > 0 else segment.output_ms
+            ceiling = int(min(left, segment.output_ms) * MAX_TRANSITION_SHARE)
+            if (kind.needs_previous and index == 0) or ceiling < MIN_TRANSITION_MS:
+                kind, length = TransitionKind.CUT, 0
+            else:
+                length = max(MIN_TRANSITION_MS, min(length, ceiling, MAX_TRANSITION_MS))
+        if kind is not TransitionKind.CUT:
+            decisions.append(
+                EditorialDecision(
+                    kind=DecisionKind.TRANSITION,
+                    media_id=segment.media_id,
+                    slot=index,
+                    role=segment.role,
+                    transition=kind,
+                    transition_ms=length,
+                    reasons=(ReasonCode.TEMPLATE_TRANSITION,),
+                    confidence=1.0,
+                )
+            )
+        result.append(replace(segment, transition=kind, transition_ms=length))
     return result, decisions
 
 

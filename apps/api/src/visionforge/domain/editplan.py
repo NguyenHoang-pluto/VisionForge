@@ -55,6 +55,10 @@ from visionforge.domain.subtitles import (
 MIN_SEGMENT_MS = 300
 MAX_SEGMENT_MS = 30_000
 MAX_SEGMENTS = 40
+#: Longest a still may be held (Phase 12). A photo has no length of its own, so
+#: this is a pacing judgement rather than a source limit: past about eight
+#: seconds even a slow push-in reads as the edit having stopped.
+MAX_STILL_MS = 8_000
 
 #: Transition bounds (Phase 9).
 #:
@@ -72,7 +76,11 @@ MAX_TRANSITION_SHARE = 0.5
 MIN_OUTPUT_MS = 1_000
 MAX_OUTPUT_MS = 10 * 60 * 1_000
 MIN_DIMENSION = 16
-MAX_DIMENSION = 3840
+MAX_DIMENSION = 7680
+#: The largest side the CPU encoder is asked for. Above it -- 8K -- only the GPU
+#: encoder is used: x264 could not allocate an 8K encoder on an 8 GB machine,
+#: and NVENC encodes one in about real time.
+MAX_CPU_DIMENSION = 3840
 MIN_FPS = 1
 MAX_FPS = 120
 
@@ -171,6 +179,41 @@ class QualityPreset(StrEnum):
     DRAFT = "draft"
     BALANCED = "balanced"
     HIGH = "high"
+    #: The most the encoder can keep from the source, however long it takes.
+    MAX = "max"
+
+
+class Resolution(StrEnum):
+    """Output size, named by the lines on the frame's short side.
+
+    A closed set for the same reason the aspect ratio is one: the caller names a
+    size and the server works out the pixels. Nothing above 2160 lines is
+    offered up to 4320 lines (8K), which only the GPU encoder can produce: x264
+    could not allocate an 8K encoder on the reference machine (8 GB RAM), while
+    NVENC's HEVC encoder takes up to 8192 a side. 16K is past every NVIDIA
+    encoder's limit and past what this machine's memory could encode on the CPU,
+    so it is not offered at all.
+    """
+
+    P720 = "720p"
+    P1080 = "1080p"
+    P1440 = "1440p"
+    P2160 = "2160p"
+    #: 8K. GPU only; see ``MAX_CPU_DIMENSION``.
+    P4320 = "4320p"
+
+    @property
+    def lines(self) -> int:
+        return int(self.value.removesuffix("p"))
+
+
+class Encoder(StrEnum):
+    """Which hardware encodes the video. The level of quality is separate."""
+
+    #: x264 on the CPU. The default, and what every plan before Phase 12 used.
+    CPU = "cpu"
+    #: NVENC on an NVIDIA GPU: H.264 up to 4096 a side, HEVC above that.
+    GPU = "gpu"
 
 
 class AudioMode(StrEnum):
@@ -195,6 +238,9 @@ class OutputSpec:
     #: settings. ``BALANCED`` is the Phase 4 behaviour exactly, so a plan written
     #: before this field existed re-renders to the same bytes.
     quality: QualityPreset = QualityPreset.BALANCED
+    #: Which hardware encodes (Phase 12). Absent from older plans, which were
+    #: all encoded on the CPU.
+    encoder: Encoder = Encoder.CPU
 
     #: Linear gain applied to the clips' own audio, independent of any music.
     #: Separate from ``audio`` because "keep the source audio" and "how loud"
@@ -400,6 +446,7 @@ class EditPlan:
                 "fit": self.output.fit.value,
                 "audio": self.output.audio.value,
                 "quality": self.output.quality.value,
+                "encoder": self.output.encoder.value,
                 "source_gain": round(self.output.source_gain, 4),
             },
             "music": self.music.as_payload() if self.music else None,
@@ -489,6 +536,11 @@ class MediaFact:
     #: project-owned audio files, so pointing a cue at the soundtrack of a video
     #: is a different feature and is refused here rather than half-working.
     is_audio_asset: bool = False
+    #: Ready, and a still image (Phase 12). A still is renderable too, but it
+    #: has no length, so a segment of one is a *hold* rather than a trim: it
+    #: starts at zero and runs for as long as the edit wants it, up to
+    #: ``MAX_STILL_MS``.
+    is_still: bool = False
 
     @classmethod
     def from_media(
@@ -520,11 +572,14 @@ class MediaFact:
         return cls(
             media_id=media_id,
             project_id=project_id,
-            is_renderable=ready and kind is MediaKind.VIDEO,
-            duration_ms=duration_ms,
+            is_renderable=ready and kind in (MediaKind.VIDEO, MediaKind.IMAGE),
+            # A still's probed "duration" is one frame, and nothing may trim
+            # against it.
+            duration_ms=None if kind is MediaKind.IMAGE else duration_ms,
             width=width,
             height=height,
             is_audio_asset=ready and kind is MediaKind.AUDIO,
+            is_still=ready and kind is MediaKind.IMAGE,
         )
 
 
@@ -543,6 +598,14 @@ def validate_plan(plan: EditPlan, media_facts: dict[MediaId, MediaFact]) -> list
         violations.append(
             PlanViolation(
                 "output_width", f"width {out.width} outside {MIN_DIMENSION}-{MAX_DIMENSION}"
+            )
+        )
+    if out.encoder is Encoder.CPU and max(out.width, out.height) > MAX_CPU_DIMENSION:
+        violations.append(
+            PlanViolation(
+                "cpu_too_large",
+                f"{out.width}x{out.height} needs the GPU encoder; the CPU encodes up to "
+                f"{MAX_CPU_DIMENSION} a side",
             )
         )
     if not MIN_DIMENSION <= out.height <= MAX_DIMENSION:
@@ -824,7 +887,29 @@ def _validate_segment(
                 order,
             )
         )
-    if fact.duration_ms is not None and segment.source_out_ms > fact.duration_ms:
+    if fact.is_still:
+        # A hold, not a trim. Starting anywhere but zero would mean nothing on a
+        # still, and accepting it would let two plans that render identically
+        # differ in their stored numbers.
+        if segment.source_in_ms != 0:
+            violations.append(
+                PlanViolation(
+                    "still_not_from_zero",
+                    f"a still is held from 0 ms, not {segment.source_in_ms} ms",
+                    order,
+                )
+            )
+        if duration > MAX_STILL_MS:
+            violations.append(
+                PlanViolation(
+                    "still_too_long", f"a still held {duration} ms, above {MAX_STILL_MS}", order
+                )
+            )
+        if segment.speed != 1.0:
+            violations.append(
+                PlanViolation("still_speed", "a still has no motion to speed up or slow", order)
+            )
+    elif fact.duration_ms is not None and segment.source_out_ms > fact.duration_ms:
         violations.append(
             PlanViolation(
                 "trim_past_end",
@@ -1181,6 +1266,7 @@ def plan_from_payload(payload: dict[str, Any]) -> EditPlan:
             # failing is correct here: the default *is* what those plans were
             # rendered with.
             quality=QualityPreset(output.get("quality", QualityPreset.BALANCED.value)),
+            encoder=Encoder(output.get("encoder", Encoder.CPU.value)),
             # Absent before Phase 7. Unity is what those plans were rendered
             # with, so defaulting reproduces them exactly.
             source_gain=float(output.get("source_gain", 1.0)),

@@ -78,6 +78,7 @@ from visionforge.domain.editplan import (
 )
 from visionforge.domain.effects import MAX_EFFECTS_PER_SEGMENT, Effect, EffectKind
 from visionforge.domain.ids import MediaId
+from visionforge.domain.style import scale_to_lines
 from visionforge.domain.subtitles import (
     MIN_CUE_GAP_MS,
     MIN_CUE_MS,
@@ -854,7 +855,9 @@ def _change_output(
                 f"this server does not render {operation.aspect_ratio.value}",
             )
             return
-        width, height = preset
+        # A new shape keeps the current size: a 4K edit turned vertical is
+        # still 4K, not the 720p the table is written at.
+        width, height = scale_to_lines(preset, min(output.width, output.height))
 
     working.output = OutputSpec(
         aspect_ratio=operation.aspect_ratio or output.aspect_ratio,
@@ -864,6 +867,7 @@ def _change_output(
         fit=output.fit,
         audio=operation.audio or output.audio,
         quality=operation.quality or output.quality,
+        encoder=output.encoder,
         source_gain=(
             operation.source_gain if operation.source_gain is not None else output.source_gain
         ),

@@ -51,6 +51,7 @@ from visionforge.domain.editplan import (
     MAX_OUTPUT_MS,
     MAX_SEGMENT_MS,
     MAX_SEGMENTS,
+    MAX_STILL_MS,
     MAX_TRANSITION_MS,
     MAX_TRANSITION_SHARE,
     MIN_OUTPUT_MS,
@@ -59,6 +60,7 @@ from visionforge.domain.editplan import (
     AspectRatio,
     AudioMode,
     EditPlan,
+    Encoder,
     FitMode,
     OutputSpec,
     Segment,
@@ -71,6 +73,7 @@ from visionforge.domain.effects import (
     EffectKind,
 )
 from visionforge.domain.ids import MediaId, ProjectId
+from visionforge.domain.stills import drifted
 from visionforge.domain.style import EditStyle, QualityPreset, StyleProfile
 
 #: Longest rationale kept. Enough for two sentences of explanation; short enough
@@ -499,6 +502,11 @@ class CompileContext:
     planner: str
     planner_version: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: The media that are stills (Phase 12). A still is held from zero for up to
+    #: ``MAX_STILL_MS`` rather than trimmed from its centre.
+    stills: frozenset[MediaId] = frozenset()
+    #: Which hardware encodes the result (Phase 12).
+    encoder: Encoder = Encoder.CPU
 
 
 def compile_directive(directive: EditDirective, context: CompileContext) -> EditPlan:
@@ -520,7 +528,8 @@ def compile_directive(directive: EditDirective, context: CompileContext) -> Edit
         if media_id is None:
             continue
 
-        source_ms = context.source_durations.get(media_id, 0)
+        still = media_id in context.stills
+        source_ms = MAX_STILL_MS if still else context.source_durations.get(media_id, 0)
         if source_ms < MIN_SEGMENT_MS:
             continue
 
@@ -533,9 +542,12 @@ def compile_directive(directive: EditDirective, context: CompileContext) -> Edit
 
         # Centre trim, exactly as the rules engine does it and for the same
         # reason: the head of a handheld clip is where the focus hunt lives.
-        start = max(0, (source_ms - take) // 2)
+        # A still has no head or centre, and is held from zero.
+        start = 0 if still else max(0, (source_ms - take) // 2)
         order = len(segments)
         effects = clip.effects[:MAX_EFFECTS_PER_SEGMENT]
+        if still:
+            effects = drifted(effects, order)
         transition, transition_ms = _fit_transition(
             clip, order=order, own_ms=take, previous=segments[-1] if segments else None
         )
@@ -564,6 +576,7 @@ def compile_directive(directive: EditDirective, context: CompileContext) -> Edit
             fit=context.fit,
             audio=context.audio,
             quality=context.quality,
+            encoder=context.encoder,
         ),
         planner=context.planner,
         planner_version=context.planner_version,

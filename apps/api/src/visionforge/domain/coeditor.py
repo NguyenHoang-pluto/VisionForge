@@ -735,7 +735,7 @@ def _output(clause: _Clause) -> EditOperation | None:
         aspect = AspectRatio.SQUARE_1_1
 
     quality: QualityPreset | None = None
-    match = re.search(r"\b(draft|balanced|high)\s+quality\b", clause.text)
+    match = re.search(r"\b(draft|balanced|high|max)\s+quality\b", clause.text)
     if match:
         quality = QualityPreset(match.group(1))
 

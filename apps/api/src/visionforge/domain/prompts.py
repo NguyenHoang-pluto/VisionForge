@@ -37,7 +37,7 @@ from visionforge.domain.policy import StylePolicy
 from visionforge.domain.style import EditStyle, StyleProfile
 
 #: Bumped on every material change to the text below.
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 
 
 _BASE_PROMPT = """\
@@ -67,6 +67,9 @@ Rules:
 - List clips in the order they should play. Do not repeat a clip.
 - "duration_ms" is how long to hold that clip. Stay within the pacing range you \
 are given. A clip cannot be held longer than its own duration.
+- A clip marked "still": true is a photo. Its "duration_ms" is the longest it \
+may be held. Give it a zoom or pan effect so it does not look frozen, and never \
+a speed effect.
 - Choose fewer, stronger clips over more, weaker ones. You do not have to use \
 every clip.
 - "rationale" is plain prose for a human. It is displayed, never executed.
@@ -99,6 +102,10 @@ you write in one is read.\
 _EFFECT_MEANING: dict[EffectKind, str] = {
     EffectKind.ZOOM_IN: "a slow push in across the clip; 0 is no movement",
     EffectKind.ZOOM_OUT: "a slow pull out across the clip; 0 is no movement",
+    EffectKind.PAN_LEFT: "a slow drift of the view to the left; 0 is no movement",
+    EffectKind.PAN_RIGHT: "a slow drift of the view to the right; 0 is no movement",
+    EffectKind.PAN_UP: "a slow drift of the view upwards; 0 is no movement",
+    EffectKind.PAN_DOWN: "a slow drift of the view downwards; 0 is no movement",
     EffectKind.SLOW_MOTION: "playback rate; below 1 is slower, 1 is unchanged",
     EffectKind.SPEED_UP: "playback rate; above 1 is faster, 1 is unchanged",
     EffectKind.BRIGHTNESS: "0 is unchanged, negative is darker",
