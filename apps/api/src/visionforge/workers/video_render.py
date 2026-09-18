@@ -26,12 +26,18 @@ from sqlalchemy import select
 from visionforge.domain.editplan import EditPlan, MediaFact, assert_valid, plan_from_payload
 from visionforge.domain.errors import PermanentError, TransientError
 from visionforge.domain.ids import MediaId, ProjectId
-from visionforge.domain.media import DerivativeKind, MediaKind, MediaStatus
+from visionforge.domain.media import PROXY_HEIGHT, DerivativeKind, MediaKind, MediaStatus
 from visionforge.domain.render import RenderStatus, render_key
 from visionforge.domain.timeline import build_render_spec, compile_timeline
 from visionforge.infra.db.models import EditPlanRow, MediaAsset, MediaDerivative, RenderRow
 from visionforge.infra.ffmpeg import probe_media
-from visionforge.infra.ffmpeg.compiler import compile_render_argv
+from visionforge.infra.ffmpeg.compiler import (
+    compile_render_argv,
+    compile_upscale_argv,
+    half_size_spec,
+    needs_gpu_upscale,
+    video_encoder_args,
+)
 from visionforge.infra.ffmpeg.runner import FFMPEG, resolve_binary
 from visionforge.infra.ffmpeg.subtitles import build_ass
 from visionforge.infra.storage import S3ObjectStore
@@ -39,10 +45,47 @@ from visionforge.workers.runtime import JobContext
 
 logger = logging.getLogger(__name__)
 
-#: Wall-clock ceiling for one encode. A 30-second 720p output on a 6-core laptop
-#: takes seconds; 30 minutes means something is pathologically wrong and the job
-#: should fail rather than occupy the queue indefinitely.
+#: Wall-clock ceiling for one encode at 720p30. A 30-second 720p output on a
+#: 6-core laptop takes seconds; 30 minutes means something is pathologically
+#: wrong and the job should fail rather than occupy the queue indefinitely.
 RENDER_TIMEOUT_S = 1800.0
+#: The ceiling for a larger output. The 720p30 ceiling is scaled by how many
+#: more pixels per second the output has, up to this limit. A 4K120 frame
+#: stream is 36 times the pixels of 720p30 and takes far longer on a CPU encoder.
+MAX_RENDER_TIMEOUT_S = 6 * 3600.0
+_BASE_PIXEL_RATE = 1280 * 720 * 30
+
+
+#: How much slower each x264 preset is than ``veryfast``, roughly. The 720p30
+#: ceiling was measured at ``veryfast``; a slower preset needs proportionally
+#: longer before a render is judged stuck.
+PRESET_COST: dict[str, float] = {
+    "ultrafast": 0.5,
+    "veryfast": 1.0,
+    "medium": 2.5,
+    "slow": 4.0,
+    # NVENC presets. The encode is on the GPU, and the filtering on the CPU is
+    # what the time goes on -- so even p7 costs about what veryfast does.
+    "p1": 1.0,
+    "p4": 1.0,
+    "p6": 1.2,
+    "p7": 1.5,
+}
+
+
+def render_timeout_s(width: int, height: int, fps: int, preset: str = "veryfast") -> float:
+    """How long one encode of this size, rate and effort may run."""
+    scale = max(1.0, width * height * fps / _BASE_PIXEL_RATE * PRESET_COST.get(preset, 1.0))
+    return min(RENDER_TIMEOUT_S * scale, MAX_RENDER_TIMEOUT_S)
+
+
+def uses_proxy(plan: EditPlan) -> bool:
+    """Whether this plan may be rendered from the 720-line proxies.
+
+    Only when the output is no larger than the proxy. Rendering a 1080p or 4K
+    output from a 720p proxy is an upscale that the output size does not show.
+    """
+    return min(plan.output.width, plan.output.height) <= PROXY_HEIGHT
 
 
 def _render_row(ctx: JobContext) -> RenderRow:
@@ -106,6 +149,7 @@ def step_prepare(ctx: JobContext) -> None:
 
     ctx.data["plan"] = plan
     ctx.data["local_paths"] = local_paths
+    ctx.data["still_ids"] = frozenset(media_id for media_id, fact in facts.items() if fact.is_still)
     render.status = RenderStatus.RENDERING
 
 
@@ -155,8 +199,9 @@ def _resolve_media(
         # Proxy-first, for video only. Ingest never makes one for audio, so the
         # lookup would always miss -- but asking explicitly says why, and stops
         # a future audio derivative from silently becoming the render source.
+        # And only for an output no larger than the proxy; see `uses_proxy`.
         key = row.storage_key
-        if kind is MediaKind.VIDEO:
+        if kind is MediaKind.VIDEO and uses_proxy(plan):
             proxy = ctx.session.execute(
                 select(MediaDerivative).where(
                     MediaDerivative.media_id == row.id,
@@ -187,7 +232,12 @@ def step_compile(ctx: JobContext) -> None:
 
     timeline = compile_timeline(plan)
     output_path = os.path.join(_workdir(ctx), "output.mp4")
-    spec = build_render_spec(timeline, local_paths=ctx.data["local_paths"], output_path=output_path)
+    spec = build_render_spec(
+        timeline,
+        local_paths=ctx.data["local_paths"],
+        output_path=output_path,
+        still_ids=ctx.data.get("still_ids", frozenset()),
+    )
 
     # Subtitles become a document on disk, here rather than in the compiler,
     # because writing a file is I/O and the compiler is pure -- which is what
@@ -217,10 +267,53 @@ def step_render(ctx: JobContext) -> None:
     magnitude between a static shot and a handheld pan.
     """
     spec = ctx.data["spec"]
-    args = compile_render_argv(spec, ass_path=ctx.data.get("ass_path"))
-    executable = resolve_binary(FFMPEG)
-
+    timeout_s = render_timeout_s(spec.width, spec.height, spec.fps, spec.preset)
     started = time.perf_counter()
+
+    if needs_gpu_upscale(spec):
+        # 8K: the edit at half size, then a GPU-only upscale. See the compiler.
+        first = half_size_spec(spec, os.path.join(_workdir(ctx), "half.mp4"))
+        _run_ffmpeg(
+            ctx,
+            compile_render_argv(first, ass_path=ctx.data.get("ass_path")),
+            total_ms=spec.duration_ms,
+            timeout_s=timeout_s,
+        )
+        _run_ffmpeg(
+            ctx,
+            compile_upscale_argv(spec, first.output_path),
+            total_ms=spec.duration_ms,
+            timeout_s=timeout_s,
+            report_progress=False,
+        )
+    else:
+        _run_ffmpeg(
+            ctx,
+            compile_render_argv(spec, ass_path=ctx.data.get("ass_path")),
+            total_ms=spec.duration_ms,
+            timeout_s=timeout_s,
+        )
+
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    output_path = spec.output_path
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        raise PermanentError("ffmpeg reported success but produced no output file")
+
+    ctx.data["render_ms"] = elapsed_ms
+    ctx.data["output_path"] = output_path
+
+
+def _run_ffmpeg(
+    ctx: JobContext,
+    args: list[str],
+    *,
+    total_ms: int,
+    timeout_s: float,
+    report_progress: bool = True,
+) -> None:
+    """One FFmpeg invocation: argv, no shell, a hard timeout, errors surfaced."""
+    executable = resolve_binary(FFMPEG)
     process = subprocess.Popen(
         [executable, *args],
         stdout=subprocess.PIPE,
@@ -232,14 +325,13 @@ def step_render(ctx: JobContext) -> None:
     )
 
     try:
-        _consume_progress(ctx, process, total_ms=spec.duration_ms)
-        _, stderr = process.communicate(timeout=RENDER_TIMEOUT_S)
+        if report_progress:
+            _consume_progress(ctx, process, total_ms=total_ms)
+        _, stderr = process.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired as exc:
         process.kill()
         process.communicate()
-        raise TransientError(f"render exceeded {RENDER_TIMEOUT_S}s") from exc
-
-    elapsed_ms = (time.perf_counter() - started) * 1000
+        raise TransientError(f"render exceeded {timeout_s:.0f}s") from exc
 
     if process.returncode != 0:
         tail = "\n".join((stderr or "").strip().splitlines()[-8:])
@@ -247,13 +339,6 @@ def step_render(ctx: JobContext) -> None:
             f"ffmpeg exited with {process.returncode}",
             hint=tail or "No stderr output.",
         )
-
-    output_path = spec.output_path
-    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-        raise PermanentError("ffmpeg reported success but produced no output file")
-
-    ctx.data["render_ms"] = elapsed_ms
-    ctx.data["output_path"] = output_path
 
 
 def _consume_progress(ctx: JobContext, process: subprocess.Popen[str], *, total_ms: int) -> None:
@@ -324,7 +409,7 @@ def step_finalize(ctx: JobContext) -> None:
         "input_count": len(ctx.data["spec"].inputs),
         "segment_count": len(ctx.data["spec"].segments),
         "output_bytes": render.bytes_size,
-        "encoder": "libx264",
+        "encoder": video_encoder_args(ctx.data["spec"])[1],
         "preset": ctx.data["spec"].preset,
         "crf": ctx.data["spec"].crf,
     }

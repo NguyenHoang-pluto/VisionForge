@@ -21,9 +21,17 @@ exists to prevent.
 
 from __future__ import annotations
 
-from visionforge.domain.editplan import FitMode, TransitionKind
+from dataclasses import replace
+
+from visionforge.domain.editplan import MAX_CPU_DIMENSION, Encoder, FitMode, TransitionKind
 from visionforge.domain.effects import EffectKind
-from visionforge.domain.timeline import RenderMusic, RenderSegment, RenderSpec
+from visionforge.domain.timeline import (
+    NVENC_H264_MAX,
+    RenderMusic,
+    RenderSegment,
+    RenderSpec,
+    VideoCodec,
+)
 from visionforge.infra.ffmpeg.subtitles import escape_filter_path
 
 #: One sample rate and layout for everything that meets in the mixer. `concat`
@@ -48,7 +56,13 @@ def _ms(value: int) -> str:
     return f"{value / 1000:.3f}"
 
 
-def scale_filter(width: int, height: int, fit: FitMode) -> str:
+#: Above this many pixels per frame (more than 1440p) the encoder's thread
+#: count is capped. See ``compile_render_argv``.
+LARGE_FRAME_PIXELS = 2560 * 1440
+LARGE_FRAME_THREADS = 4
+
+
+def scale_filter(width: int, height: int, fit: FitMode, flags: str | None = None) -> str:
     """Fit a source frame into the output rectangle.
 
     ``cover`` scales so the frame fills the rectangle and crops the overflow;
@@ -57,15 +71,54 @@ def scale_filter(width: int, height: int, fit: FitMode) -> str:
     produces a correctly-sized but horizontally stretched output, which is a
     subtle and very confusing bug.
     """
+    resample = f":flags={flags}" if flags else ""
     if fit is FitMode.COVER:
         return (
-            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"scale={width}:{height}:force_original_aspect_ratio=increase{resample},"
             f"crop={width}:{height},setsar=1"
         )
     return (
-        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease{resample},"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
     )
+
+
+def geometry_margin(segment: RenderSegment) -> float:
+    """How much larger than the output a segment's frame should be decoded.
+
+    A zoom of 12% ends with a crop of 1/1.12 of the frame, and a pan of 12%
+    crops 88% of it. Scaled back up to the output, either one magnifies by the
+    same factor -- which is the softness a supersampled segment avoids by
+    starting that much larger.
+    """
+    amounts = [
+        effect.amount
+        for effect in segment.effects
+        if (effect.kind in _PANS or effect.kind in (EffectKind.ZOOM_IN, EffectKind.ZOOM_OUT))
+        and not effect.is_neutral
+    ]
+    return 1.0 + max(amounts) if amounts else 1.0
+
+
+def _even(value: float) -> int:
+    return max(2, int(round(value / 2)) * 2)
+
+
+def video_encoder_args(spec: RenderSpec) -> list[str]:
+    """The encoder and its quality settings, for the CPU or the GPU.
+
+    On the GPU, ``-cq`` with ``-b:v 0`` is NVENC's constant-quality mode, the
+    counterpart of x264's CRF. HEVC is tagged ``hvc1`` so that browsers and
+    Apple players recognise it in an MP4.
+    """
+    if spec.encoder is Encoder.CPU:
+        return ["-c:v", "libx264", "-preset", spec.preset, "-crf", str(spec.crf)]
+    codec = "hevc_nvenc" if spec.video_codec is VideoCodec.HEVC else "h264_nvenc"
+    args = ["-c:v", codec, "-preset", spec.preset, "-rc", "vbr", "-cq", str(spec.crf)]
+    args += ["-b:v", "0"]
+    if spec.video_codec is VideoCodec.HEVC:
+        args += ["-tag:v", "hvc1"]
+    return args
 
 
 def _gain(value: float) -> str:
@@ -169,7 +222,20 @@ def build_audio_graph(spec: RenderSpec, source_labels: list[str]) -> list[str]:
     return parts
 
 
-def build_effect_chain(segment: RenderSegment, *, fps: int, width: int, height: int) -> str:
+#: Where each pan's window starts (0 is the left or top edge, 1 the right or
+#: bottom) and which axis it travels. "Pan left" moves the *view* left, so its
+#: window starts at the right edge.
+_PANS: dict[EffectKind, tuple[int, str]] = {
+    EffectKind.PAN_LEFT: (1, "x"),
+    EffectKind.PAN_RIGHT: (0, "x"),
+    EffectKind.PAN_UP: (1, "y"),
+    EffectKind.PAN_DOWN: (0, "y"),
+}
+
+
+def build_effect_chain(
+    segment: RenderSegment, *, fps: int, width: int, height: int, flags: str | None = None
+) -> str:
     """The filters one segment's effects compile to, in a fixed order.
 
     Order is decided here rather than by the caller's list, because it changes
@@ -182,6 +248,7 @@ def build_effect_chain(segment: RenderSegment, *, fps: int, width: int, height: 
     """
     parts: list[str] = []
     duration_ms = segment.source_duration_ms
+    resample = f":flags={flags}" if flags else ""
 
     # --- geometry ---
     for effect in segment.effects:
@@ -206,7 +273,25 @@ def build_effect_chain(segment: RenderSegment, *, fps: int, width: int, height: 
         parts.append(
             f"crop=w='iw/({factor})':h='ih/({factor})'"
             f":x='(iw-ow)/2':y='(ih-oh)/2'"
-            f",scale={width}:{height},setsar=1"
+            f",scale={width}:{height}{resample},setsar=1"
+        )
+
+    # A pan is the same crop at a fixed size, sliding. The window is smaller
+    # than the frame by `amount`, and travels across that margin over the clip.
+    # `crop` rather than `zoompan` for the reason given above.
+    for effect in segment.effects:
+        if effect.kind not in _PANS or effect.is_neutral:
+            continue
+        seconds = max(duration_ms / 1000, 0.001)
+        progress = rf"min(t/{seconds:g}\,1)"
+        amount = effect.amount
+        start, axis = _PANS[effect.kind]
+        travel = progress if start == 0 else f"(1-{progress})"
+        x = f"(iw-ow)*{travel}" if axis == "x" else "(iw-ow)/2"
+        y = f"(ih-oh)*{travel}" if axis == "y" else "(ih-oh)/2"
+        parts.append(
+            f"crop=w='iw*{1 - amount:g}':h='ih*{1 - amount:g}':x='{x}':y='{y}'"
+            f",scale={width}:{height}{resample},setsar=1"
         )
 
     # --- colour ---
@@ -291,18 +376,27 @@ def build_filter_graph(spec: RenderSpec, *, ass_path: str | None = None) -> str:
     for index, segment in enumerate(spec.segments):
         source = segment.input_index
         video_label = f"v{index}"
+        # A moving segment is decoded larger than the output when supersampling,
+        # so its crop is real pixels; the effect chain scales it to the output.
+        margin = geometry_margin(segment) if spec.supersample else 1.0
+        effects = build_effect_chain(
+            segment, fps=spec.fps, width=spec.width, height=spec.height, flags=spec.scale_flags
+        )
+        fit_to = scale_filter(
+            _even(spec.width * margin), _even(spec.height * margin), spec.fit, spec.scale_flags
+        )
         parts.append(
             f"[{source}:v]"
             f"trim=start={_ms(segment.source_in_ms)}:end={_ms(segment.source_out_ms)},"
             # setpts rebases each trimmed piece to start at zero; without it the
             # concatenated output inherits the source timestamps and stalls.
             f"setpts=PTS-STARTPTS,"
-            f"{scale_filter(spec.width, spec.height, spec.fit)},"
+            f"{fit_to},"
             # Effects sit after normalisation and before the frame rate is
             # forced: zoompan needs to know the geometry it is cropping within,
             # and a speed change has to be reflected in the timestamps that fps
             # then resamples.
-            f"{build_effect_chain(segment, fps=spec.fps, width=spec.width, height=spec.height)}"
+            f"{effects}"
             f"{_fade_chain(segment, spec.fps)}"
             f"fps={spec.fps},"
             f"format={spec.pixel_format}"
@@ -310,7 +404,19 @@ def build_filter_graph(spec: RenderSpec, *, ass_path: str | None = None) -> str:
         )
         video_labels.append(video_label)
 
-        if spec.include_audio:
+        if spec.include_audio and spec.inputs[source].is_still:
+            # A photo has no audio stream to take. Silence of the same length
+            # keeps the clips' audio in step with their pictures across the join.
+            audio_label = f"a{index}"
+            parts.append(
+                f"anullsrc=r={MIX_SAMPLE_RATE}:cl={MIX_CHANNEL_LAYOUT},"
+                f"atrim=end={_ms(segment.duration_ms)},"
+                f"asetpts=PTS-STARTPTS,"
+                f"{_AFORMAT}"
+                f"[{audio_label}]"
+            )
+            audio_labels.append(audio_label)
+        elif spec.include_audio:
             audio_label = f"a{index}"
             parts.append(
                 f"[{source}:a]"
@@ -405,6 +511,11 @@ def _join_with_transitions(spec: RenderSpec, labels: list[str], output_label: st
     current = labels[0]
     accumulated = spec.segments[0].duration_ms
 
+    # One segment with a fade on it: there is nothing to join, but the output
+    # label must still exist, or FFmpeg refuses to open the output at all.
+    if len(spec.segments) == 1:
+        return [f"[{current}]{timebase}[{output_label}]"]
+
     for index in range(1, len(spec.segments)):
         segment = spec.segments[index]
         nxt = labels[index]
@@ -455,6 +566,18 @@ def compile_render_argv(
         args.append("-y")
 
     for render_input in spec.inputs:
+        if render_input.still_ms is not None:
+            # A photo decodes to one frame. Looped at the output rate for as
+            # long as its longest hold, it becomes a stream that `trim` can cut
+            # like any other.
+            args += [
+                "-loop",
+                "1",
+                "-framerate",
+                str(spec.fps),
+                "-t",
+                _ms(render_input.still_ms),
+            ]
         args += ["-i", render_input.local_path]
 
     burn_subtitles = ass_path is not None and spec.subtitles is not None
@@ -464,12 +587,7 @@ def compile_render_argv(
         args += ["-map", "[aout]"]
 
     args += [
-        "-c:v",
-        "libx264",
-        "-preset",
-        spec.preset,
-        "-crf",
-        str(spec.crf),
+        *video_encoder_args(spec),
         "-pix_fmt",
         spec.pixel_format,
         # Closed GOP at one second keeps the file seekable in a browser without
@@ -479,6 +597,12 @@ def compile_render_argv(
         "-r",
         str(spec.fps),
     ]
+    if spec.encoder is Encoder.CPU and spec.width * spec.height > LARGE_FRAME_PIXELS:
+        # x264 keeps buffers per thread, and on a large frame its default
+        # thread count asks for more memory than an 8 GB machine has. With 4
+        # threads, 4K at 120 fps encoded on the reference laptop; with the
+        # default count, it failed to allocate.
+        args += ["-threads", str(LARGE_FRAME_THREADS)]
 
     if spec.has_audio_output:
         args += [
@@ -502,6 +626,81 @@ def compile_render_argv(
         spec.output_path,
     ]
     return args
+
+
+# ---------------------------------------------------------------- 8K (Phase 12)
+#: How much better than the final target the half-size pass is encoded, so the
+#: second compression is the only one that shows.
+INTERMEDIATE_QUALITY_GAIN = 4
+#: No constant-quality target is set below this; lower buys size, not detail.
+MIN_INTERMEDIATE_CQ = 12
+
+
+def needs_gpu_upscale(spec: RenderSpec) -> bool:
+    """Whether this render is too large to filter on the CPU.
+
+    8K frames are about 50 MB each, and a graph that scales, crops and
+    dissolves them holds several at once -- more than an 8 GB machine has free.
+    Such a render is cut at half size and then upscaled entirely on the GPU,
+    where decode, resize and encode never touch system memory.
+    """
+    return spec.encoder is Encoder.GPU and max(spec.width, spec.height) > MAX_CPU_DIMENSION
+
+
+def half_size_spec(spec: RenderSpec, intermediate_path: str) -> RenderSpec:
+    """The first pass of a two-pass render: the whole edit at half size.
+
+    Half of 8K is 4K, so nothing a source up to 4K contains is lost; it is
+    encoded at a higher quality than the target so the upscale starts clean.
+    """
+    width, height = _even(spec.width / 2), _even(spec.height / 2)
+    return replace(
+        spec,
+        width=width,
+        height=height,
+        output_path=intermediate_path,
+        video_codec=VideoCodec.HEVC if max(width, height) > NVENC_H264_MAX else VideoCodec.H264,
+        crf=max(MIN_INTERMEDIATE_CQ, spec.crf - INTERMEDIATE_QUALITY_GAIN),
+    )
+
+
+def compile_upscale_argv(spec: RenderSpec, source_path: str) -> list[str]:
+    """The second pass: resize the half-size edit to the target on the GPU.
+
+    ``-hwaccel_output_format cuda`` keeps decoded frames in video memory, and
+    ``scale_cuda`` resizes them there, so the frames go straight from the
+    decoder to NVENC. The audio was already mixed in the first pass and is
+    copied unchanged.
+    """
+    return [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *PROGRESS_ARGS,
+        "-y",
+        "-hwaccel",
+        "cuda",
+        "-hwaccel_output_format",
+        "cuda",
+        "-i",
+        source_path,
+        "-map",
+        "0:v",
+        "-map",
+        "0:a?",
+        "-vf",
+        f"scale_cuda={spec.width}:{spec.height}:interp_algo=lanczos",
+        *video_encoder_args(replace(spec, video_codec=VideoCodec.HEVC)),
+        "-g",
+        str(spec.fps * 2),
+        "-c:a",
+        "copy",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        spec.output_path,
+    ]
 
 
 def parse_progress_line(line: str) -> tuple[str, str] | None:
