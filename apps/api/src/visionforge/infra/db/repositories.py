@@ -25,6 +25,7 @@ from visionforge.domain.render import RenderStatus
 from visionforge.infra.db.models import (
     EditPlanRow,
     EditPlanVersionRow,
+    EditTemplateRow,
     Event,
     Job,
     JobStep,
@@ -828,3 +829,59 @@ __all__ = [
     "StepStatus",
     "UserRepository",
 ]
+
+
+class TemplateRepository:
+    """A user's own templates (Phase 12). Every read is scoped to the owner."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        user_id: UUID,
+        name: str,
+        source_media_id: UUID | None,
+        payload: dict[str, Any],
+        extraction: dict[str, Any] | None,
+        template_id: UUID,
+    ) -> EditTemplateRow:
+        row = EditTemplateRow(
+            id=template_id,
+            user_id=user_id,
+            name=name,
+            source_media_id=source_media_id,
+            payload=payload,
+            extraction=extraction,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_owned(self, template_id: UUID, user_id: UUID) -> EditTemplateRow | None:
+        """Fetch a template only if this user owns it. Same rule as projects."""
+        result = await self._session.execute(
+            select(EditTemplateRow).where(
+                EditTemplateRow.id == template_id, EditTemplateRow.user_id == user_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_for_user(self, user_id: UUID, *, limit: int = 100) -> Sequence[EditTemplateRow]:
+        result = await self._session.execute(
+            select(EditTemplateRow)
+            .where(EditTemplateRow.user_id == user_id)
+            .order_by(EditTemplateRow.created_at.desc())
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def rename(self, row: EditTemplateRow, name: str, payload: dict[str, Any]) -> None:
+        row.name = name
+        row.payload = payload
+        await self._session.flush()
+
+    async def delete(self, row: EditTemplateRow) -> None:
+        await self._session.delete(row)
+        await self._session.flush()

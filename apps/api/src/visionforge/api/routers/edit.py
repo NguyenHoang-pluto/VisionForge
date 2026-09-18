@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from visionforge.api.dependencies import (
     EditServiceFactory,
+    current_user_id,
     get_coedit_service,
     get_edit_plan_repo,
     get_edit_service,
@@ -31,6 +32,7 @@ from visionforge.api.dependencies import (
     get_media_service,
     get_project_repo,
     get_session,
+    get_template_service,
     get_version_repo,
     require_project,
 )
@@ -70,6 +72,8 @@ from visionforge.application.edit_service import EditService, build_candidate
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import DOWNLOAD_URL_TTL_S, MediaService
 from visionforge.application.reference_service import PROFILE_ANALYZERS, ReferenceService
+from visionforge.application.template_service import TemplateService
+from visionforge.core.config import get_settings
 from visionforge.domain.analysis import AnalyzerName
 from visionforge.domain.beats import (
     MAX_BPM,
@@ -89,6 +93,7 @@ from visionforge.domain.editorial import (
 )
 from visionforge.domain.editorial_planner import EditorialPlanner
 from visionforge.domain.editplan import (
+    MAX_CPU_DIMENSION,
     MAX_FADE_MS,
     MAX_GAIN,
     MAX_MUSIC_MS,
@@ -104,6 +109,7 @@ from visionforge.domain.editplan import (
     MIN_TRANSITION_MS,
     AudioMode,
     Cut,
+    Encoder,
     FitMode,
     MusicCue,
     OutputSpec,
@@ -113,10 +119,10 @@ from visionforge.domain.editplan import (
 )
 from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, EffectKind
 from visionforge.domain.errors import ConflictError, NotFoundError, ValidationError
-from visionforge.domain.ids import ProjectId
+from visionforge.domain.ids import ProjectId, UserId
 from visionforge.domain.jobs import JobType
 from visionforge.domain.llm import LlmProvider
-from visionforge.domain.llm_planner import PlannerMode
+from visionforge.domain.llm_planner import PlannerEngine, PlannerMode
 from visionforge.domain.metrics import METRIC_DIRECTIONS
 from visionforge.domain.pacing import PACING_CURVES, PacingShape
 from visionforge.domain.patch import PlanDiff
@@ -135,6 +141,8 @@ from visionforge.domain.style import (
     PRESET_DIMENSIONS,
     STYLE_PROFILES,
     QualityPreset,
+    Resolution,
+    dimensions_for,
     profile_for,
 )
 from visionforge.domain.subtitles import (
@@ -166,6 +174,29 @@ from visionforge.infra.llm import describe_capabilities
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["edit"])
+
+
+def _gpu_only(resolution: Resolution) -> bool:
+    """Whether this size is beyond what the CPU encoder is asked for."""
+    return resolution.lines * 16 // 9 > MAX_CPU_DIMENSION
+
+
+def _check_encoder(encoder: Encoder, resolution: Resolution) -> None:
+    """Refuse an encoder this server lacks, or a size the chosen one cannot do.
+
+    Checked here rather than left to fail in the render worker, minutes later
+    and with an FFmpeg error instead of a sentence.
+    """
+    if encoder is Encoder.GPU and not get_settings().render_gpu:
+        raise ValidationError(
+            "this server has no GPU encoder configured",
+            hint="Choose the CPU encoder, or set RENDER_GPU=true where there is an NVIDIA GPU.",
+        )
+    if encoder is Encoder.CPU and _gpu_only(resolution):
+        raise ValidationError(
+            f"{resolution.value} needs the GPU encoder",
+            hint="Choose the GPU encoder for 8K, or a smaller resolution.",
+        )
 
 
 @router.get("/planner/capabilities", response_model=PlannerCapabilities)
@@ -203,6 +234,13 @@ async def planner_capabilities(
             {"value": ratio.value, "width": size[0], "height": size[1]}
             for ratio, size in PRESET_DIMENSIONS.items()
         ],
+        resolutions=[
+            resolution.value
+            for resolution in Resolution
+            if get_settings().render_gpu or not _gpu_only(resolution)
+        ],
+        encoders=["cpu", "gpu"] if get_settings().render_gpu else ["cpu"],
+        gpu_only_resolutions=[r.value for r in Resolution if _gpu_only(r)],
         fps_presets=list(FPS_PRESETS),
         quality_presets=[preset.value for preset in QualityPreset],
         prompt_version=PROMPT_VERSION,
@@ -308,6 +346,8 @@ async def create_edit_plan(
     factory: EditServiceFactory = Depends(get_edit_service_factory),
     repo: MediaRepository = Depends(get_media_repo),
     projects: ProjectRepository = Depends(get_project_repo),
+    templates: TemplateService = Depends(get_template_service),
+    user_id: UserId = Depends(current_user_id),
 ) -> EditPlanDetail:
     """Generate and persist an edit plan from the project's analysed media.
 
@@ -330,12 +370,15 @@ async def create_edit_plan(
     reference = ReferenceService(projects, repo)
     reference_profile = await reference.profile_for_project(project)
     policy = blend(profile, reference_profile, body.style_strength)
+    template = await templates.resolve(body.template_id, user_id) if body.template_id else None
 
     # A style supplies defaults only where the caller stated nothing. An
     # explicit value always wins, including one that happens to equal the
-    # style's own default -- which is why those fields default to None.
-    aspect = body.aspect_ratio or profile.default_aspect
-    width, height = PRESET_DIMENSIONS[aspect]
+    # style's own default -- which is why those fields default to None. A
+    # template's shape comes before the style's: it was laid out for it.
+    aspect = body.aspect_ratio or (template.aspect if template else profile.default_aspect)
+    width, height = dimensions_for(aspect, body.resolution)
+    _check_encoder(body.encoder, body.resolution)
     order = body.order or (
         ClipOrder.SEQUENCE if profile.prefer_sequence_order else ClipOrder.SCORE_DESC
     )
@@ -352,9 +395,14 @@ async def create_edit_plan(
 
     request = PlanRequest(
         project_id=ProjectId(project.id),
-        target_duration_ms=body.target_duration_ms or profile.default_duration_ms,
+        target_duration_ms=(
+            template.total_ms
+            if template
+            else body.target_duration_ms or profile.default_duration_ms
+        ),
         max_clips=body.max_clips,
-        min_clips=body.min_clips,
+        # A template reuses clips rather than needing many, so one is enough.
+        min_clips=1 if template else body.min_clips,
         aspect_ratio=aspect,
         width=width,
         height=height,
@@ -363,6 +411,7 @@ async def create_edit_plan(
         audio=body.audio or profile.default_audio,
         order=order,
         quality=body.quality,
+        encoder=body.encoder,
         style=body.style,
         request_text=body.request_text,
         style_policy=policy,
@@ -376,13 +425,15 @@ async def create_edit_plan(
         music_fade_out_ms=body.music.fade_out_ms if body.music else 1_500,
         editorial_policy=body.editorial_policy,
         variant=body.variant,
+        template=template,
     )
 
     service, _selection = factory.for_request(
         mode=body.mode,
         style=body.style,
         request_text=body.request_text,
-        engine=body.engine,
+        # Only the editorial engine knows what a slot is.
+        engine=PlannerEngine.EDITORIAL if template else body.engine,
     )
 
     try:
@@ -412,6 +463,8 @@ async def preview_edit_variants(
     project: Project = Depends(require_project),
     repo: MediaRepository = Depends(get_media_repo),
     projects: ProjectRepository = Depends(get_project_repo),
+    templates: TemplateService = Depends(get_template_service),
+    user_id: UserId = Depends(current_user_id),
 ) -> EditorialVariantsResponse:
     """Four editorial plans over the same footage, previewed and not stored.
 
@@ -433,9 +486,11 @@ async def preview_edit_variants(
     reference = ReferenceService(projects, repo)
     reference_profile = await reference.profile_for_project(project)
     policy = blend(profile, reference_profile, body.style_strength)
+    template = await templates.resolve(body.template_id, user_id) if body.template_id else None
 
-    aspect = body.aspect_ratio or profile.default_aspect
-    width, height = PRESET_DIMENSIONS[aspect]
+    aspect = body.aspect_ratio or (template.aspect if template else profile.default_aspect)
+    width, height = dimensions_for(aspect, body.resolution)
+    _check_encoder(body.encoder, body.resolution)
 
     music_duration_ms, beats = (
         await _music_facts(repo, ProjectId(project.id), body.music.media_id)
@@ -457,9 +512,13 @@ async def preview_edit_variants(
     def build(variant: VariantId | None) -> PlanRequest:
         return PlanRequest(
             project_id=ProjectId(project.id),
-            target_duration_ms=body.target_duration_ms or profile.default_duration_ms,
+            target_duration_ms=(
+                template.total_ms
+                if template
+                else body.target_duration_ms or profile.default_duration_ms
+            ),
             max_clips=body.max_clips,
-            min_clips=body.min_clips,
+            min_clips=1 if template else body.min_clips,
             aspect_ratio=aspect,
             width=width,
             height=height,
@@ -467,6 +526,7 @@ async def preview_edit_variants(
             fit=body.fit,
             audio=body.audio or profile.default_audio,
             quality=body.quality,
+            encoder=body.encoder,
             style=body.style,
             request_text=body.request_text,
             style_policy=policy,
@@ -477,6 +537,7 @@ async def preview_edit_variants(
             beat_sync=body.beat_sync,
             editorial_policy=body.editorial_policy,
             variant=variant,
+            template=template,
         )
 
     planner = EditorialPlanner()
@@ -550,7 +611,8 @@ async def create_manual_edit_plan(
     encoder setting, which is the property Phase 4 established and a timeline
     must not be the thing that erodes.
     """
-    width, height = PRESET_DIMENSIONS[body.aspect_ratio]
+    width, height = dimensions_for(body.aspect_ratio, body.resolution)
+    _check_encoder(body.encoder, body.resolution)
     output = OutputSpec(
         aspect_ratio=body.aspect_ratio,
         width=width,
@@ -559,6 +621,7 @@ async def create_manual_edit_plan(
         fit=body.fit,
         audio=body.audio,
         quality=body.quality,
+        encoder=body.encoder,
         source_gain=body.source_gain,
     )
     cuts = [

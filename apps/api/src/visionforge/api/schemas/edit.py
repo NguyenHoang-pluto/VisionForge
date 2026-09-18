@@ -22,8 +22,10 @@ from visionforge.domain.editplan import (
     MIN_OUTPUT_MS,
     AspectRatio,
     AudioMode,
+    Encoder,
     FitMode,
     QualityPreset,
+    Resolution,
     TransitionKind,
 )
 from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, Effect, EffectKind
@@ -127,7 +129,11 @@ class PlanCreateRequest(BaseModel):
     max_clips: int = Field(default=8, ge=1, le=40)
     min_clips: int = Field(default=2, ge=1, le=40)
     aspect_ratio: AspectRatio | None = None
-    fps: int = Field(default=30, ge=1, le=60)
+    #: Output size. The server turns it and the shape into pixels.
+    resolution: Resolution = Resolution.P720
+    #: CPU (x264) or GPU (NVENC). 8K is GPU only.
+    encoder: Encoder = Encoder.CPU
+    fps: int = Field(default=30, ge=1, le=120)
     fit: FitMode = FitMode.COVER
     audio: AudioMode | None = None
     order: ClipOrder | None = None
@@ -168,6 +174,14 @@ class PlanCreateRequest(BaseModel):
     #: same plan -- which is what makes previewing variants without storing them
     #: safe, and what lets the client render one and then request it for real.
     variant: VariantId | None = None
+
+    # --- templates (Phase 12) ---
+    #: The template to fill: a library template's name (``travel``) or the id of
+    #: one of the caller's own. Resolved on the server, and filled by the
+    #: editorial engine whatever ``engine`` says -- the older planners have no
+    #: notion of a slot. With a template, its shape is the default aspect ratio
+    #: and its length the target, unless the caller stated either.
+    template_id: str | None = Field(default=None, min_length=1, max_length=64)
 
     @field_validator("fps")
     @classmethod
@@ -215,7 +229,9 @@ class ManualPlanCreateRequest(BaseModel):
     segments: list[ManualCutRequest] = Field(min_length=1, max_length=MAX_SEGMENTS)
 
     aspect_ratio: AspectRatio = AspectRatio.LANDSCAPE_16_9
-    fps: int = Field(default=30, ge=1, le=60)
+    resolution: Resolution = Resolution.P720
+    encoder: Encoder = Encoder.CPU
+    fps: int = Field(default=30, ge=1, le=120)
     fit: FitMode = FitMode.COVER
     audio: AudioMode = AudioMode.NONE
     quality: QualityPreset = QualityPreset.BALANCED
@@ -297,6 +313,12 @@ class PlannerCapabilities(BaseModel):
     modes: list[str]
     styles: list[dict[str, Any]]
     aspect_ratios: list[dict[str, Any]]
+    resolutions: list[str]
+    #: The encoders this server's render worker can use. ``gpu`` only when the
+    #: deployment says it has NVENC; 8K needs it.
+    encoders: list[str] = Field(default_factory=lambda: ["cpu"])
+    #: Resolutions that need the GPU encoder.
+    gpu_only_resolutions: list[str] = Field(default_factory=list)
     fps_presets: list[int]
     quality_presets: list[str]
     prompt_version: str

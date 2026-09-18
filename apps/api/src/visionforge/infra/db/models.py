@@ -427,6 +427,38 @@ class EditPlanVersionRow(Base, TimestampMixin):
     request_chars: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
+# -------------------------------------------------------------------- templates
+class EditTemplateRow(Base, TimestampMixin):
+    """A template a user measured from a video (Phase 12).
+
+    Owned by a **user**, not a project. The point of saving one is to reuse it
+    somewhere else, so tying it to the project it was measured in would make
+    the feature pointless.
+
+    ``payload`` is the template as the domain serialises it and nothing else:
+    slot lengths, energies, roles, joins, motions. There is no media id inside
+    it, no path and no frame -- the video it was measured from is referenced by
+    ``source_media_id`` alone, and deleting that video (or its project) leaves
+    the template standing with the reference cleared.
+    """
+
+    __tablename__ = "edit_templates"
+    __table_args__ = (Index("ix_edit_templates_user_created", "user_id", "created_at"),)
+
+    id: Mapped[UUID] = _uuid_pk()
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    #: The video it was measured from, while that video exists.
+    source_media_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="SET NULL"), nullable=True
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    #: How the measurement went: shots found, merged, dropped. For the UI.
+    extraction: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
 # --------------------------------------------------------------------- llm runs
 class LlmRunRow(Base, TimestampMixin):
     """One planning call to a language model, successful or not.

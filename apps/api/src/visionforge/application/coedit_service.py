@@ -58,10 +58,11 @@ from visionforge.domain.editdelta import (
     EditDelta,
     parse_operations,
 )
-from visionforge.domain.editplan import EditPlan, plan_from_payload
+from visionforge.domain.editplan import MAX_STILL_MS, EditPlan, plan_from_payload
 from visionforge.domain.errors import ConflictError, NotFoundError, ValidationError
 from visionforge.domain.ids import MediaId, ProjectId
 from visionforge.domain.llm import LlmProvider
+from visionforge.domain.media import MediaKind
 from visionforge.domain.patch import PatchContext, PatchOutcome, PlanDiff, apply_delta
 from visionforge.domain.render import RenderStatus
 from visionforge.domain.style import FPS_PRESETS, PRESET_DIMENSIONS
@@ -525,6 +526,11 @@ class CoEditService:
             for record in records
             if record.duration_ms is not None
         }
+        # A still's probed length is one frame. What bounds a change to its hold
+        # is the longest a still may be held (Phase 12).
+        durations.update(
+            {record.media_id: MAX_STILL_MS for record in records if record.kind is MediaKind.IMAGE}
+        )
         return (
             PatchContext(
                 source_durations=durations,

@@ -18,6 +18,7 @@ from visionforge.application.health_service import HealthService
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import MediaService
 from visionforge.application.planner_factory import PlannerSelection, build_planner
+from visionforge.application.template_service import TemplateService
 from visionforge.core.config import get_settings
 from visionforge.domain.errors import NotFoundError
 from visionforge.domain.health import HealthProbe
@@ -38,6 +39,7 @@ from visionforge.infra.db.repositories import (
     LlmRunRepository,
     MediaRepository,
     ProjectRepository,
+    TemplateRepository,
     UserRepository,
 )
 from visionforge.infra.llm import build_provider
@@ -109,6 +111,10 @@ def get_event_repo(session: AsyncSession = Depends(get_session)) -> EventReposit
 
 def get_user_repo(session: AsyncSession = Depends(get_session)) -> UserRepository:
     return UserRepository(session)
+
+
+def get_template_service(session: AsyncSession = Depends(get_session)) -> TemplateService:
+    return TemplateService(TemplateRepository(session), MediaRepository(session))
 
 
 # -------------------------------------------------------------------- services
