@@ -37,6 +37,7 @@ const PRIMARY: NavItem[] = [{ view: "home", icon: "home", label: "nav.home" }];
 const PROJECT: NavItem[] = [
   { view: "editor", icon: "film", label: "nav.editor", scoped: true },
   { view: "assets", icon: "layers", label: "nav.assets", scoped: true },
+  { view: "templates", icon: "grid", label: "nav.templates", scoped: true },
   { view: "audio", icon: "beat", label: "nav.audio", scoped: true },
   { view: "export", icon: "export", label: "nav.exports", scoped: true },
 ];

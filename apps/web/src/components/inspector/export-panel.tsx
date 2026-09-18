@@ -17,12 +17,14 @@ import { useT, type MessageKey } from "@/lib/i18n";
 import {
   cueProblems,
   draftProblems,
+  sourceLines,
   toManualCuts,
   toMusicRequest,
   toSubtitleRequest,
   totalDuration,
 } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
+import { OutputSizeFields } from "@/components/inspector/output-fields";
 import {
   Badge,
   Button,
@@ -53,12 +55,14 @@ const QUALITY_NOTE: Record<QualityPreset, MessageKey> = {
   draft: "export.quality.draftNote",
   balanced: "export.quality.balancedNote",
   high: "export.quality.highNote",
+  max: "export.quality.maxNote",
 };
 
 const QUALITY_LABEL: Record<QualityPreset, MessageKey> = {
   draft: "export.quality.draft",
   balanced: "export.quality.balanced",
   high: "export.quality.high",
+  max: "export.quality.max",
 };
 
 const RENDER_TONE: Record<RenderStatus, "neutral" | "warn" | "ok" | "danger"> = {
@@ -92,6 +96,12 @@ export function ExportPanel({
   const clips = useEditorStore((s) => s.clips);
   const aspect = useEditorStore((s) => s.aspect);
   const fps = useEditorStore((s) => s.fps);
+  const resolution = useEditorStore((s) => s.resolution);
+  const encoder = useEditorStore((s) => s.encoder);
+  const heavyOutput = resolution === "2160p" || fps > 60;
+  // Output larger than every source is an upscale: say so where the size is set.
+  const bestSource = sourceLines(clips, media);
+  const upscaled = bestSource !== null && Number.parseInt(resolution, 10) > bestSource;
   const quality = useEditorStore((s) => s.quality);
   const audio = useEditorStore((s) => s.audio);
   const sourceGain = useEditorStore((s) => s.sourceGain);
@@ -136,6 +146,8 @@ export function ExportPanel({
         const plan = await api.createManualEditPlan(projectId, {
           segments: toManualCuts(clips),
           aspect_ratio: aspect,
+          resolution,
+          encoder,
           fps,
           quality,
           audio,
@@ -175,7 +187,7 @@ export function ExportPanel({
         <SectionTitle>{t("export.output")}</SectionTitle>
 
         <div className="mt-1.5 grid grid-cols-2 gap-2">
-          <Field label={t("export.resolution")} hint={t("export.resolutionHint")}>
+          <Field label={t("export.shape")}>
             <Select
               value={aspect}
               aria-label={t("export.shapeLabel")}
@@ -183,11 +195,22 @@ export function ExportPanel({
             >
               {(capabilities.data?.aspect_ratios ?? []).map((item) => (
                 <option key={item.value} value={item.value}>
-                  {item.width}×{item.height} · {item.value}
+                  {item.value}
                 </option>
               ))}
             </Select>
           </Field>
+          <OutputSizeFields
+            prefix="export"
+            capabilities={capabilities.data}
+            hint={
+              upscaled
+                ? t("output.upscaleHint", { source: bestSource ?? 0, output: resolution })
+                : heavyOutput
+                  ? t("output.heavyHint")
+                  : undefined
+            }
+          />
 
           <Field label={t("export.fps")}>
             <Select
@@ -209,7 +232,7 @@ export function ExportPanel({
               aria-label={t("export.qualityLabel")}
               onChange={(event) => setOutput({ quality: event.target.value as QualityPreset })}
             >
-              {(capabilities.data?.quality_presets ?? ["draft", "balanced", "high"]).map(
+              {(capabilities.data?.quality_presets ?? ["draft", "balanced", "high", "max"]).map(
                 (value) => (
                   <option key={value} value={value}>
                     {t(QUALITY_LABEL[value as QualityPreset] ?? "export.quality.balanced")}

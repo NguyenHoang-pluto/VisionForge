@@ -287,6 +287,8 @@ export const en = {
   "ai.maxClips.label": "Maximum clips",
   "ai.aspect": "Aspect",
   "ai.aspect.label": "Aspect ratio",
+  "ai.resolution": "Resolution",
+  "ai.resolution.label": "Output resolution",
   "ai.fps": "Frame rate",
   "ai.fps.label": "Frame rate",
   "ai.quality": "Quality",
@@ -306,8 +308,9 @@ export const en = {
 
   // --------------------------------------------------------------- export
   "export.output": "Output",
+  "export.shape": "Shape",
   "export.resolution": "Resolution",
-  "export.resolutionHint": "Chosen by the server from the aspect ratio.",
+  "export.resolution.label": "Output resolution",
   "export.shapeLabel": "Output shape",
   "export.fps": "Frame rate",
   "export.fpsLabel": "Output frame rate",
@@ -316,9 +319,12 @@ export const en = {
   "export.quality.draft": "Draft",
   "export.quality.balanced": "Balanced",
   "export.quality.high": "High",
+  "export.quality.max": "Maximum",
   "export.quality.draftNote": "Fastest encode. For checking the cut.",
   "export.quality.balancedNote": "The default. Good quality at a sane speed.",
-  "export.quality.highNote": "Slowest encode, largest file.",
+  "export.quality.highNote": "Slower encode, sharper resampling, larger file.",
+  "export.quality.maxNote":
+    "The most detail the source has, however long it takes. Several times slower than Balanced.",
   "export.audio": "Audio",
   "export.audioLabel": "Audio mode",
   "export.audio.none": "Silent",
@@ -514,6 +520,7 @@ export const en = {
   "nav.editor": "Editor",
   "nav.assets": "Assets",
   "nav.audio": "Audio",
+  "nav.templates": "Templates",
   "nav.exports": "Exports",
   "nav.settings": "Settings",
   "nav.needsProject": "{view} — open a project first",
@@ -616,6 +623,13 @@ export const en = {
   "effect.zoomDirection": "Zoom direction",
   "effect.zoom_in": "Zoom in",
   "effect.zoom_out": "Zoom out",
+  "effect.pan_left": "← Left",
+  "effect.pan_right": "Right →",
+  "effect.pan_up": "↑ Up",
+  "effect.pan_down": "Down ↓",
+  "effect.panDirection": "Pan direction",
+  "effect.panHint":
+    "A slow drift across the frame over the whole clip. What a photo is given so it does not look frozen.",
   "effect.slow_motion": "Slower",
   "effect.speed_up": "Faster",
   "effect.brightness": "Brightness",
@@ -806,11 +820,147 @@ export const en = {
   "editorial.reason.narrative_order": "placed by the story, not the clock",
   "editorial.reason.style_policy": "chosen by the editing style",
   "editorial.reason.likely_speech": "someone may be speaking",
+  "editorial.reason.still_hold": "a photo, held from its start",
+  "editorial.reason.still_motion": "a photo, given a slow move so it does not look frozen",
+  "editorial.reason.template_slot_fit": "the kind of shot the template asked for here",
+  "editorial.reason.reused_for_template": "used again: the template has more slots than clips",
+  "editorial.reason.template_transition": "joined the way the template joins it",
+
+  "template.title": "Template",
+  "template.description":
+    "Copy an edit's structure: how many shots, how long each, how they join. Your photos and videos fill it.",
+  "template.badge": "Template: {name}",
+  "template.library": "Templates",
+  "template.libraryIntro":
+    "Pick a template and press Use: your photos and videos fill its shots, and the edit opens in the editor. Add a folder on the left first if the project is empty.",
+  "template.builtIn": "Built in",
+  "template.mineEmpty": "None yet. Make one below from an edit you like.",
+  "template.use": "Use template",
+  "template.pickOne": "Choose a template from the library to see how it will be filled.",
+  "template.footage": "{videos} videos and {photos} photos in this project will fill it.",
+  "template.noPhotos": "This template has shots meant for photos, and the project has none. Videos will fill them.",
+  "template.unanalysed": "{count} files are not analysed yet and cannot be used until they are.",
+  "template.analyseNow": "Analyse now",
+  "template.output": "Output {resolution} · {fps} fps · {quality}. Change it in Export.",
+  "template.useThis": "Use this template",
+  "template.building": "Building the edit…",
+  "template.rename": "Rename",
+  "template.deleteConfirm": "Delete the template \"{name}\"? Your videos are not touched.",
+  "template.none": "None",
+  "template.mine": "My templates",
+  "template.travel": "Travel",
+  "template.memories": "Memories",
+  "template.beat_highlight": "Beat highlight",
+  "template.slideshow": "Photo slideshow",
+  "template.day_vlog": "A day in",
+  "template.vertical_reel": "Vertical reel",
+  "template.summary": "{slots} shots · {length} · {stills} for photos",
+  "template.strip": "The template's shots: width is length, height is energy",
+  "template.slotTitle": "Shot {index} · {length} · {role}",
+  "template.fills":
+    "The template sets the length and the cutting. With music, its shots are re-timed to the music's beats.",
+  "template.measured":
+    "Measured from {shots} shots ({merged} folded, {dropped} dropped). Joins are read as cuts.",
+  "template.delete": "Delete",
+  "template.make": "Make a template from a video",
+  "template.fromVideo": "Video to copy",
+  "template.pickVideo": "Choose an analysed video",
+  "template.name": "Name",
+  "template.namePlaceholder": "e.g. My travel cut",
+  "template.measure": "Make template",
+  "template.measuring": "Measuring…",
+  "template.makeHint":
+    "Upload an edit you like, analyse it, then make it a template. It can be reused in every project.",
+  "template.error": "Could not make the template.",
 
   "ai.policy": "Editing style",
   "ai.policy.label": "Which genre policy to edit under",
   "ai.policy.auto": "From the style",
   "ai.plan.none": "Generate an edit to see its editorial plan.",
+
+  "resolution.720p": "720p · HD",
+  "resolution.1080p": "1080p · Full HD",
+  "resolution.1440p": "1440p · 2K",
+  "resolution.2160p": "2160p · 4K",
+  "resolution.4320p": "4320p · 8K",
+  "encoder.label": "Encoder",
+  "encoder.cpu": "CPU",
+  "encoder.gpu": "GPU (NVIDIA)",
+  "encoder.gpuOnly": "GPU only",
+  "encoder.cpu.hint": "x264 on the processor. Up to 4K; uses a lot of memory at large sizes.",
+  "encoder.gpu.hint":
+    "NVENC on the graphics card: fast and light on memory. 8K is cut at 4K, then enlarged on the GPU.",
+  "encoder.noGpu": "This server has no GPU encoder configured (RENDER_GPU=true enables it).",
+  "output.upscaleHint":
+    "The sharpest clip is only {source}p. {output} makes it bigger, not sharper.",
+  "output.heavyHint":
+    "4K, or above 60 fps, renders much more slowly and needs a lot of memory. A rate above the footage's own only repeats frames.",
+
+  // Server-defined names, keyed by id so each language owns its words.
+  "style.cinematic": "Cinematic",
+  "style.cinematic.description":
+    "Long, composed takes in shot order. Favours clean exposure and contrast over raw sharpness.",
+  "style.fast_montage": "Fast montage",
+  "style.fast_montage.description": "Short cuts, strongest material first. Built for pace.",
+  "style.sports_highlight": "Sports highlight",
+  "style.sports_highlight.description":
+    "Short action beats in the order they happened. Keeps the crowd and commentary audio.",
+  "style.gaming": "Gaming montage",
+  "style.gaming.description": "Punchy cuts from clean capture. Resolution matters more than usual.",
+  "style.anime": "Anime / AMV",
+  "style.anime.description":
+    "Rhythmic mid-length cuts. Tolerates flat animation cels that a sharpness-led ranking would reject.",
+  "style.nature": "Nature",
+  "style.nature.description": "Slow, held shots in sequence. Rewards even exposure and detail.",
+  "style.social": "Social / vertical",
+  "style.social.description":
+    "Vertical, short, front-loaded. The first clip has to earn the second.",
+  "style.custom": "Custom",
+  "style.custom.description": "Described by the user in their own words.",
+
+  "policy.football": "Football",
+  "policy.football.description":
+    "Context, then a build of action into the strongest moment, then the reaction. Cut in the order it happened.",
+  "policy.gaming": "Gaming",
+  "policy.gaming.description":
+    "Short shots, dense cutting, action emphasised, energy always rising.",
+  "policy.anime": "Anime / AMV",
+  "policy.anime.description":
+    "Rhythmic mid-length cuts locked to the music, colour over sharpness.",
+  "policy.cinematic_travel": "Cinematic travel",
+  "policy.cinematic_travel.description":
+    "Long composed takes, a calm opening, one moment that lifts, and a held ending. Dissolves where they help.",
+  "policy.nature": "Nature",
+  "policy.nature.description":
+    "Long opening shots, slow pacing, few transitions, a calm energy curve.",
+  "policy.vlog": "Vlog",
+  "policy.vlog.description":
+    "Chronological, people-led, conversational pacing with room to breathe.",
+  "policy.social": "Social",
+  "policy.social.description":
+    "The strongest shot first, very short holds, and no preamble at all.",
+  "policy.product": "Product",
+  "policy.product.description": "Even, deliberate shots of one subject. Detail over movement.",
+  "policy.fashion": "Fashion",
+  "policy.fashion.description":
+    "Rhythmic, people-led, locked to the music, close framing favoured.",
+  "policy.automotive": "Automotive",
+  "policy.automotive.description":
+    "Detail, then movement, then one shot that shows the whole thing moving.",
+  "policy.neutral": "Neutral",
+  "policy.neutral.description":
+    "No genre opinion: an arc and a curve, with nothing weighted toward a style.",
+
+  "variant.base": "Base edit",
+  "variant.high_energy": "High energy",
+  "variant.high_energy.description":
+    "Movement first. Shorter holds, harder cuts, the strongest moment slowed, and energy that only rises.",
+  "variant.cinematic": "Cinematic",
+  "variant.cinematic.description":
+    "Composition first. Long held takes, a calm opening, dissolves where the edit settles, and one moment that lifts.",
+  "variant.social_fast_cut": "Social fast cut",
+  "variant.social_fast_cut.description":
+    "The best shot first and no preamble. Very short holds, a falling energy curve, cut to the music where there is any.",
 
   "common.dash": "—",
 } as const;

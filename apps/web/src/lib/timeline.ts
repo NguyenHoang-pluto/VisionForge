@@ -35,7 +35,9 @@ import type {
   ManualCut,
   MediaAsset,
   MusicRequest,
+  Encoder,
   QualityPreset,
+  Resolution,
 } from "@/lib/api";
 
 /**
@@ -48,6 +50,10 @@ import type {
  * the user would find out at render time.
  */
 export let MIN_CLIP_MS = 300;
+/** Longest a photo may be held (Phase 12), matching the server's plan limit. */
+export const MAX_STILL_MS = 8_000;
+/** How long a photo dropped on the timeline is held to begin with. */
+export const STILL_DEFAULT_MS = 3_000;
 export let MAX_CLIP_MS = 30_000;
 export let MAX_CLIPS = 40;
 export let MIN_TIMELINE_MS = 1_000;
@@ -352,6 +358,10 @@ export function toManualCuts(clips: readonly TimelineClip[]): ManualCut[] {
  * an edit they can extend.
  */
 export function clipFromMedia(asset: MediaAsset, defaultMs = 5000): TimelineClip | null {
+  if (asset.kind === "image" && asset.status === "ready") {
+    // A photo has no length of its own: it is held, from zero.
+    return { id: clipId(), mediaId: asset.id, inMs: 0, outMs: Math.min(STILL_DEFAULT_MS, MAX_STILL_MS) };
+  }
   const duration = asset.duration_ms;
   if (asset.kind !== "video" || asset.status !== "ready" || !duration) return null;
   const length = Math.min(duration, Math.max(MIN_CLIP_MS, Math.min(defaultMs, MAX_CLIP_MS)));
@@ -399,7 +409,17 @@ export function draftProblems(
         message: `${name}: longer than ${MAX_CLIP_MS / 1000} s.`,
       });
     }
-    if (asset && asset.duration_ms !== null && clip.outMs > asset.duration_ms) {
+    if (asset?.kind === "image") {
+      if (clip.inMs !== 0) {
+        problems.push({ clipId: clip.id, message: `${name}: a photo is held from its start.` });
+      }
+      if (duration > MAX_STILL_MS) {
+        problems.push({
+          clipId: clip.id,
+          message: `${name}: a photo is held at most ${MAX_STILL_MS / 1000} s.`,
+        });
+      }
+    } else if (asset && asset.duration_ms !== null && clip.outMs > asset.duration_ms) {
       problems.push({ clipId: clip.id, message: `${name}: trimmed past the end of the source.` });
     }
     if (asset && asset.status !== "ready") {
@@ -418,14 +438,46 @@ export function draftProblems(
 }
 
 // --------------------------------------------------------------------- editing
+/**
+ * The sharpest source on the timeline, as lines on its short side.
+ *
+ * Output above this is an upscale: bigger, not sharper. `null` when no clip's
+ * size is known.
+ */
+export function sourceLines(
+  clips: readonly TimelineClip[],
+  media: Map<string, MediaAsset>,
+): number | null {
+  let best: number | null = null;
+  for (const clip of clips) {
+    const asset = media.get(clip.mediaId);
+    if (!asset?.width || !asset.height) continue;
+    const lines = Math.min(asset.width, asset.height);
+    best = best === null ? lines : Math.max(best, lines);
+  }
+  return best;
+}
+
+/**
+ * How far a clip of this asset may run: a video's length, or the longest a
+ * photo may be held. What every trim is clamped to.
+ */
+export function holdLimitMs(asset: MediaAsset | null | undefined): number | null {
+  if (asset?.kind === "image") return MAX_STILL_MS;
+  return asset?.duration_ms ?? null;
+}
+
 /** Trim a clip, clamped to what the source and the renderer allow. */
 export function trimClip(
   clip: TimelineClip,
   edge: "in" | "out",
   valueMs: number,
   sourceDurationMs: number | null,
+  still = false,
 ): TimelineClip {
   const limit = sourceDurationMs ?? Number.MAX_SAFE_INTEGER;
+  // A photo is held from its start; only how long it is held can change.
+  if (still && edge === "in") return clip;
   if (edge === "in") {
     const lowest = Math.max(0, clip.outMs - MAX_CLIP_MS);
     const highest = clip.outMs - MIN_CLIP_MS;
@@ -451,6 +503,8 @@ export function reorder(
 
 export interface OutputIntent {
   aspect: AspectRatio;
+  resolution: Resolution;
+  encoder: Encoder;
   fps: number;
   quality: QualityPreset;
   audio: "none" | "source";
@@ -460,6 +514,8 @@ export interface OutputIntent {
 
 export const DEFAULT_OUTPUT: OutputIntent = {
   aspect: "16:9",
+  resolution: "1080p",
+  encoder: "cpu",
   fps: 30,
   quality: "balanced",
   audio: "none",

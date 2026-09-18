@@ -25,6 +25,7 @@ import { Badge, Button, Glyph, IconButton, Menu, ToolGroup } from "@/components/
 const VIEW_LABEL: Record<Exclude<AppView, "home" | "settings">, MessageKey> = {
   editor: "nav.editor",
   assets: "nav.assets",
+  templates: "nav.templates",
   audio: "nav.audio",
   export: "nav.exports",
 };

@@ -3,7 +3,14 @@
 import type { MediaAsset } from "@/lib/api";
 import { bytes, fps as formatFps, resolution, timecode } from "@/lib/format";
 import { useT, type MessageKey } from "@/lib/i18n";
-import { clipDuration, clipPlaybackMs, MAX_CLIP_MS, MIN_CLIP_MS, place } from "@/lib/timeline";
+import {
+  clipDuration,
+  clipPlaybackMs,
+  holdLimitMs,
+  MAX_CLIP_MS,
+  MIN_CLIP_MS,
+  place,
+} from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import {
   Button,
@@ -63,6 +70,7 @@ export function ClipProperties({ media }: { media: Map<string, MediaAsset> }) {
   if (!asset) {
     return <EmptyState icon="film">{t("inspector.noSelection")}</EmptyState>;
   }
+  const still = asset.kind === "image";
 
   // Where this clip starts on the *timeline*, which is not the sum of the
   // trims before it: a crossfade overlaps its predecessor and a speed effect
@@ -93,7 +101,7 @@ export function ClipProperties({ media }: { media: Map<string, MediaAsset> }) {
                 max={Math.round(clip.outMs - MIN_CLIP_MS)}
                 aria-label={t("clip.inLabel")}
                 onChange={(event) =>
-                  trim(clip.id, "in", Number(event.target.value), asset.duration_ms)
+                  trim(clip.id, "in", Number(event.target.value), holdLimitMs(asset), still)
                 }
               />
             </Field>
@@ -102,10 +110,10 @@ export function ClipProperties({ media }: { media: Map<string, MediaAsset> }) {
                 value={Math.round(clip.outMs)}
                 min={Math.round(clip.inMs + MIN_CLIP_MS)}
                 step={100}
-                max={asset.duration_ms ?? undefined}
+                max={holdLimitMs(asset) ?? undefined}
                 aria-label={t("clip.outLabel")}
                 onChange={(event) =>
-                  trim(clip.id, "out", Number(event.target.value), asset.duration_ms)
+                  trim(clip.id, "out", Number(event.target.value), holdLimitMs(asset), still)
                 }
               />
             </Field>
@@ -143,7 +151,7 @@ export function ClipProperties({ media }: { media: Map<string, MediaAsset> }) {
       {/* Transitions, speed and effects are properties of the selected clip,
           so they live under it rather than behind three more tabs. */}
       {clip && <TransitionSection clip={clip} index={index} />}
-      {clip && <EffectsSection clip={clip} />}
+      {clip && <EffectsSection clip={clip} still={still} />}
 
       <section>
         <SectionTitle>{t("clip.section.source")}</SectionTitle>

@@ -5,7 +5,9 @@ import type {
   EffectKind,
   EffectRequest,
   MediaAsset,
+  Encoder,
   QualityPreset,
+  Resolution,
   StyleStrength,
   SubtitlePosition,
   SubtitleStyle,
@@ -80,7 +82,14 @@ export type InspectorTab = InspectorTabName;
  *
  * `home` is the only one that works without a project open.
  */
-export type AppView = "home" | "editor" | "assets" | "audio" | "export" | "settings";
+export type AppView =
+  | "home"
+  | "editor"
+  | "assets"
+  | "templates"
+  | "audio"
+  | "export"
+  | "settings";
 
 interface EditorState {
   // --- project ---
@@ -119,7 +128,13 @@ interface EditorState {
   selectClip: (clipId: string | null) => void;
   removeClip: (clipId: string) => void;
   moveClip: (from: number, to: number) => void;
-  trim: (clipId: string, edge: "in" | "out", valueMs: number, sourceMs: number | null) => void;
+  trim: (
+    clipId: string,
+    edge: "in" | "out",
+    valueMs: number,
+    sourceMs: number | null,
+    still?: boolean,
+  ) => void;
   splitAtPlayhead: () => void;
   clearTimeline: () => void;
   markCommitted: (planId: string) => void;
@@ -188,6 +203,8 @@ interface EditorState {
 
   // --- output intent ---
   aspect: AspectRatio;
+  resolution: Resolution;
+  encoder: Encoder;
   fps: number;
   quality: QualityPreset;
   audio: "none" | "source";
@@ -195,7 +212,7 @@ interface EditorState {
   sourceGain: number;
   setOutput: (
     patch: Partial<
-      Pick<EditorState, "aspect" | "fps" | "quality" | "audio" | "sourceGain">
+      Pick<EditorState, "aspect" | "resolution" | "encoder" | "fps" | "quality" | "audio" | "sourceGain">
     >,
   ) => void;
 
@@ -373,10 +390,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   moveClip: (from, to) =>
     set((state) => ({ clips: reorderClips(state.clips, from, to), dirty: true })),
 
-  trim: (id, edge, valueMs, sourceMs) =>
+  trim: (id, edge, valueMs, sourceMs, still) =>
     set((state) => ({
       clips: state.clips.map((clip) =>
-        clip.id === id ? trimClip(clip, edge, valueMs, sourceMs) : clip,
+        clip.id === id ? trimClip(clip, edge, valueMs, sourceMs, still) : clip,
       ),
       dirty: true,
     })),
@@ -600,6 +617,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   // -------------------------------------------------------------- output
   aspect: DEFAULT_OUTPUT.aspect,
+  resolution: DEFAULT_OUTPUT.resolution,
+  encoder: DEFAULT_OUTPUT.encoder,
   fps: DEFAULT_OUTPUT.fps,
   quality: DEFAULT_OUTPUT.quality,
   audio: DEFAULT_OUTPUT.audio,

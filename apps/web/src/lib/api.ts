@@ -151,11 +151,17 @@ export interface SimilarMediaResponse {
 }
 
 export type AspectRatio = "16:9" | "9:16" | "1:1";
+
+/** Output size, by the lines on the frame's short side. The server owns the pixels. */
+export type Resolution = "720p" | "1080p" | "1440p" | "2160p" | "4320p";
+
+/** Which hardware encodes: x264 on the CPU, or NVENC on an NVIDIA GPU. */
+export type Encoder = "cpu" | "gpu";
 export type ClipOrder = "score_desc" | "sequence";
 export type RenderStatus = "pending" | "rendering" | "ready" | "failed" | "cancelled";
 
 export type PlannerMode = "automatic" | "rules" | "ai";
-export type QualityPreset = "draft" | "balanced" | "high";
+export type QualityPreset = "draft" | "balanced" | "high" | "max";
 export type EditStyle =
   | "cinematic"
   | "fast_montage"
@@ -306,6 +312,15 @@ export interface EditorialRecord {
     target_ms: number;
     achieved_ms: number;
     shortfall_ms: number;
+    /** Present when the edit filled a template (Phase 12). */
+    template?: {
+      id: string;
+      name: string;
+      source: "builtin" | "user";
+      version: string;
+      slots: number;
+      reused: number;
+    };
   };
   policy_detail: EditorialPolicyInfo;
   intent: Record<string, unknown> | null;
@@ -341,6 +356,10 @@ export interface PlannerCapabilities {
     max_clip_ms: number;
   }[];
   aspect_ratios: { value: AspectRatio; width: number; height: number }[];
+  resolutions: Resolution[];
+  encoders: Encoder[];
+  /** Sizes the CPU encoder does not make. */
+  gpu_only_resolutions: Resolution[];
   fps_presets: number[];
   quality_presets: QualityPreset[];
   prompt_version: string;
@@ -604,6 +623,55 @@ export interface Render {
  */
 export type TransitionKind = "cut" | "crossfade" | "fade_in" | "fade_to_black";
 
+/* -------------------------------------------------------- templates (Phase 12) */
+
+/** What kind of media a template slot is best filled with. */
+export type SlotPreference = "any" | "video" | "still";
+
+/** One position in a template: a length, an energy and how it is entered. */
+export interface TemplateSlot {
+  duration_ms: number;
+  energy: number;
+  role: StoryRole;
+  transition_in: TransitionKind;
+  transition_ms: number;
+  /** How a photo placed here moves. */
+  motion: EffectKind | null;
+  prefer: SlotPreference;
+  beats: number | null;
+}
+
+/** An edit's structure with the footage taken out. */
+export interface EditTemplate {
+  /** A library template's name (`travel`), or a UUID for the user's own. */
+  id: string;
+  name: string;
+  source: "builtin" | "user";
+  aspect: AspectRatio;
+  bpm: number | null;
+  total_ms: number;
+  slot_count: number;
+  still_slots: number;
+  slots: TemplateSlot[];
+  source_media_id: string | null;
+  /** How the measurement went, for a user's template. */
+  extraction: {
+    shots: number;
+    merged: number;
+    split: number;
+    dropped: number;
+    unmeasured: number;
+    beat_synced: boolean;
+    transitions: string;
+  } | null;
+  created_at: string | null;
+}
+
+export interface TemplateList {
+  library: EditTemplate[];
+  mine: EditTemplate[];
+}
+
 export const TRANSITIONS: TransitionKind[] = ["cut", "crossfade", "fade_in", "fade_to_black"];
 
 /** Transitions that overlap the previous clip and shorten the programme. */
@@ -612,6 +680,10 @@ export const OVERLAPPING: TransitionKind[] = ["crossfade"];
 export type EffectKind =
   | "zoom_in"
   | "zoom_out"
+  | "pan_left"
+  | "pan_right"
+  | "pan_up"
+  | "pan_down"
   | "slow_motion"
   | "speed_up"
   | "brightness"
@@ -642,6 +714,10 @@ export const EFFECT_BOUNDS: Record<
 > = {
   zoom_in: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
   zoom_out: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  pan_left: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  pan_right: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  pan_up: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  pan_down: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
   slow_motion: { min: 0.25, max: 1, neutral: 1, step: 0.05, wholeClipOnly: true },
   speed_up: { min: 1, max: 4, neutral: 1, step: 0.05, wholeClipOnly: true },
   brightness: { min: -1, max: 1, neutral: 0, step: 0.05, wholeClipOnly: false },
@@ -745,6 +821,8 @@ export interface ManualCut {
 export interface ManualPlanOptions {
   segments: ManualCut[];
   aspect_ratio?: AspectRatio;
+  resolution?: Resolution;
+  encoder?: Encoder;
   fps?: number;
   quality?: QualityPreset;
   audio?: "none" | "source";
@@ -766,6 +844,8 @@ export interface PlanOptions {
   max_clips?: number;
   min_clips?: number;
   aspect_ratio?: AspectRatio;
+  resolution?: Resolution;
+  encoder?: Encoder;
   fps?: number;
   order?: ClipOrder;
   quality?: QualityPreset;
@@ -792,6 +872,11 @@ export interface PlanOptions {
    * asking for a variant reproduces exactly what the preview showed.
    */
   variant?: VariantId | null;
+  /**
+   * The template to fill (Phase 12): a library template's name or the id of
+   * one of the caller's own. The server resolves it and fills its slots.
+   */
+  template_id?: string | null;
 }
 
 /** The five stops on the style dial. A closed set, validated server-side. */
@@ -1247,6 +1332,26 @@ export const api = {
 
   // --- planner ---
   plannerCapabilities: () => request<PlannerCapabilities>("/api/planner/capabilities"),
+
+  // ------------------------------------------------------------ templates
+  /** The shipped library, and the caller's own measured templates. */
+  templates: () => request<TemplateList>("/api/templates"),
+
+  /** Measure a template from an analysed video in this project, and keep it. */
+  measureTemplate: (projectId: string, mediaId: string, name: string) =>
+    request<EditTemplate>(`/api/projects/${projectId}/templates`, {
+      method: "POST",
+      body: JSON.stringify({ media_id: mediaId, name }),
+    }),
+
+  renameTemplate: (templateId: string, name: string) =>
+    request<EditTemplate>(`/api/templates/${templateId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteTemplate: (templateId: string) =>
+    request<null>(`/api/templates/${templateId}`, { method: "DELETE" }),
 
   // ------------------------------------------------------------ reference
   /** The project's style reference and what it measures as. */

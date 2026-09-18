@@ -13,6 +13,7 @@ import {
 import { seconds, timecode } from "@/lib/format";
 import { useT, type MessageKey, type Translate } from "@/lib/i18n";
 import { Badge, Button, Glyph, Meter, SectionTitle, Spinner } from "@/components/ui";
+import { templateLabel } from "@/components/inspector/templates-panel";
 
 /**
  * The editorial plan, drawn as the arc the engine actually built.
@@ -158,15 +159,20 @@ export function EditorialPlanPanel({
 
   return (
     <section className="flex flex-col gap-3">
-      <SectionTitle description={record.policy_detail.description}>
+      <SectionTitle description={t(`policy.${record.policy_detail.id}.description` as MessageKey)}>
         {t("editorial.title")}
       </SectionTitle>
 
       {/* ------------------------------------------------------ the summary -- */}
       <div className="flex flex-wrap items-center gap-1.5">
-        <Badge tone="accent">{record.policy_detail.label}</Badge>
+        <Badge tone="accent">{t(`policy.${record.policy_detail.id}` as MessageKey)}</Badge>
         <Badge>{t(`editorial.pacing.${record.pacing.curve.shape}` as MessageKey)}</Badge>
         {record.variant && <Badge tone="warn">{t("editorial.variantBadge")}</Badge>}
+        {record.fit.template && (
+          <Badge tone="accent">
+            {t("template.badge", { name: templateLabel(record.fit.template, t) })}
+          </Badge>
+        )}
         <span className="ml-auto font-mono text-2xs tabular-nums text-faint">
           {t("editorial.summary", {
             clips: record.segments.length,
@@ -199,7 +205,11 @@ export function EditorialPlanPanel({
                 type="button"
                 role="radio"
                 aria-checked={selected}
-                title={item.description}
+                title={
+                  item.variant
+                    ? t(`variant.${item.variant}.description` as MessageKey)
+                    : t(`policy.${item.policy}.description` as MessageKey)
+                }
                 disabled={busy}
                 onClick={() => onChooseVariant(item.variant)}
                 className={`h-control-sm rounded-full px-3 text-2xs font-medium transition-[background-color,color,box-shadow] duration-fast disabled:opacity-50 ${
@@ -208,7 +218,7 @@ export function EditorialPlanPanel({
                     : "bg-hover text-muted hover:text-fg"
                 }`}
               >
-                {item.label}
+                {t(item.variant ? (`variant.${item.variant}` as MessageKey) : "variant.base")}
                 <span className="ml-1.5 font-mono tabular-nums opacity-70">
                   {item.clip_count}·{seconds(item.total_duration_ms, 0)}
                 </span>

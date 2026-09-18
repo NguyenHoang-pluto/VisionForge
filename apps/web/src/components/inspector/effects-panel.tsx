@@ -51,6 +51,10 @@ const TRANSITION_HINT: Record<TransitionKind, MessageKey> = {
 const EFFECT_LABEL: Record<EffectKind, MessageKey> = {
   zoom_in: "effect.zoom_in",
   zoom_out: "effect.zoom_out",
+  pan_left: "effect.pan_left",
+  pan_right: "effect.pan_right",
+  pan_up: "effect.pan_up",
+  pan_down: "effect.pan_down",
   slow_motion: "effect.slow_motion",
   speed_up: "effect.speed_up",
   brightness: "effect.brightness",
@@ -62,6 +66,8 @@ const EFFECT_LABEL: Record<EffectKind, MessageKey> = {
 const COLOUR: EffectKind[] = ["brightness", "contrast", "saturation"];
 /** The framing effects, which are a crop ramp and must span the whole clip. */
 const FRAMING: EffectKind[] = ["zoom_in", "zoom_out"];
+/** The drifts (Phase 12), the same crop sliding instead of tightening. */
+const PANS: EffectKind[] = ["pan_left", "pan_right", "pan_up", "pan_down"];
 
 // -------------------------------------------------------------------- pieces
 /**
@@ -211,7 +217,7 @@ export function TransitionSection({ clip, index }: { clip: TimelineClip; index: 
 }
 
 // -------------------------------------------------------------------- effects
-export function EffectsSection({ clip }: { clip: TimelineClip }) {
+export function EffectsSection({ clip, still = false }: { clip: TimelineClip; still?: boolean }) {
   const t = useT();
   const setEffect = useEditorStore((s) => s.setEffect);
   const clearEffect = useEditorStore((s) => s.clearEffect);
@@ -223,46 +229,51 @@ export function EffectsSection({ clip }: { clip: TimelineClip }) {
   // the one that already holds the value.
   const speedKind: EffectKind = slowed ? "slow_motion" : "speed_up";
   const zoomKind: EffectKind = effectAmount(clip, "zoom_out") > 0 ? "zoom_out" : "zoom_in";
+  // One drift at a time: two pans on one clip would pull the view two ways.
+  const panKind: EffectKind = PANS.find((kind) => effectAmount(clip, kind) > 0) ?? "pan_right";
 
   return (
     <>
-      <section>
-        <SectionTitle
-          aside={
-            <span className="shrink-0 font-mono text-2xs tabular-nums text-faint">
-              {timecode(clipPlaybackMs(clip), false)}
+      {/* A photo has no motion to speed up or slow; the server refuses one. */}
+      {!still && (
+        <section>
+          <SectionTitle
+            aside={
+              <span className="shrink-0 font-mono text-2xs tabular-nums text-faint">
+                {timecode(clipPlaybackMs(clip), false)}
+              </span>
+            }
+          >
+            {t("effect.section.speed")}
+          </SectionTitle>
+
+          <div className="mt-1.5 flex items-center gap-2">
+            <SegmentedControl<EffectKind>
+              label={t("effect.speedDirection")}
+              value={speedKind}
+              options={[
+                { value: "slow_motion", label: t("effect.slow_motion") },
+                { value: "speed_up", label: t("effect.speed_up") },
+              ]}
+              onChange={(next) => {
+                clearEffect(clip.id, next === "slow_motion" ? "speed_up" : "slow_motion");
+                setEffect(clip.id, { kind: next, amount: EFFECT_BOUNDS[next].neutral });
+              }}
+            />
+            <span className="ml-auto font-mono text-2xs tabular-nums text-fg">
+              {speed.toFixed(2)}×
             </span>
-          }
-        >
-          {t("effect.section.speed")}
-        </SectionTitle>
+          </div>
 
-        <div className="mt-1.5 flex items-center gap-2">
-          <SegmentedControl<EffectKind>
-            label={t("effect.speedDirection")}
-            value={speedKind}
-            options={[
-              { value: "slow_motion", label: t("effect.slow_motion") },
-              { value: "speed_up", label: t("effect.speed_up") },
-            ]}
-            onChange={(next) => {
-              clearEffect(clip.id, next === "slow_motion" ? "speed_up" : "slow_motion");
-              setEffect(clip.id, { kind: next, amount: EFFECT_BOUNDS[next].neutral });
-            }}
-          />
-          <span className="ml-auto font-mono text-2xs tabular-nums text-fg">
-            {speed.toFixed(2)}×
-          </span>
-        </div>
+          <div className="mt-2">
+            <EffectSlider clip={clip} kind={speedKind} format={(v) => `${v.toFixed(2)}×`} />
+          </div>
 
-        <div className="mt-2">
-          <EffectSlider clip={clip} kind={speedKind} format={(v) => `${v.toFixed(2)}×`} />
-        </div>
-
-        <p className="mt-1.5 text-2xs leading-snug text-faint">
-          {t("effect.speedHint", { min: EFFECT_BOUNDS.slow_motion.min, max: EFFECT_BOUNDS.speed_up.max })}
-        </p>
-      </section>
+          <p className="mt-1.5 text-2xs leading-snug text-faint">
+            {t("effect.speedHint", { min: EFFECT_BOUNDS.slow_motion.min, max: EFFECT_BOUNDS.speed_up.max })}
+          </p>
+        </section>
+      )}
 
       <section>
         <SectionTitle>{t("effect.section.transform")}</SectionTitle>
@@ -285,6 +296,22 @@ export function EffectsSection({ clip }: { clip: TimelineClip }) {
           />
         </div>
         <p className="mt-1.5 text-2xs leading-snug text-faint">{t("effect.zoomHint")}</p>
+
+        <div className="mt-3 flex items-center gap-2">
+          <SegmentedControl<EffectKind>
+            label={t("effect.panDirection")}
+            value={panKind}
+            options={PANS.map((kind) => ({ value: kind, label: t(EFFECT_LABEL[kind]) }))}
+            onChange={(next) => {
+              for (const kind of PANS) if (kind !== next) clearEffect(clip.id, kind);
+              setEffect(clip.id, { kind: next, amount: EFFECT_BOUNDS[next].neutral });
+            }}
+          />
+        </div>
+        <div className="mt-2">
+          <EffectSlider clip={clip} kind={panKind} format={(v) => `${Math.round(v * 100)}%`} />
+        </div>
+        <p className="mt-1.5 text-2xs leading-snug text-faint">{t("effect.panHint")}</p>
       </section>
 
       <section>

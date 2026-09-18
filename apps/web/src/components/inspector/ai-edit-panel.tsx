@@ -35,6 +35,8 @@ import {
 import { CoEditorPanel } from "@/components/inspector/co-editor-panel";
 import { EditorialPlanPanel } from "@/components/inspector/editorial-plan";
 import { ReferencePanel } from "@/components/inspector/reference-panel";
+import { TemplatesPanel } from "@/components/inspector/templates-panel";
+import { OutputSizeFields } from "@/components/inspector/output-fields";
 
 /**
  * The AI edit panel.
@@ -70,6 +72,7 @@ const QUALITIES: { value: QualityPreset; label: MessageKey }[] = [
   { value: "draft", label: "export.quality.draft" },
   { value: "balanced", label: "export.quality.balanced" },
   { value: "high", label: "export.quality.high" },
+  { value: "max", label: "export.quality.max" },
 ];
 
 export function AiEditPanel({
@@ -92,6 +95,8 @@ export function AiEditPanel({
 
   const aspect = useEditorStore((s) => s.aspect);
   const fps = useEditorStore((s) => s.fps);
+  const resolution = useEditorStore((s) => s.resolution);
+  const encoder = useEditorStore((s) => s.encoder);
   const quality = useEditorStore((s) => s.quality);
   const setOutput = useEditorStore((s) => s.setOutput);
   const setClips = useEditorStore((s) => s.setClips);
@@ -109,6 +114,7 @@ export function AiEditPanel({
   const [maxClips, setMaxClips] = useState(6);
   const [order, setOrder] = useState<ClipOrder>("score_desc");
   const [policy, setPolicy] = useState<PolicyId | "">("");
+  const [templateId, setTemplateId] = useState<string | null>(null);
   const [variant, setVariant] = useState<VariantId | null>(null);
   const [variants, setVariants] = useState<EditorialVariantPreview[] | null>(null);
   const [plan, setPlan] = useState<EditPlan | null>(null);
@@ -124,6 +130,7 @@ export function AiEditPanel({
   const aiAvailable = capabilities.data?.ai_available ?? false;
   const styles = capabilities.data?.styles ?? [];
   const fpsPresets = capabilities.data?.fps_presets ?? [24, 30, 60];
+  const heavyOutput = resolution === "2160p" || fps > 60;
   const activeMode: PlannerMode = mode === "ai" && !aiAvailable ? "rules" : mode;
 
   /**
@@ -142,6 +149,8 @@ export function AiEditPanel({
     max_clips: maxClips,
     min_clips: 1,
     aspect_ratio: aspect,
+    resolution,
+    encoder,
     fps,
     quality,
     order,
@@ -154,6 +163,7 @@ export function AiEditPanel({
     style_strength: styleStrength,
     editorial_policy: policy || null,
     variant: chosen,
+    template_id: templateId,
   });
 
   const reportError = (caught: unknown) =>
@@ -330,6 +340,19 @@ export function AiEditPanel({
         onAnalyze={onAnalyze}
       />
 
+      {/* A template fixes the slots, their lengths and their joins; the engine
+          still decides which photo or video goes in each. Its shape becomes
+          the output's, visibly, rather than being applied behind the panel. */}
+      <TemplatesPanel
+        projectId={projectId}
+        mediaList={mediaList}
+        value={templateId}
+        onChange={(chosen) => {
+          setTemplateId(chosen?.id ?? null);
+          if (chosen) setOutput({ aspect: chosen.aspect });
+        }}
+      />
+
       {/* ----------------------------------------------------------- mode ---- */}
       <section>
         <SectionTitle description={activeNote ? t(activeNote) : undefined}>
@@ -358,7 +381,13 @@ export function AiEditPanel({
           consequential choice on the panel, and a dropdown hides five of six
           options behind a click for no gain in space at this width. */}
       <section>
-        <SectionTitle description={selectedStyle?.description}>{t("ai.style")}</SectionTitle>
+        <SectionTitle
+          description={
+            selectedStyle && t(`style.${selectedStyle.value}.description` as MessageKey)
+          }
+        >
+          {t("ai.style")}
+        </SectionTitle>
 
         <div role="radiogroup" aria-label={t("ai.style.label")} className="flex flex-wrap gap-1.5">
           {[{ value: "" as const, label: t("ai.style.none"), description: "" }, ...styles].map(
@@ -370,7 +399,11 @@ export function AiEditPanel({
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  title={item.description || undefined}
+                  title={
+                    item.value
+                      ? t(`style.${item.value}.description` as MessageKey)
+                      : undefined
+                  }
                   onClick={() => {
                     const next = item.value as EditStyle | "";
                     setStyle(next);
@@ -389,7 +422,7 @@ export function AiEditPanel({
                       : "bg-hover text-muted hover:text-fg"
                   }`}
                 >
-                  {item.label}
+                  {item.value ? t(`style.${item.value}` as MessageKey) : item.label}
                 </button>
               );
             },
@@ -428,11 +461,16 @@ export function AiEditPanel({
             >
               {(capabilities.data?.aspect_ratios ?? []).map((item) => (
                 <option key={item.value} value={item.value}>
-                  {item.value} · {item.width}×{item.height}
+                  {item.value}
                 </option>
               ))}
             </Select>
           </Field>
+          <OutputSizeFields
+            prefix="ai"
+            capabilities={capabilities.data}
+            hint={heavyOutput ? t("output.heavyHint") : undefined}
+          />
           <Field label={t("ai.fps")}>
             <Select
               value={fps}
@@ -483,8 +521,12 @@ export function AiEditPanel({
             >
               <option value="">{t("ai.policy.auto")}</option>
               {(capabilities.data?.editorial_policies ?? []).map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}
+                <option
+                  key={item.id}
+                  value={item.id}
+                  title={t(`policy.${item.id}.description` as MessageKey)}
+                >
+                  {t(`policy.${item.id}` as MessageKey)}
                 </option>
               ))}
             </Select>

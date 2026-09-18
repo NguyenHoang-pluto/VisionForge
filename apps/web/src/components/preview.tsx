@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AspectRatio, MediaAsset, Render } from "@/lib/api";
 import { timecode } from "@/lib/format";
 import { useT } from "@/lib/i18n";
-import { useProxyUrl, useProxyUrls } from "@/lib/media-urls";
+import { useProxyUrl, useProxyUrls, useThumbnailUrl } from "@/lib/media-urls";
 import { clipAt, clipDuration, place } from "@/lib/timeline";
 import { useEditorStore } from "@/stores/editor-store";
 import { Badge, Divider, Glyph, IconButton, SegmentedControl, Slider } from "@/components/ui";
@@ -75,10 +75,27 @@ export function Preview({
 
   const placed = useMemo(() => place(clips), [clips]);
   const timelineMs = placed.length > 0 ? placed[placed.length - 1].endMs : 0;
-  const mediaIds = useMemo(() => clips.map((clip) => clip.mediaId), [clips]);
+  // Photos (Phase 12) have no proxy to play. They are shown as a picture and
+  // timed by the clock, so they are left out of the proxy fetch entirely.
+  const stillIds = useMemo(
+    () =>
+      new Set(
+        clips.map((clip) => clip.mediaId).filter((id) => media.get(id)?.kind === "image"),
+      ),
+    [clips, media],
+  );
+  const stillIdsRef = useRef(stillIds);
+  stillIdsRef.current = stillIds;
+  const mediaIds = useMemo(
+    () => clips.map((clip) => clip.mediaId).filter((id) => !stillIds.has(id)),
+    [clips, stillIds],
+  );
   const programUrls = useProxyUrls(projectId, source === "program" ? mediaIds : []);
 
   const current = source === "program" ? clipAt(clips, Math.min(playheadMs, timelineMs)) : null;
+  const currentStill = current && stillIds.has(current.clip.mediaId) ? current : null;
+  const stillAsset = currentStill ? (media.get(currentStill.clip.mediaId) ?? null) : null;
+  const stillThumbnail = useThumbnailUrl(projectId, stillAsset);
 
   // What the element should be playing right now.
   const wantedUrl =
@@ -134,7 +151,7 @@ export function Preview({
   /** In program mode the element's time is derived from the playhead. */
   useEffect(() => {
     const element = videoRef.current;
-    if (!element || source !== "program" || !current) return;
+    if (!element || source !== "program" || !current || currentStill) return;
 
     const target = (current.clip.inMs + current.offsetMs) / 1000;
     // Only correct real drift. Writing currentTime every frame fights the
@@ -142,7 +159,7 @@ export function Preview({
     if (Math.abs(element.currentTime - target) > 0.25) {
       element.currentTime = target;
     }
-  }, [source, current]);
+  }, [source, current, currentStill]);
 
   useEffect(() => {
     const element = videoRef.current;
@@ -156,14 +173,16 @@ export function Preview({
     const element = videoRef.current;
     if (!element) return;
 
-    if (playing) {
+    // A still is on screen: the element holds the previous clip, and must not
+    // play its sound under the photo.
+    if (playing && !currentStill) {
       // A play() rejection is normal (autoplay policy, src swapped mid-call);
       // it must not leave the UI claiming to be playing.
       void element.play().catch(() => setPlaying(false));
     } else {
       element.pause();
     }
-  }, [playing, wantedUrl, setPlaying]);
+  }, [playing, wantedUrl, setPlaying, currentStill]);
 
   /**
    * Advance the playhead from the element's own clock.
@@ -181,16 +200,23 @@ export function Preview({
     if (!element || source !== "program" || !playing) return;
 
     let frame = 0;
+    let last = performance.now();
 
     const tick = () => {
       const store = useEditorStore.getState();
       const at = clipAt(store.clips, store.playheadMs);
+      const now = performance.now();
+      const delta = (now - last) * element.playbackRate;
+      last = now;
       if (!at) {
         store.setPlaying(false);
         return;
       }
 
-      const elapsed = element.currentTime * 1000 - at.clip.inMs;
+      // A still has no element clock to read, so the wall clock drives it.
+      const elapsed = stillIdsRef.current.has(at.clip.mediaId)
+        ? at.offsetMs + delta
+        : element.currentTime * 1000 - at.clip.inMs;
       const length = clipDuration(at.clip);
 
       if (elapsed >= length - BOUNDARY_EPSILON_MS) {
@@ -337,6 +363,20 @@ export function Preview({
             onPlaying={() => setStalled(false)}
             onCanPlay={() => setStalled(false)}
           />
+
+          {/* A photo on the program timeline. A picture, not a decode. */}
+          {currentStill && !empty && (
+            <div className="absolute inset-0 bg-black">
+              {stillThumbnail.data?.url && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={stillThumbnail.data.url}
+                  alt=""
+                  className="h-full w-full object-cover"
+                />
+              )}
+            </div>
+          )}
 
           {empty && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">

@@ -15,6 +15,7 @@ import {
   clipPlaybackMs,
   clipSpeed,
   musicDuration,
+  holdLimitMs,
   place,
   sortedCues,
   transitionOf,
@@ -595,7 +596,13 @@ export function Timeline({
         const clip = clips.find((item) => item.id === drag.clipId);
         if (!clip) return;
         const asset = media.get(clip.mediaId);
-        trim(drag.clipId, drag.edge, drag.originMs + deltaMs, asset?.duration_ms ?? null);
+        trim(
+          drag.clipId,
+          drag.edge,
+          drag.originMs + deltaMs,
+          holdLimitMs(asset),
+          asset?.kind === "image",
+        );
         return;
       }
 

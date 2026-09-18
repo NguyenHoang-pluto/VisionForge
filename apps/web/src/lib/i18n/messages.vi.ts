@@ -284,6 +284,8 @@ export const vi: Record<MessageKey, string> = {
   "ai.maxClips.label": "Số clip tối đa",
   "ai.aspect": "Tỉ lệ khung",
   "ai.aspect.label": "Tỉ lệ khung hình",
+  "ai.resolution": "Độ phân giải",
+  "ai.resolution.label": "Độ phân giải đầu ra",
   "ai.fps": "Tốc độ khung hình",
   "ai.fps.label": "Tốc độ khung hình",
   "ai.quality": "Chất lượng",
@@ -303,8 +305,9 @@ export const vi: Record<MessageKey, string> = {
 
   // --------------------------------------------------------------- export
   "export.output": "Đầu ra",
+  "export.shape": "Khung hình",
   "export.resolution": "Độ phân giải",
-  "export.resolutionHint": "Máy chủ chọn theo tỉ lệ khung hình.",
+  "export.resolution.label": "Độ phân giải đầu ra",
   "export.shapeLabel": "Khung hình đầu ra",
   "export.fps": "Tốc độ khung hình",
   "export.fpsLabel": "Tốc độ khung hình đầu ra",
@@ -313,9 +316,12 @@ export const vi: Record<MessageKey, string> = {
   "export.quality.draft": "Nháp",
   "export.quality.balanced": "Cân bằng",
   "export.quality.high": "Cao",
+  "export.quality.max": "Tối đa",
   "export.quality.draftNote": "Mã hoá nhanh nhất. Dùng để kiểm tra bản cắt.",
   "export.quality.balancedNote": "Mặc định. Chất lượng tốt với tốc độ hợp lý.",
-  "export.quality.highNote": "Mã hoá chậm nhất, tệp lớn nhất.",
+  "export.quality.highNote": "Mã hoá chậm hơn, co giãn ảnh sắc nét hơn, tệp lớn hơn.",
+  "export.quality.maxNote":
+    "Giữ nhiều chi tiết nhất mà video gốc có, chờ lâu bao nhiêu cũng được. Chậm hơn Cân bằng vài lần.",
   "export.audio": "Âm thanh",
   "export.audioLabel": "Chế độ âm thanh",
   "export.audio.none": "Không tiếng",
@@ -511,6 +517,7 @@ export const vi: Record<MessageKey, string> = {
   "nav.editor": "Biên tập",
   "nav.assets": "Tư liệu",
   "nav.audio": "Âm thanh",
+  "nav.templates": "Mẫu",
   "nav.exports": "Kết xuất",
   "nav.settings": "Cài đặt",
   "nav.needsProject": "{view} — hãy mở một dự án trước",
@@ -613,6 +620,13 @@ export const vi: Record<MessageKey, string> = {
   "effect.zoomDirection": "Hướng zoom",
   "effect.zoom_in": "Zoom vào",
   "effect.zoom_out": "Zoom ra",
+  "effect.pan_left": "← Trái",
+  "effect.pan_right": "Phải →",
+  "effect.pan_up": "↑ Lên",
+  "effect.pan_down": "Xuống ↓",
+  "effect.panDirection": "Hướng lia",
+  "effect.panHint":
+    "Lia chậm ngang khung hình suốt clip. Dùng cho ảnh để ảnh không bị đứng hình.",
   "effect.slow_motion": "Chậm lại",
   "effect.speed_up": "Nhanh lên",
   "effect.brightness": "Độ sáng",
@@ -806,10 +820,145 @@ export const vi: Record<MessageKey, string> = {
     "xếp theo câu chuyện, không theo thời gian",
   "editorial.reason.style_policy": "do phong cách dựng chọn",
   "editorial.reason.likely_speech": "có thể có người đang nói",
+  "editorial.reason.still_hold": "ảnh, giữ từ đầu",
+  "editorial.reason.still_motion": "ảnh, được zoom hoặc lia chậm để không bị đứng hình",
+  "editorial.reason.template_slot_fit": "đúng loại cảnh mẫu yêu cầu ở vị trí này",
+  "editorial.reason.reused_for_template": "dùng lại vì mẫu có nhiều ô hơn số clip",
+  "editorial.reason.template_transition": "chuyển cảnh theo đúng mẫu",
+
+  "template.title": "Mẫu",
+  "template.description":
+    "Sao chép cấu trúc của một bản dựng: bao nhiêu cảnh, mỗi cảnh dài bao lâu, nối với nhau thế nào. Ảnh và video của bạn sẽ lấp vào.",
+  "template.badge": "Mẫu: {name}",
+  "template.library": "Mẫu",
+  "template.libraryIntro":
+    "Chọn một mẫu rồi bấm Dùng: ảnh và video của bạn sẽ lấp vào các cảnh của mẫu, bản dựng mở ngay trong trình biên tập. Nếu dự án còn trống, hãy thêm thư mục ở cột bên trái trước.",
+  "template.builtIn": "Có sẵn",
+  "template.mineEmpty": "Chưa có. Tạo một mẫu ở bên dưới từ bản dựng bạn thích.",
+  "template.use": "Dùng mẫu",
+  "template.pickOne": "Chọn một mẫu trong thư viện để xem nó sẽ được lấp thế nào.",
+  "template.footage": "{videos} video và {photos} ảnh trong dự án sẽ được dùng để lấp mẫu.",
+  "template.noPhotos": "Mẫu này có cảnh dành cho ảnh nhưng dự án chưa có ảnh nào. Video sẽ được dùng thay.",
+  "template.unanalysed": "{count} tệp chưa được phân tích nên chưa dùng được.",
+  "template.analyseNow": "Phân tích ngay",
+  "template.output": "Xuất {resolution} · {fps} fps · {quality}. Đổi ở mục Xuất.",
+  "template.useThis": "Dùng mẫu này",
+  "template.building": "Đang dựng…",
+  "template.rename": "Đổi tên",
+  "template.deleteConfirm": "Xoá mẫu \"{name}\"? Video của bạn không bị ảnh hưởng.",
+  "template.none": "Không",
+  "template.mine": "Mẫu của tôi",
+  "template.travel": "Du lịch",
+  "template.memories": "Kỷ niệm",
+  "template.beat_highlight": "Highlight theo beat",
+  "template.slideshow": "Trình chiếu ảnh",
+  "template.day_vlog": "Một ngày của tôi",
+  "template.vertical_reel": "Reel dọc",
+  "template.summary": "{slots} cảnh · {length} · {stills} cảnh dành cho ảnh",
+  "template.strip": "Các cảnh của mẫu: độ rộng là thời lượng, độ cao là năng lượng",
+  "template.slotTitle": "Cảnh {index} · {length} · {role}",
+  "template.fills":
+    "Mẫu quyết định thời lượng và nhịp cắt. Nếu có nhạc, các cảnh sẽ được căn theo beat của nhạc.",
+  "template.measured":
+    "Đo từ {shots} cảnh (gộp {merged}, bỏ {dropped}). Các chỗ nối được coi là cắt thẳng.",
+  "template.delete": "Xoá",
+  "template.make": "Tạo mẫu từ một video",
+  "template.fromVideo": "Video cần sao chép",
+  "template.pickVideo": "Chọn một video đã phân tích",
+  "template.name": "Tên",
+  "template.namePlaceholder": "VD: Bản dựng du lịch của tôi",
+  "template.measure": "Tạo mẫu",
+  "template.measuring": "Đang đo…",
+  "template.makeHint":
+    "Tải lên một bản dựng bạn thích, phân tích nó, rồi tạo thành mẫu. Mẫu dùng lại được ở mọi dự án.",
+  "template.error": "Không tạo được mẫu.",
 
   "ai.policy": "Phong cách dựng",
   "ai.policy.label": "Chọn bộ quy tắc dựng theo thể loại",
   "ai.policy.auto": "Theo phong cách",
   "ai.plan.none":
     "Tạo một bản dựng để xem kế hoạch dựng của nó.",
+
+  "resolution.720p": "720p · HD",
+  "resolution.1080p": "1080p · Full HD",
+  "resolution.1440p": "1440p · 2K",
+  "resolution.2160p": "2160p · 4K",
+  "resolution.4320p": "4320p · 8K",
+  "encoder.label": "Bộ mã hoá",
+  "encoder.cpu": "CPU",
+  "encoder.gpu": "GPU (NVIDIA)",
+  "encoder.gpuOnly": "chỉ GPU",
+  "encoder.cpu.hint": "x264 trên bộ xử lý. Tối đa 4K; tốn nhiều RAM khi xuất lớn.",
+  "encoder.gpu.hint":
+    "NVENC trên card đồ hoạ: nhanh và nhẹ RAM. 8K được dựng ở 4K rồi phóng lên trên GPU.",
+  "encoder.noGpu": "Máy chủ chưa bật bộ mã hoá GPU (đặt RENDER_GPU=true trong .env).",
+  "output.upscaleHint":
+    "Clip nét nhất chỉ {source}p. Xuất {output} chỉ làm hình to hơn, không nét hơn.",
+  "output.heavyHint":
+    "4K hoặc trên 60 fps render chậm hơn nhiều và tốn nhiều RAM. Chọn fps cao hơn fps của video gốc chỉ lặp lại khung hình.",
+
+  // Tên do máy chủ định nghĩa, tra theo id để mỗi ngôn ngữ tự có chữ của mình.
+  "style.cinematic": "Điện ảnh",
+  "style.cinematic.description":
+    "Cảnh dài, bố cục chỉn chu, theo thứ tự quay. Ưu tiên phơi sáng sạch và độ tương phản hơn độ nét.",
+  "style.fast_montage": "Montage nhanh",
+  "style.fast_montage.description": "Cắt ngắn, cảnh mạnh nhất lên trước. Dành cho nhịp nhanh.",
+  "style.sports_highlight": "Highlight thể thao",
+  "style.sports_highlight.description":
+    "Những pha hành động ngắn theo đúng thứ tự diễn ra. Giữ tiếng khán giả và bình luận.",
+  "style.gaming": "Montage game",
+  "style.gaming.description":
+    "Cắt dứt khoát từ bản quay sạch. Độ phân giải quan trọng hơn bình thường.",
+  "style.anime": "Anime / AMV",
+  "style.anime.description":
+    "Cắt nhịp nhàng, độ dài vừa. Chấp nhận khung hình hoạt hình phẳng mà cách xếp hạng theo độ nét sẽ loại bỏ.",
+  "style.nature": "Thiên nhiên",
+  "style.nature.description":
+    "Cảnh chậm, giữ lâu, theo trình tự. Ưu tiên phơi sáng đều và chi tiết.",
+  "style.social": "Mạng xã hội / dọc",
+  "style.social.description":
+    "Khung dọc, ngắn, dồn điểm nhấn lên đầu. Clip đầu phải giữ được người xem.",
+  "style.custom": "Tuỳ chỉnh",
+  "style.custom.description": "Do bạn tự mô tả bằng lời của mình.",
+
+  "policy.football": "Bóng đá",
+  "policy.football.description":
+    "Bối cảnh, rồi hành động dồn lên khoảnh khắc mạnh nhất, rồi phản ứng. Dựng theo thứ tự diễn ra.",
+  "policy.gaming": "Game",
+  "policy.gaming.description": "Cảnh ngắn, cắt dày, nhấn vào hành động, năng lượng luôn tăng.",
+  "policy.anime": "Anime / AMV",
+  "policy.anime.description":
+    "Cắt nhịp nhàng độ dài vừa, bám theo nhạc, ưu tiên màu sắc hơn độ nét.",
+  "policy.cinematic_travel": "Du lịch điện ảnh",
+  "policy.cinematic_travel.description":
+    "Cảnh dài có bố cục, mở đầu êm, một khoảnh khắc bừng lên và kết thúc lắng lại. Dùng hoà cảnh khi hợp.",
+  "policy.nature": "Thiên nhiên",
+  "policy.nature.description": "Cảnh mở đầu dài, nhịp chậm, ít chuyển cảnh, năng lượng êm.",
+  "policy.vlog": "Vlog",
+  "policy.vlog.description":
+    "Theo thời gian, lấy con người làm trung tâm, nhịp như trò chuyện, có khoảng thở.",
+  "policy.social": "Mạng xã hội",
+  "policy.social.description": "Cảnh mạnh nhất lên trước, giữ cảnh rất ngắn, không dạo đầu.",
+  "policy.product": "Sản phẩm",
+  "policy.product.description": "Cảnh đều đặn, có chủ ý về một chủ thể. Chi tiết hơn chuyển động.",
+  "policy.fashion": "Thời trang",
+  "policy.fashion.description":
+    "Nhịp nhàng, lấy con người làm trung tâm, bám theo nhạc, ưu tiên khung cận.",
+  "policy.automotive": "Xe cộ",
+  "policy.automotive.description":
+    "Chi tiết, rồi chuyển động, rồi một cảnh cho thấy toàn bộ chiếc xe đang chạy.",
+  "policy.neutral": "Trung tính",
+  "policy.neutral.description":
+    "Không thiên về thể loại nào: có mạch truyện và đường nhịp, không nghiêng về phong cách nào.",
+
+  "variant.base": "Bản dựng gốc",
+  "variant.high_energy": "Năng lượng cao",
+  "variant.high_energy.description":
+    "Chuyển động trước tiên. Giữ cảnh ngắn hơn, cắt mạnh hơn, khoảnh khắc mạnh nhất quay chậm và năng lượng chỉ tăng.",
+  "variant.cinematic": "Điện ảnh",
+  "variant.cinematic.description":
+    "Bố cục trước tiên. Cảnh giữ lâu, mở đầu êm, hoà cảnh khi bản dựng lắng lại và một khoảnh khắc bừng lên.",
+  "variant.social_fast_cut": "Cắt nhanh mạng xã hội",
+  "variant.social_fast_cut.description":
+    "Cảnh đẹp nhất lên trước, không dạo đầu. Giữ cảnh rất ngắn, năng lượng giảm dần, cắt theo nhạc nếu có.",
 };

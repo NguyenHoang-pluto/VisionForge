@@ -22,6 +22,7 @@ import { NewProjectDialog } from "@/components/shell/new-project-dialog";
 import { AudioWorkspace } from "@/components/views/audio-workspace";
 import { AssetsWorkspace } from "@/components/views/assets-workspace";
 import { ExportWorkspace } from "@/components/views/export-workspace";
+import { TemplatesWorkspace } from "@/components/views/templates-workspace";
 
 /**
  * The application shell.
@@ -487,6 +488,18 @@ export function Workstation() {
                 loading={media.isLoading}
                 analyzedIds={analyzedIds}
                 onUploaded={invalidateProject}
+              />
+            )}
+
+            {current === "templates" && (
+              <TemplatesWorkspace
+                projectId={projectId!}
+                media={items}
+                loading={media.isLoading}
+                analyzedIds={analyzedIds}
+                onUploaded={invalidateProject}
+                onAnalyzeAll={() => analyze.mutate([])}
+                onPlanned={onPlanned}
               />
             )}
 
