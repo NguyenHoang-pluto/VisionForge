@@ -195,6 +195,34 @@ def step_phash(ctx: JobContext) -> None:
     _run_analyzer(ctx, PerceptualHashAnalyzer())
 
 
+def step_beats(ctx: JobContext) -> None:
+    """Tempo and a beat grid, for anything carrying a soundtrack.
+
+    On the CPU lane beside the other cheap signals rather than in a lane of its
+    own: detection is FFT arithmetic over a decoded mono stream, which costs a
+    second or two for a five-minute track and needs no GPU.
+
+    Video is included as of Phase 8. A reference video's cutting rhythm is only
+    interpretable against its own music, so the grid has to exist for the clip
+    the rhythm belongs to. A video with no audio stream decodes to nothing and
+    is reported the way silence already is: a stored result with no tempo.
+    """
+    from visionforge.infra.analysis import BeatAnalyzer
+
+    _run_analyzer(ctx, BeatAnalyzer())
+
+
+def step_dynamics(ctx: JobContext) -> None:
+    """Motion energy and palette (Phase 8).
+
+    Beside the other frame-sampling analyzers because it samples the same
+    points; it costs one extra frame read each, and no model.
+    """
+    from visionforge.infra.analysis import DynamicsAnalyzer
+
+    _run_analyzer(ctx, DynamicsAnalyzer())
+
+
 # -------------------------------------------------------------------- GPU steps
 def step_embed(ctx: JobContext) -> None:
     from visionforge.infra.ml import ClipEmbeddingAnalyzer
@@ -234,6 +262,8 @@ CPU_STEPS = {
     "QUALITY": step_quality,
     "SCENES": step_scenes,
     "PHASH": step_phash,
+    "BEATS": step_beats,
+    "DYNAMICS": step_dynamics,
     "FINALIZE": step_finalize,
 }
 
@@ -246,7 +276,13 @@ GPU_STEPS = {
 
 #: Which analyzers each queue is responsible for. Used by the API to report what
 #: a project still has outstanding.
-CPU_ANALYZERS = (AnalyzerName.QUALITY, AnalyzerName.SCENES, AnalyzerName.PHASH)
+CPU_ANALYZERS = (
+    AnalyzerName.QUALITY,
+    AnalyzerName.SCENES,
+    AnalyzerName.PHASH,
+    AnalyzerName.BEATS,
+    AnalyzerName.DYNAMICS,
+)
 GPU_ANALYZERS = (AnalyzerName.CLIP, AnalyzerName.FACES)
 
 __all__ = [

@@ -24,6 +24,8 @@ from visionforge.domain.media import DerivativeKind, MediaKind, MediaStatus
 from visionforge.domain.render import RenderStatus
 from visionforge.infra.db.models import (
     EditPlanRow,
+    EditPlanVersionRow,
+    EditTemplateRow,
     Event,
     Job,
     JobStep,
@@ -72,6 +74,18 @@ class ProjectRepository:
         )
         return result.scalar_one_or_none()
 
+    async def set_reference(self, project: Project, media_id: UUID | None) -> None:
+        """Nominate, or clear, the clip this project is styled after.
+
+        Takes an already-owned ``Project`` rather than an id, so the ownership
+        check cannot be skipped by calling this instead of ``get_owned``. The
+        media id must have been resolved through ``get_in_project`` by the
+        caller for the same reason -- this method cannot tell a media id of the
+        user's from anyone else's, and does not pretend to.
+        """
+        project.reference_media_id = media_id
+        await self._session.flush()
+
     async def list_for_user(self, user_id: UUID, *, limit: int = 50) -> Sequence[Project]:
         result = await self._session.execute(
             select(Project)
@@ -99,6 +113,47 @@ class MediaRepository:
             .where(MediaAsset.id == media_id, MediaAsset.project_id == project_id)
         )
         return result.scalar_one_or_none()
+
+    async def analysis_payloads(
+        self, media_id: UUID, analyzers: Sequence[AnalyzerName]
+    ) -> dict[AnalyzerName, dict[str, Any]]:
+        """Several analyzers' newest successful payloads, in one round trip.
+
+        Building a reference profile needs four of them, and four sequential
+        awaits is three more than the work requires.
+        """
+        found: dict[AnalyzerName, dict[str, Any]] = {}
+        for analyzer in analyzers:
+            payload = await self.analysis_payload(media_id, analyzer)
+            if payload is not None:
+                found[analyzer] = payload
+        return found
+
+    async def analysis_payload(
+        self, media_id: UUID, analyzer: AnalyzerName
+    ) -> dict[str, Any] | None:
+        """The newest successful result from one analyzer, or ``None``.
+
+        Ordered by version so the latest wins, and filtered to ``OK`` so an
+        ``unsupported`` row -- which is a real stored answer, not a gap -- never
+        comes back as a payload a caller would try to read.
+
+        Scoped by media id alone on purpose: every caller has already resolved
+        that id through ``get_in_project``, and re-joining to projects here
+        would suggest this method is the ownership check when it is not.
+        """
+        result = await self._session.execute(
+            select(MediaAnalysis.payload)
+            .where(
+                MediaAnalysis.media_id == media_id,
+                MediaAnalysis.analyzer == analyzer,
+                MediaAnalysis.status == AnalysisStatus.OK,
+            )
+            .order_by(MediaAnalysis.analyzer_version.desc())
+            .limit(1)
+        )
+        payload = result.scalar_one_or_none()
+        return dict(payload) if payload else None
 
     async def find_by_sha256(self, project_id: UUID, sha256: str) -> MediaAsset | None:
         """Deduplication lookup, scoped to the project by the unique constraint."""
@@ -157,10 +212,18 @@ class MediaRepository:
             .order_by(MediaAnalysis.analyzer_version)
         )
         by_media: dict[UUID, dict[AnalyzerName, dict[str, Any]]] = {}
+        embeddings: dict[UUID, tuple[float, ...]] = {}
         for row in analysis_result.scalars().all():
             # Ordered by version ascending, so the last write wins and each
             # analyzer ends up represented by its newest result.
             by_media.setdefault(row.media_id, {})[AnalyzerName(row.analyzer)] = row.payload
+            # The CLIP vector lives in a typed pgvector column rather than in
+            # the JSON payload, so it is lifted out here. Phase 11's editorial
+            # layer needs it to tell "two angles on one goal" from "two
+            # different shots" -- a question pHash cannot answer, because those
+            # two frames are not similar in any pixel sense.
+            if row.embedding is not None:
+                embeddings[row.media_id] = tuple(float(value) for value in row.embedding)
 
         return [
             MediaRecord(
@@ -176,6 +239,7 @@ class MediaRepository:
                 # audio" -- no second probe, no analyzer needed.
                 channels=row.channels,
                 analysis=by_media.get(row.id, {}),
+                embedding=embeddings.get(row.id),
             )
             for index, row in enumerate(media_rows)
         ]
@@ -533,6 +597,153 @@ class EditPlanRepository:
         )
 
 
+class EditVersionRepository:
+    """The edit history: which plan a project is on, and how it got there.
+
+    Every method is project-scoped, like every other repository here. There is
+    no ``get_version(version_id)`` that skips ownership, and that absence is the
+    authorization design rather than an oversight.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_for_project(
+        self, project_id: UUID, *, limit: int = 100
+    ) -> Sequence[EditPlanVersionRow]:
+        """Every version, newest first. The input to the lineage rules."""
+        result = await self._session.execute(
+            select(EditPlanVersionRow)
+            .where(EditPlanVersionRow.project_id == project_id)
+            .order_by(EditPlanVersionRow.version.desc())
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def current(self, project_id: UUID) -> EditPlanVersionRow | None:
+        result = await self._session.execute(
+            select(EditPlanVersionRow).where(
+                EditPlanVersionRow.project_id == project_id,
+                EditPlanVersionRow.is_current.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_in_project(self, version_id: UUID, project_id: UUID) -> EditPlanVersionRow | None:
+        result = await self._session.execute(
+            select(EditPlanVersionRow).where(
+                EditPlanVersionRow.id == version_id,
+                EditPlanVersionRow.project_id == project_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def for_plan(self, edit_plan_id: UUID, project_id: UUID) -> EditPlanVersionRow | None:
+        """The newest version pointing at a given plan.
+
+        How a plan created by a route that predates versioning -- the planner
+        and the manual editor -- is found again once it has been recorded.
+        """
+        result = await self._session.execute(
+            select(EditPlanVersionRow)
+            .where(
+                EditPlanVersionRow.edit_plan_id == edit_plan_id,
+                EditPlanVersionRow.project_id == project_id,
+            )
+            .order_by(EditPlanVersionRow.version.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def append(
+        self,
+        *,
+        project_id: UUID,
+        edit_plan_id: UUID,
+        origin: str,
+        parent_version_id: UUID | None = None,
+        operations: list[dict[str, Any]] | None = None,
+        summary: dict[str, Any] | None = None,
+        source: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        prompt_version: str | None = None,
+        latency_ms: float | None = None,
+        request_digest: str | None = None,
+        request_chars: int = 0,
+    ) -> EditPlanVersionRow:
+        """Add a version and make it the head.
+
+        The old head is cleared in the same transaction as the insert, because
+        the partial unique index means a project cannot briefly have two heads
+        -- and a flush that violated it would abort the whole change, which is
+        the behaviour that makes this safe rather than the behaviour to work
+        around.
+        """
+        await self._clear_head(project_id)
+
+        # MAX + 1 rather than a sequence: version numbers are per project and
+        # have to be dense enough for a person to say "version 3".
+        next_version = await self._session.scalar(
+            select(func.coalesce(func.max(EditPlanVersionRow.version), 0) + 1).where(
+                EditPlanVersionRow.project_id == project_id
+            )
+        )
+
+        row = EditPlanVersionRow(
+            project_id=project_id,
+            edit_plan_id=edit_plan_id,
+            parent_version_id=parent_version_id,
+            version=int(next_version or 1),
+            origin=origin[:16],
+            is_current=True,
+            operations={"items": operations} if operations else None,
+            operation_count=len(operations or []),
+            summary=summary,
+            source=source[:16] if source else None,
+            provider=provider[:32] if provider else None,
+            model=model[:128] if model else None,
+            prompt_version=prompt_version[:16] if prompt_version else None,
+            latency_ms=latency_ms,
+            request_digest=request_digest[:32] if request_digest else None,
+            request_chars=request_chars,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def set_current(self, project_id: UUID, version_id: UUID) -> None:
+        """Move the head. What undo and redo actually do.
+
+        No plan is written and no row is created: the versions already exist and
+        one of them becomes current again. That is why undo is instant and why
+        it restores exactly what was there.
+        """
+        await self._clear_head(project_id)
+        await self._session.execute(
+            update(EditPlanVersionRow)
+            .where(
+                EditPlanVersionRow.id == version_id,
+                EditPlanVersionRow.project_id == project_id,
+            )
+            .values(is_current=True)
+        )
+        await self._session.flush()
+
+    async def _clear_head(self, project_id: UUID) -> None:
+        await self._session.execute(
+            update(EditPlanVersionRow)
+            .where(
+                EditPlanVersionRow.project_id == project_id,
+                EditPlanVersionRow.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        # Flushed before the new head is written, so the partial unique index
+        # never sees two.
+        await self._session.flush()
+
+
 class LlmRunRepository:
     """Planning calls to a language model, successful or not."""
 
@@ -610,6 +821,7 @@ class EventRepository:
 __all__ = [
     "AnalysisRepository",
     "EditPlanRepository",
+    "EditVersionRepository",
     "EventRepository",
     "JobRepository",
     "MediaRepository",
@@ -617,3 +829,59 @@ __all__ = [
     "StepStatus",
     "UserRepository",
 ]
+
+
+class TemplateRepository:
+    """A user's own templates (Phase 12). Every read is scoped to the owner."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        user_id: UUID,
+        name: str,
+        source_media_id: UUID | None,
+        payload: dict[str, Any],
+        extraction: dict[str, Any] | None,
+        template_id: UUID,
+    ) -> EditTemplateRow:
+        row = EditTemplateRow(
+            id=template_id,
+            user_id=user_id,
+            name=name,
+            source_media_id=source_media_id,
+            payload=payload,
+            extraction=extraction,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_owned(self, template_id: UUID, user_id: UUID) -> EditTemplateRow | None:
+        """Fetch a template only if this user owns it. Same rule as projects."""
+        result = await self._session.execute(
+            select(EditTemplateRow).where(
+                EditTemplateRow.id == template_id, EditTemplateRow.user_id == user_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_for_user(self, user_id: UUID, *, limit: int = 100) -> Sequence[EditTemplateRow]:
+        result = await self._session.execute(
+            select(EditTemplateRow)
+            .where(EditTemplateRow.user_id == user_id)
+            .order_by(EditTemplateRow.created_at.desc())
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def rename(self, row: EditTemplateRow, name: str, payload: dict[str, Any]) -> None:
+        row.name = name
+        row.payload = payload
+        await self._session.flush()
+
+    async def delete(self, row: EditTemplateRow) -> None:
+        await self._session.delete(row)
+        await self._session.flush()

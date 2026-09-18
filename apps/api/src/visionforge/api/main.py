@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from visionforge import __version__
 from visionforge.api.errors import register_error_handlers
 from visionforge.api.middleware import RequestContextMiddleware
-from visionforge.api.routers import analysis, edit, health, jobs, projects
+from visionforge.api.routers import analysis, edit, health, jobs, projects, templates
 from visionforge.core.config import get_settings
 from visionforge.core.logging import configure_logging
 from visionforge.infra.db import dispose_engine
@@ -72,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(analysis.router)
     app.include_router(edit.router)
+    app.include_router(templates.router)
     return app
 
 

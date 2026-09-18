@@ -17,6 +17,13 @@ apply three rules: take the strongest clips, hold each for the style's typical
 duration, stop at the target length. That is roughly what the rules engine does,
 which is the point -- the stub tests the *plumbing*, and makes no claim about
 the quality of the judgement.
+
+Phase 10 gave it a second prompt to answer. A co-edit request asks for
+operations rather than clips, and what the stub returns is one operation chosen
+by arithmetic from the shape it was shown -- **not** an interpretation of the
+user's sentence, which it cannot read and does not try to. It exists so that the
+co-editor's parse, patch, validate and version path can be exercised end to end
+with no key; its rationale says so in the words the user would see.
 """
 
 from __future__ import annotations
@@ -43,6 +50,39 @@ class StubProvider:
         return MODEL_NAME
 
     def complete(self, request: LlmRequest) -> LlmResponse:
+        if _is_co_edit(request):
+            return self._co_edit(request)
+        return self._plan(request)
+
+    def _co_edit(self, request: LlmRequest) -> LlmResponse:
+        """Answer a co-edit prompt with one operation derived from the shape.
+
+        Deliberately a *small* change, and one the patcher will accept on any
+        plan: a dissolve into the second clip when there is a second clip, and
+        otherwise a nudge to the encoder preset. The stub is not pretending to
+        have understood anything -- see the rationale it returns.
+        """
+        shape = extract_json_object(request.user) or {}
+        raw_clips = shape.get("clips")
+        clips: list[Any] = raw_clips if isinstance(raw_clips, list) else []
+
+        operations: list[dict[str, Any]]
+        if len(clips) >= 2:
+            operations = [{"kind": "CHANGE_TRANSITION", "segment": 1, "transition": "crossfade"}]
+        else:
+            operations = [{"kind": "CHANGE_OUTPUT_PRESET", "quality": "balanced"}]
+
+        return self._respond(
+            {
+                "operations": operations,
+                "rationale": (
+                    "Stub co-editor: this change was chosen by arithmetic from the "
+                    "edit's shape. No language model read the request."
+                ),
+            }
+        )
+
+    def _plan(self, request: LlmRequest) -> LlmResponse:
         brief = extract_json_object(request.user) or {}
         raw_clips = brief.get("clips")
         clips: list[Any] = raw_clips if isinstance(raw_clips, list) else []
@@ -73,8 +113,11 @@ class StubProvider:
             ),
         }
 
+        return self._respond(directive)
+
+    def _respond(self, payload: dict[str, Any]) -> LlmResponse:
         return LlmResponse(
-            text=json.dumps(directive),
+            text=json.dumps(payload),
             provider=self.name,
             model=self.model,
             latency_ms=0.0,
@@ -84,6 +127,16 @@ class StubProvider:
             request_id=None,
             finish_reason="stub",
         )
+
+
+def _is_co_edit(request: LlmRequest) -> bool:
+    """Whether this is a change request rather than a planning one.
+
+    Matched on the system prompt, which this codebase wrote, rather than on the
+    user's text, which it did not. A request whose *content* decided which
+    branch ran would be a request that could choose its own handler.
+    """
+    return "REMOVE_SEGMENT" in request.system and "operations" in request.system
 
 
 def _constraints(prompt: str) -> tuple[int, int, int]:

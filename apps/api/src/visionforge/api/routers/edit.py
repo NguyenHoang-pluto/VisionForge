@@ -14,63 +14,189 @@ import logging
 from typing import Annotated, Any
 from uuid import UUID
 
+import anyio.to_thread
 from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from visionforge.api.dependencies import (
     EditServiceFactory,
+    current_user_id,
+    get_coedit_service,
     get_edit_plan_repo,
     get_edit_service,
     get_edit_service_factory,
     get_job_dispatcher,
     get_llm_provider,
     get_llm_run_repo,
+    get_media_repo,
     get_media_service,
+    get_project_repo,
     get_session,
+    get_template_service,
+    get_version_repo,
     require_project,
 )
 from visionforge.api.schemas.edit import (
+    CoEditApplyResponse,
+    CoEditPreviewResponse,
+    CoEditRequest,
+    EditorialVariantResponse,
+    EditorialVariantsRequest,
+    EditorialVariantsResponse,
     EditPlanDetail,
     EditPlanListResponse,
     EditPlanSummary,
+    EditVersionListResponse,
+    EditVersionResponse,
+    EffectBoundsResponse,
+    ManualPlanCreateRequest,
+    MeasurementResponse,
+    MusicRequest,
     PlanCreateRequest,
+    PlanDiffResponse,
     PlannerCapabilities,
+    ReferenceProfileResponse,
+    ReferenceRequest,
+    ReferenceResponse,
     RenderCreateRequest,
     RenderListResponse,
     RenderResponse,
+    SubtitlePresetResponse,
+    SubtitleSuggestRequest,
+    SubtitleSuggestResponse,
+    SubtitleTrackRequest,
 )
 from visionforge.api.serializers import serialize_edit_plan, serialize_render
-from visionforge.application.edit_service import EditService
+from visionforge.application.coedit_service import CoEditRejected, CoEditService
+from visionforge.application.edit_service import EditService, build_candidate
 from visionforge.application.job_dispatch import JobDispatcher
 from visionforge.application.media_service import DOWNLOAD_URL_TTL_S, MediaService
+from visionforge.application.reference_service import PROFILE_ANALYZERS, ReferenceService
+from visionforge.application.template_service import TemplateService
+from visionforge.core.config import get_settings
+from visionforge.domain.analysis import AnalyzerName
+from visionforge.domain.beats import (
+    MAX_BPM,
+    MIN_BEAT_CONFIDENCE,
+    MIN_BPM,
+    BeatGrid,
+    grid_from_payload,
+)
+from visionforge.domain.coeditor import COEDIT_PROMPT_VERSION
+from visionforge.domain.decisions import DECISION_ENGINE_VERSION, ReasonCode
 from visionforge.domain.editbrief import MAX_REQUEST_CHARS
-from visionforge.domain.editplan import AspectRatio, AudioMode, FitMode, PlanInvalidError
-from visionforge.domain.errors import NotFoundError, ValidationError
-from visionforge.domain.ids import ProjectId
+from visionforge.domain.editdelta import vocabulary as delta_vocabulary
+from visionforge.domain.editorial import (
+    EVENT_VOCABULARY_VERSION,
+    SIGNAL_VERSION,
+    EditorialEvent,
+)
+from visionforge.domain.editorial_planner import EditorialPlanner
+from visionforge.domain.editplan import (
+    MAX_CPU_DIMENSION,
+    MAX_FADE_MS,
+    MAX_GAIN,
+    MAX_MUSIC_MS,
+    MAX_OUTPUT_MS,
+    MAX_SEGMENT_MS,
+    MAX_SEGMENTS,
+    MAX_TRANSITION_MS,
+    MAX_TRANSITION_SHARE,
+    MIN_GAIN,
+    MIN_MUSIC_MS,
+    MIN_OUTPUT_MS,
+    MIN_SEGMENT_MS,
+    MIN_TRANSITION_MS,
+    AudioMode,
+    Cut,
+    Encoder,
+    FitMode,
+    MusicCue,
+    OutputSpec,
+    PlanInvalidError,
+    TransitionKind,
+    media_id_from,
+)
+from visionforge.domain.effects import EFFECT_BOUNDS, MAX_EFFECTS_PER_SEGMENT, EffectKind
+from visionforge.domain.errors import ConflictError, NotFoundError, ValidationError
+from visionforge.domain.ids import ProjectId, UserId
 from visionforge.domain.jobs import JobType
 from visionforge.domain.llm import LlmProvider
-from visionforge.domain.llm_planner import PlannerMode
-from visionforge.domain.planner import ClipOrder, PlanRequest
+from visionforge.domain.llm_planner import PlannerEngine, PlannerMode
+from visionforge.domain.metrics import METRIC_DIRECTIONS
+from visionforge.domain.pacing import PACING_CURVES, PacingShape
+from visionforge.domain.patch import PlanDiff
+from visionforge.domain.planner import ClipOrder, NoUsableMediaError, PlanRequest
+from visionforge.domain.policy import StyleStrength, blend
 from visionforge.domain.prompts import PROMPT_VERSION
+from visionforge.domain.reference import Measurement, ReferenceProfile, without_reference
 from visionforge.domain.render import RenderStatus
-from visionforge.domain.style import FPS_PRESETS, STYLE_PROFILES, QualityPreset, profile_for
+from visionforge.domain.story import (
+    EDITORIAL_POLICIES,
+    POLICY_VERSION,
+    StoryRole,
+)
+from visionforge.domain.style import (
+    FPS_PRESETS,
+    PRESET_DIMENSIONS,
+    STYLE_PROFILES,
+    QualityPreset,
+    Resolution,
+    dimensions_for,
+    profile_for,
+)
+from visionforge.domain.subtitles import (
+    MAX_CUE_CHARS,
+    MAX_CUE_MS,
+    MAX_CUES,
+    MIN_CUE_MS,
+    STYLE_PRESETS,
+    SubtitlePosition,
+)
+from visionforge.domain.variants import VARIANTS, VariantId, describe_variants
+from visionforge.domain.versions import (
+    VersionNode,
+    VersionSummary,
+    current_of,
+    redo_target,
+    undo_target,
+)
 from visionforge.infra.db.models import Project
-from visionforge.infra.db.repositories import EditPlanRepository, LlmRunRepository
+from visionforge.infra.db.repositories import (
+    EditPlanRepository,
+    EditVersionRepository,
+    LlmRunRepository,
+    MediaRepository,
+    ProjectRepository,
+)
 from visionforge.infra.llm import describe_capabilities
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["edit"])
 
-#: Output geometry per aspect ratio. A closed map rather than free width/height:
-#: the caller picks a shape, the server picks dimensions that are even (required
-#: by H.264 4:2:0) and sane for this hardware. Arbitrary geometry from a client
-#: is exactly what the plan validator would then have to defend against.
-PRESET_DIMENSIONS: dict[AspectRatio, tuple[int, int]] = {
-    AspectRatio.LANDSCAPE_16_9: (1280, 720),
-    AspectRatio.PORTRAIT_9_16: (720, 1280),
-    AspectRatio.SQUARE_1_1: (720, 720),
-}
+
+def _gpu_only(resolution: Resolution) -> bool:
+    """Whether this size is beyond what the CPU encoder is asked for."""
+    return resolution.lines * 16 // 9 > MAX_CPU_DIMENSION
+
+
+def _check_encoder(encoder: Encoder, resolution: Resolution) -> None:
+    """Refuse an encoder this server lacks, or a size the chosen one cannot do.
+
+    Checked here rather than left to fail in the render worker, minutes later
+    and with an FFmpeg error instead of a sentence.
+    """
+    if encoder is Encoder.GPU and not get_settings().render_gpu:
+        raise ValidationError(
+            "this server has no GPU encoder configured",
+            hint="Choose the CPU encoder, or set RENDER_GPU=true where there is an NVIDIA GPU.",
+        )
+    if encoder is Encoder.CPU and _gpu_only(resolution):
+        raise ValidationError(
+            f"{resolution.value} needs the GPU encoder",
+            hint="Choose the GPU encoder for 8K, or a smaller resolution.",
+        )
 
 
 @router.get("/planner/capabilities", response_model=PlannerCapabilities)
@@ -108,10 +234,104 @@ async def planner_capabilities(
             {"value": ratio.value, "width": size[0], "height": size[1]}
             for ratio, size in PRESET_DIMENSIONS.items()
         ],
+        resolutions=[
+            resolution.value
+            for resolution in Resolution
+            if get_settings().render_gpu or not _gpu_only(resolution)
+        ],
+        encoders=["cpu", "gpu"] if get_settings().render_gpu else ["cpu"],
+        gpu_only_resolutions=[r.value for r in Resolution if _gpu_only(r)],
         fps_presets=list(FPS_PRESETS),
         quality_presets=[preset.value for preset in QualityPreset],
         prompt_version=PROMPT_VERSION,
         max_request_chars=MAX_REQUEST_CHARS,
+        segment_bounds={
+            "min_clip_ms": MIN_SEGMENT_MS,
+            "max_clip_ms": MAX_SEGMENT_MS,
+            "max_clips": MAX_SEGMENTS,
+            "min_total_ms": MIN_OUTPUT_MS,
+            "max_total_ms": MAX_OUTPUT_MS,
+        },
+        audio_bounds={
+            "min_gain": MIN_GAIN,
+            "max_gain": MAX_GAIN,
+            "min_music_ms": MIN_MUSIC_MS,
+            "max_music_ms": MAX_MUSIC_MS,
+            "max_fade_ms": MAX_FADE_MS,
+        },
+        beat_sync={
+            "analyzer": AnalyzerName.BEATS.value,
+            "min_bpm": MIN_BPM,
+            "max_bpm": MAX_BPM,
+            "min_confidence": MIN_BEAT_CONFIDENCE,
+        },
+        # Phase 9. Every one of these is read from the domain's own tables
+        # rather than retyped, so a kind added there appears here without an
+        # edit and a kind removed there stops being offered.
+        transitions=[
+            {
+                "value": kind.value,
+                "consumes_time": kind.consumes_time,
+                "needs_previous": kind.needs_previous,
+                "min_ms": 0 if kind is TransitionKind.CUT else MIN_TRANSITION_MS,
+                "max_ms": 0 if kind is TransitionKind.CUT else MAX_TRANSITION_MS,
+                "max_share": MAX_TRANSITION_SHARE,
+            }
+            for kind in TransitionKind
+        ],
+        effects=[
+            EffectBoundsResponse(
+                kind=kind.value,
+                minimum=EFFECT_BOUNDS[kind][0],
+                maximum=EFFECT_BOUNDS[kind][1],
+                neutral=EFFECT_BOUNDS[kind][2],
+                whole_segment_only=kind.spans_whole_segment,
+            )
+            for kind in EffectKind
+        ],
+        subtitle_styles=[
+            SubtitlePresetResponse(
+                id=preset.style.value,
+                label=preset.label,
+                font=preset.font,
+                size=preset.size,
+                bold=preset.bold,
+            )
+            for preset in STYLE_PRESETS.values()
+        ],
+        subtitle_positions=[position.value for position in SubtitlePosition],
+        # Phase 10: the closed operation vocabulary, generated from the enum
+        # so the editor offers exactly what the parser accepts.
+        operations=delta_vocabulary(),
+        coedit_prompt_version=COEDIT_PROMPT_VERSION,
+        subtitle_bounds={
+            "min_cue_ms": MIN_CUE_MS,
+            "max_cue_ms": MAX_CUE_MS,
+            "max_chars": MAX_CUE_CHARS,
+            "max_cues": MAX_CUES,
+            "max_effects_per_clip": MAX_EFFECTS_PER_SEGMENT,
+        },
+        # Phase 11. Every list below is read from the domain's own tables rather
+        # than retyped here, so the editor offers exactly the policies, variants,
+        # roles and curves this build has -- and one removed from a table stops
+        # being offered instead of becoming a 422.
+        editorial_policies=[policy.as_payload() for policy in EDITORIAL_POLICIES.values()],
+        variants=describe_variants(),
+        story_roles=[role.value for role in StoryRole],
+        pacing_shapes=[
+            {"value": shape.value, "points": [round(point, 3) for point in PACING_CURVES[shape]]}
+            for shape in PacingShape
+        ],
+        editorial_events=[event.value for event in EditorialEvent],
+        editorial_reasons=[reason.value for reason in ReasonCode],
+        editorial_metrics=[
+            {"name": name, "direction": direction.value}
+            for name, direction in METRIC_DIRECTIONS.items()
+        ],
+        editorial_version=(
+            f"{DECISION_ENGINE_VERSION}.{SIGNAL_VERSION}."
+            f"{EVENT_VOCABULARY_VERSION}.{POLICY_VERSION}"
+        ),
     )
 
 
@@ -124,6 +344,10 @@ async def create_edit_plan(
     body: PlanCreateRequest,
     project: Project = Depends(require_project),
     factory: EditServiceFactory = Depends(get_edit_service_factory),
+    repo: MediaRepository = Depends(get_media_repo),
+    projects: ProjectRepository = Depends(get_project_repo),
+    templates: TemplateService = Depends(get_template_service),
+    user_id: UserId = Depends(current_user_id),
 ) -> EditPlanDetail:
     """Generate and persist an edit plan from the project's analysed media.
 
@@ -140,20 +364,45 @@ async def create_edit_plan(
     """
     profile = profile_for(body.style)
 
+    # The reference is read from the project, never from the request: which clip
+    # is the reference is server state, so a caller cannot aim one plan at
+    # another project's media and read its measurements out of the result.
+    reference = ReferenceService(projects, repo)
+    reference_profile = await reference.profile_for_project(project)
+    policy = blend(profile, reference_profile, body.style_strength)
+    template = await templates.resolve(body.template_id, user_id) if body.template_id else None
+
     # A style supplies defaults only where the caller stated nothing. An
     # explicit value always wins, including one that happens to equal the
-    # style's own default -- which is why those fields default to None.
-    aspect = body.aspect_ratio or profile.default_aspect
-    width, height = PRESET_DIMENSIONS[aspect]
+    # style's own default -- which is why those fields default to None. A
+    # template's shape comes before the style's: it was laid out for it.
+    aspect = body.aspect_ratio or (template.aspect if template else profile.default_aspect)
+    width, height = dimensions_for(aspect, body.resolution)
+    _check_encoder(body.encoder, body.resolution)
     order = body.order or (
         ClipOrder.SEQUENCE if profile.prefer_sequence_order else ClipOrder.SCORE_DESC
     )
 
+    # The track's own facts -- its length and its analysed beat grid -- are read
+    # here from the database rather than taken from the request. The client
+    # names a track it owns; everything the planner then knows about that track
+    # comes from the server.
+    music_duration_ms, beats = (
+        await _music_facts(repo, ProjectId(project.id), body.music.media_id)
+        if body.music is not None
+        else (None, None)
+    )
+
     request = PlanRequest(
         project_id=ProjectId(project.id),
-        target_duration_ms=body.target_duration_ms or profile.default_duration_ms,
+        target_duration_ms=(
+            template.total_ms
+            if template
+            else body.target_duration_ms or profile.default_duration_ms
+        ),
         max_clips=body.max_clips,
-        min_clips=body.min_clips,
+        # A template reuses clips rather than needing many, so one is enough.
+        min_clips=1 if template else body.min_clips,
         aspect_ratio=aspect,
         width=width,
         height=height,
@@ -162,12 +411,29 @@ async def create_edit_plan(
         audio=body.audio or profile.default_audio,
         order=order,
         quality=body.quality,
+        encoder=body.encoder,
         style=body.style,
         request_text=body.request_text,
+        style_policy=policy,
+        reference_media_id=ReferenceService.reference_id(project),
+        music_media_id=media_id_from(body.music.media_id) if body.music else None,
+        music_duration_ms=music_duration_ms,
+        beats=beats,
+        beat_sync=body.beat_sync,
+        music_gain=body.music.volume if body.music else 0.7,
+        music_fade_in_ms=body.music.fade_in_ms if body.music else 0,
+        music_fade_out_ms=body.music.fade_out_ms if body.music else 1_500,
+        editorial_policy=body.editorial_policy,
+        variant=body.variant,
+        template=template,
     )
 
     service, _selection = factory.for_request(
-        mode=body.mode, style=body.style, request_text=body.request_text
+        mode=body.mode,
+        style=body.style,
+        request_text=body.request_text,
+        # Only the editorial engine knows what a slot is.
+        engine=PlannerEngine.EDITORIAL if template else body.engine,
     )
 
     try:
@@ -186,6 +452,467 @@ async def create_edit_plan(
         ) from exc
 
     return serialize_edit_plan(row, include_plan=True)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/variants",
+    response_model=EditorialVariantsResponse,
+)
+async def preview_edit_variants(
+    body: EditorialVariantsRequest,
+    project: Project = Depends(require_project),
+    repo: MediaRepository = Depends(get_media_repo),
+    projects: ProjectRepository = Depends(get_project_repo),
+    templates: TemplateService = Depends(get_template_service),
+    user_id: UserId = Depends(current_user_id),
+) -> EditorialVariantsResponse:
+    """Four editorial plans over the same footage, previewed and not stored.
+
+    The base edit and each named variant, each one a complete editorial decision
+    -- roles, pacing, trims, treatment, reasons and metrics -- so the user can
+    compare alternatives before anything is written.
+
+    **Nothing is persisted.** No plan row, no version, no event. That is
+    affordable because the engine is deterministic: whichever variant the user
+    picks, asking for it through the ordinary plan route reproduces exactly what
+    was previewed, byte for byte. Storing three plans per click would put two
+    versions in everyone's history that nobody ever looks at again.
+
+    No model is involved either, whatever the mode. A variant is a modification
+    of a policy table, and asking a model four times to produce four
+    deliberately-different edits would be slower, costlier, and less different.
+    """
+    profile = profile_for(body.style)
+    reference = ReferenceService(projects, repo)
+    reference_profile = await reference.profile_for_project(project)
+    policy = blend(profile, reference_profile, body.style_strength)
+    template = await templates.resolve(body.template_id, user_id) if body.template_id else None
+
+    aspect = body.aspect_ratio or (template.aspect if template else profile.default_aspect)
+    width, height = dimensions_for(aspect, body.resolution)
+    _check_encoder(body.encoder, body.resolution)
+
+    music_duration_ms, beats = (
+        await _music_facts(repo, ProjectId(project.id), body.music.media_id)
+        if body.music is not None
+        else (None, None)
+    )
+
+    records = await repo.records_with_analysis(ProjectId(project.id))
+    if not records:
+        raise ValidationError(
+            "project has no analysed media",
+            hint="Upload media and run analysis before previewing variants.",
+        )
+    candidates = without_reference(
+        [build_candidate(record) for record in records],
+        ReferenceService.reference_id(project),
+    )
+
+    def build(variant: VariantId | None) -> PlanRequest:
+        return PlanRequest(
+            project_id=ProjectId(project.id),
+            target_duration_ms=(
+                template.total_ms
+                if template
+                else body.target_duration_ms or profile.default_duration_ms
+            ),
+            max_clips=body.max_clips,
+            min_clips=1 if template else body.min_clips,
+            aspect_ratio=aspect,
+            width=width,
+            height=height,
+            fps=body.fps,
+            fit=body.fit,
+            audio=body.audio or profile.default_audio,
+            quality=body.quality,
+            encoder=body.encoder,
+            style=body.style,
+            request_text=body.request_text,
+            style_policy=policy,
+            reference_media_id=ReferenceService.reference_id(project),
+            music_media_id=media_id_from(body.music.media_id) if body.music else None,
+            music_duration_ms=music_duration_ms,
+            beats=beats,
+            beat_sync=body.beat_sync,
+            editorial_policy=body.editorial_policy,
+            variant=variant,
+            template=template,
+        )
+
+    planner = EditorialPlanner()
+
+    def compose_all() -> list[EditorialVariantResponse]:
+        """Every variant, on a worker thread.
+
+        Four compositions of a forty-clip project is a few hundred milliseconds
+        of pure arithmetic -- small, but not small enough to run on the event
+        loop while other requests wait behind it.
+        """
+        items: list[EditorialVariantResponse] = []
+        wanted: list[VariantId | None] = [None, *VARIANTS]
+        for variant in wanted:
+            try:
+                outcome, _selection = planner.compose(build(variant), list(candidates))
+            except NoUsableMediaError:
+                # One variant can fail where another succeeds: a policy that
+                # insists on more diversity may find nothing left. The others
+                # are still worth showing, so this one is simply absent rather
+                # than failing the whole request.
+                logger.info(
+                    "variant produced no usable edit",
+                    extra={"variant": variant.value if variant else "base"},
+                )
+                continue
+            meta = VARIANTS[variant] if variant is not None else None
+            items.append(
+                EditorialVariantResponse(
+                    variant=variant.value if variant else None,
+                    label=meta.label if meta else "Base edit",
+                    description=(meta.description if meta else outcome.policy.description),
+                    policy=outcome.policy.id.value,
+                    clip_count=len(outcome.plan.segments),
+                    total_duration_ms=outcome.plan.total_output_ms,
+                    editorial=outcome.as_payload(),
+                )
+            )
+        return items
+
+    items = await anyio.to_thread.run_sync(compose_all)
+    if not items:
+        raise ConflictError(
+            "no usable edit could be composed from this project's media",
+            hint="Add more footage, or lower the clip requirement.",
+        )
+    return EditorialVariantsResponse(items=items)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/manual",
+    response_model=EditPlanDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_manual_edit_plan(
+    body: ManualPlanCreateRequest,
+    project: Project = Depends(require_project),
+    service: EditService = Depends(get_edit_service),
+) -> EditPlanDetail:
+    """Store a timeline the user cut themselves.
+
+    The editor's timeline is client state while it is being dragged; this is
+    where it stops being a proposal. No planner runs, and nothing here is
+    trusted: the cuts go through the same validator as an automatic plan, are
+    checked against the same media rows, and produce the same kind of plan row
+    that the same render route consumes.
+
+    The route deliberately takes clips and trims rather than a rendering
+    description. The server still chooses the geometry from the aspect ratio the
+    caller asked for -- the client has no way to name a width, a height or an
+    encoder setting, which is the property Phase 4 established and a timeline
+    must not be the thing that erodes.
+    """
+    width, height = dimensions_for(body.aspect_ratio, body.resolution)
+    _check_encoder(body.encoder, body.resolution)
+    output = OutputSpec(
+        aspect_ratio=body.aspect_ratio,
+        width=width,
+        height=height,
+        fps=body.fps,
+        fit=body.fit,
+        audio=body.audio,
+        quality=body.quality,
+        encoder=body.encoder,
+        source_gain=body.source_gain,
+    )
+    cuts = [
+        Cut(
+            media_id=media_id_from(segment.media_id),
+            source_in_ms=segment.source_in_ms,
+            source_out_ms=segment.source_out_ms,
+            transition_in=segment.transition_in,
+            transition_ms=segment.transition_ms,
+            effects=tuple(effect.to_domain() for effect in segment.effects),
+        )
+        for segment in body.segments
+    ]
+
+    try:
+        row = await service.create_manual_plan(
+            project_id=ProjectId(project.id),
+            cuts=cuts,
+            output=output,
+            music=_cue_from(body.music),
+            subtitles=body.subtitles.to_domain() if body.subtitles else None,
+            derived_from=body.derived_from_edit_plan_id,
+        )
+    except PlanInvalidError as exc:
+        # A rejected hand-cut edit is a rejected *request*, not a planner bug:
+        # the user trimmed past the end of a source, or left a clip shorter than
+        # the renderer can produce. Every violation comes back, so the editor
+        # can point at the clip rather than saying the render failed.
+        raise ValidationError(
+            "this timeline cannot be rendered",
+            hint="; ".join(v.message for v in exc.violations),
+        ) from exc
+
+    return serialize_edit_plan(row, include_plan=True)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/{edit_plan_id}/subtitles/suggest",
+    response_model=SubtitleSuggestResponse,
+)
+async def suggest_plan_subtitles(
+    edit_plan_id: UUID,
+    body: SubtitleSuggestRequest,
+    project: Project = Depends(require_project),
+    service: EditService = Depends(get_edit_service),
+    provider: LlmProvider | None = Depends(get_llm_provider),
+) -> SubtitleSuggestResponse:
+    """Ask a model to draft cues for a stored plan.
+
+    Read-only. Nothing here writes a plan, a render or a cue: the suggestion
+    comes back to the editor, and the lines reach the database only if the user
+    submits a plan containing them. A model proposes and a person accepts --
+    the same boundary the planner has had since Phase 5.
+
+    The model is given the compiled timing of *this* plan and the user's own
+    words, and nothing else: no media ids, no filenames, no storage keys, no
+    project identity. What comes back is read as three keys per cue, each
+    bounded, with the text stripped to display characters. It cannot name a
+    font, a colour or a position, because this response has no field for one --
+    the look comes from the plan's recorded style through the server's preset
+    table.
+
+    A failure is a state, not an exception: ``ok: false`` with a named reason.
+    Inventing subtitles for footage nobody transcribed would be worse than an
+    empty panel, so nothing is filled in.
+    """
+    suggestion = await service.suggest_subtitles(
+        project_id=ProjectId(project.id),
+        edit_plan_id=edit_plan_id,
+        provider=provider,
+        request_text=body.request_text,
+        style=body.style,
+        position=body.position,
+    )
+
+    track = suggestion.track
+    return SubtitleSuggestResponse(
+        ok=suggestion.ok,
+        subtitles=(
+            SubtitleTrackRequest(
+                cues=[
+                    {"start_ms": cue.start_ms, "end_ms": cue.end_ms, "text": cue.text}
+                    for cue in track.ordered
+                ],
+                style=track.style,
+                position=track.position,
+            )
+            if track
+            else None
+        ),
+        failure=suggestion.failure.value if suggestion.failure else None,
+        detail=suggestion.detail,
+        provider=suggestion.provider,
+        model=suggestion.model,
+        prompt_version=suggestion.prompt_version,
+        latency_ms=round(suggestion.latency_ms, 1),
+    )
+
+
+# ------------------------------------------------------- co-editor (Phase 10)
+#
+# Declared before ``/edit-plan/{edit_plan_id}``, and that ordering is load
+# bearing: a router matches in declaration order, so with the parameterised
+# route first the literal path ``/edit-plan/versions`` is read as a plan id and
+# every history request becomes a 422 about a malformed UUID.
+def _version_response(summary: VersionSummary) -> EditVersionResponse:
+    return EditVersionResponse(**summary.as_payload())
+
+
+def _diff_response(diff: PlanDiff) -> PlanDiffResponse:
+    return PlanDiffResponse(**diff.as_payload())
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/co-edit/preview",
+    response_model=CoEditPreviewResponse,
+)
+async def preview_co_edit(
+    body: CoEditRequest,
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+    provider: LlmProvider | None = Depends(get_llm_provider),
+) -> CoEditPreviewResponse:
+    """Work out what a change would do, without doing it.
+
+    Read-only, and read-only in the strong sense: the whole pipeline runs --
+    resolve the sentence, parse the operations, apply them to the current plan,
+    validate the result against the real media rows -- and then everything but
+    the diff is thrown away. Nothing is written, so a preview of a change the
+    user then cancels leaves no trace but an unchanged plan.
+
+    The same code produces the committed version, so the diff shown here cannot
+    disagree with what applying it does.
+    """
+    preview = await service.preview(
+        project_id=ProjectId(project.id),
+        request_text=body.request_text,
+        operations=body.operations,
+        provider=provider,
+    )
+    return CoEditPreviewResponse(**preview.as_payload())
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/co-edit",
+    response_model=CoEditApplyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def apply_co_edit(
+    body: CoEditRequest,
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+    provider: LlmProvider | None = Depends(get_llm_provider),
+) -> CoEditApplyResponse:
+    """Apply a change to the current edit and store it as a new version.
+
+    201, and the thing created is a *version*, not a render. A plan change must
+    not queue an encode: the user asks for the render separately, through the
+    route that already exists, when they are happy with what they see.
+
+    A change that cannot be made is a 422 carrying every reason, and nothing is
+    written -- the previous version stays current and its plan stays
+    byte-identical. That is what makes a failed AI request safe.
+    """
+    try:
+        applied = await service.apply(
+            project_id=ProjectId(project.id),
+            request_text=body.request_text,
+            operations=body.operations,
+            base_version_id=body.base_version_id,
+            provider=provider,
+        )
+    except CoEditRejected as exc:
+        raise ValidationError(
+            "this change could not be applied; the edit is unchanged",
+            hint="; ".join(
+                [violation.message for violation in exc.violations] or [exc.outcome.detail]
+            )
+            or "the request could not be read",
+        ) from exc
+
+    summaries = await service.history(project_id=ProjectId(project.id), limit=1)
+    return CoEditApplyResponse(
+        version=_version_response(summaries[0]),
+        plan=serialize_edit_plan(applied.plan_row, include_plan=True),
+        diff=_diff_response(applied.diff),
+        rationale=applied.outcome.delta.rationale if applied.outcome.delta else "",
+        source=applied.outcome.source.value,
+        provider=applied.outcome.provider,
+        model=applied.outcome.model,
+        latency_ms=round(applied.outcome.latency_ms, 1),
+    )
+
+
+@router.get(
+    "/projects/{project_id}/edit-plan/versions",
+    response_model=EditVersionListResponse,
+)
+async def list_edit_versions(
+    limit: int = Query(default=50, ge=1, le=200),
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+    repo: EditVersionRepository = Depends(get_version_repo),
+) -> EditVersionListResponse:
+    """The edit history, newest first.
+
+    ``can_undo``/``can_redo`` are computed here, by the server that owns the
+    history, rather than inferred by the client from the list. A button whose
+    enabled state is a guess is a button that sometimes produces a 409.
+    """
+    summaries = await service.history(project_id=ProjectId(project.id), limit=limit)
+    rows = await repo.list_for_project(project.id, limit=limit)
+    nodes = [
+        VersionNode(
+            id=row.id,
+            version=row.version,
+            parent_id=row.parent_version_id,
+            edit_plan_id=row.edit_plan_id,
+            is_current=row.is_current,
+        )
+        for row in rows
+    ]
+    current = current_of(nodes)
+    return EditVersionListResponse(
+        items=[_version_response(summary) for summary in summaries],
+        total=len(summaries),
+        current_version_id=current.id if current else None,
+        can_undo=undo_target(nodes) is not None,
+        can_redo=redo_target(nodes) is not None,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/versions/undo",
+    response_model=EditVersionResponse,
+)
+async def undo_edit_version(
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+) -> EditVersionResponse:
+    """Step back one version.
+
+    Writes no plan. The version being restored already points at a stored plan,
+    so what comes back is the exact edit that was there rather than a
+    recomputation of it -- and the server stays authoritative about which
+    version is current, so a second browser sees the same thing.
+    """
+    await service.undo(ProjectId(project.id))
+    return await _current_version_response(service, project)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/versions/redo",
+    response_model=EditVersionResponse,
+)
+async def redo_edit_version(
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+) -> EditVersionResponse:
+    await service.redo(ProjectId(project.id))
+    return await _current_version_response(service, project)
+
+
+@router.post(
+    "/projects/{project_id}/edit-plan/versions/{version_id}/restore",
+    response_model=EditVersionResponse,
+)
+async def restore_edit_version(
+    version_id: UUID,
+    project: Project = Depends(require_project),
+    service: CoEditService = Depends(get_coedit_service),
+) -> EditVersionResponse:
+    """Jump to any version. The generalisation of undo, by the same mechanism."""
+    await service.restore(ProjectId(project.id), version_id)
+    return await _current_version_response(service, project)
+
+
+async def _current_version_response(
+    service: CoEditService, project: Project
+) -> EditVersionResponse:
+    """The head, as the history describes it.
+
+    Read back through ``history`` rather than built from the row, so an undo and
+    a listing report a version identically -- including its render status, which
+    is what the panel needs to know whether the restored edit has a file.
+    """
+    summaries = await service.history(project_id=ProjectId(project.id), limit=200)
+    current = next((summary for summary in summaries if summary.is_current), None)
+    if current is None:
+        raise NotFoundError("this project has no current edit version")
+    return _version_response(current)
 
 
 @router.get("/projects/{project_id}/edit-plan", response_model=EditPlanListResponse)
@@ -327,8 +1054,169 @@ async def list_llm_runs(
     }
 
 
+def _cue_from(body: MusicRequest | None) -> MusicCue | None:
+    """The request's music block as a domain cue.
+
+    A field-by-field copy with no defaulting and no inference: the route's job
+    is to translate, and anything it decided for the caller here would be a
+    second place where an edit gets its character.
+    """
+    if body is None:
+        return None
+    return MusicCue(
+        media_id=media_id_from(body.media_id),
+        source_in_ms=body.source_in_ms,
+        source_out_ms=body.source_out_ms,
+        timeline_start_ms=body.timeline_start_ms,
+        gain=body.volume,
+        fade_in_ms=body.fade_in_ms,
+        fade_out_ms=body.fade_out_ms,
+    )
+
+
+async def _music_facts(
+    repo: MediaRepository, project_id: ProjectId, media_id: UUID
+) -> tuple[int | None, BeatGrid | None]:
+    """How long the chosen track is, and what its beats were measured to be.
+
+    Read from the database, never from the request. A client that could state
+    its own track length could state one longer than the file, and a client that
+    could state its own beat grid could make the planner cut to a tempo nothing
+    in the audio has.
+
+    Missing analysis returns ``None``, which the planner treats exactly as it
+    treats an untrusted grid: plan the way Phase 4 planned. A track that has not
+    been analysed yet is a reason to skip beat-syncing, not to refuse the edit.
+    """
+    row = await repo.get_in_project(media_id, project_id)
+    if row is None:
+        # Not this project's, or not a media id at all. Left to the plan
+        # validator, which reports it as a violation the editor can show rather
+        # than a bare 404 from a field the user never filled in.
+        return None, None
+
+    payload = await repo.analysis_payload(media_id, AnalyzerName.BEATS)
+    return row.duration_ms, grid_from_payload(payload)
+
+
 def _as_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
 __all__ = ["PRESET_DIMENSIONS", "AudioMode", "ClipOrder", "FitMode", "router"]
+
+
+# ----------------------------------------------------------- reference (P8)
+def _profile_response(
+    media_id: UUID, profile: ReferenceProfile, suggests_beat_sync: bool
+) -> ReferenceProfileResponse:
+    """Serialise a profile. Nulls stay null; nothing is defaulted on the way out."""
+
+    def measured(value: Measurement | None) -> MeasurementResponse | None:
+        return (
+            MeasurementResponse(value=round(value.value, 4), confidence=round(value.confidence, 3))
+            if value
+            else None
+        )
+
+    return ReferenceProfileResponse(
+        media_id=media_id,
+        version=profile.version,
+        duration_ms=profile.source_duration_ms,
+        confidence=profile.confidence,
+        usable=profile.is_usable,
+        pacing=profile.pacing.value if profile.pacing else None,
+        scene_count=profile.scene_count,
+        shot_ms=measured(profile.shot_ms),
+        shot_ms_p25=profile.shot_ms_p25,
+        shot_ms_p75=profile.shot_ms_p75,
+        cut_rate=measured(profile.cut_rate),
+        luminance=measured(profile.luminance),
+        contrast=measured(profile.contrast),
+        saturation=measured(profile.saturation),
+        motion=measured(profile.motion),
+        bpm=profile.bpm,
+        beat_confidence=profile.beat_confidence,
+        beat_sync=measured(profile.beat_sync),
+        suggests_beat_sync=suggests_beat_sync,
+    )
+
+
+async def _reference_response(
+    service: ReferenceService, project: Project, repo: MediaRepository
+) -> ReferenceResponse:
+    media_id = ReferenceService.reference_id(project)
+    if media_id is None:
+        return ReferenceResponse()
+
+    profile = await service.profile_for_project(project)
+    if profile is None:
+        return ReferenceResponse(
+            media_id=media_id,
+            pending_analyzers=[a.value for a in PROFILE_ANALYZERS],
+        )
+
+    # What is still missing, so a client can say "analyse it" instead of showing
+    # an empty profile and leaving the user to guess why.
+    present = await repo.analysis_payloads(media_id, PROFILE_ANALYZERS)
+    pending = [a.value for a in PROFILE_ANALYZERS if a not in present]
+
+    suggests = blend(profile_for(None), profile, StyleStrength.FULL).suggests_beat_sync
+    return ReferenceResponse(
+        media_id=media_id,
+        pending_analyzers=pending,
+        profile=_profile_response(media_id, profile, suggests),
+    )
+
+
+@router.get("/projects/{project_id}/reference", response_model=ReferenceResponse)
+async def get_reference(
+    project: Project = Depends(require_project),
+    projects: ProjectRepository = Depends(get_project_repo),
+    repo: MediaRepository = Depends(get_media_repo),
+) -> ReferenceResponse:
+    """The project's reference clip and what it measures as.
+
+    The profile is recomputed here from the reference's analysis rows rather
+    than stored, so it can never be stale against a re-analysis.
+    """
+    return await _reference_response(ReferenceService(projects, repo), project, repo)
+
+
+@router.put("/projects/{project_id}/reference", response_model=ReferenceResponse)
+async def set_reference(
+    body: ReferenceRequest,
+    project: Project = Depends(require_project),
+    projects: ProjectRepository = Depends(get_project_repo),
+    repo: MediaRepository = Depends(get_media_repo),
+    session: AsyncSession = Depends(get_session),
+) -> ReferenceResponse:
+    """Nominate a clip in this project as the style reference.
+
+    The id is resolved through the project before it is written, so a media id
+    belonging to someone else is a 404 -- the same answer a nonexistent id gets,
+    because a distinct "not yours" would confirm the id exists.
+    """
+    service = ReferenceService(projects, repo)
+    await service.set_reference(project, media_id_from(body.media_id))
+    await session.commit()
+    return await _reference_response(service, project, repo)
+
+
+@router.delete("/projects/{project_id}/reference", response_model=ReferenceResponse)
+async def clear_reference(
+    project: Project = Depends(require_project),
+    projects: ProjectRepository = Depends(get_project_repo),
+    repo: MediaRepository = Depends(get_media_repo),
+    session: AsyncSession = Depends(get_session),
+) -> ReferenceResponse:
+    """Stop styling this project after anything. The clip itself is untouched.
+
+    Returns the resulting state rather than 204, which is what GET and PUT on
+    this path return: a client that has just cleared the reference wants to
+    render the empty state, and making all three shapes identical means it can
+    do that from one response handler.
+    """
+    await ReferenceService(projects, repo).clear_reference(project)
+    await session.commit()
+    return ReferenceResponse()

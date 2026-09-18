@@ -30,6 +30,12 @@ class AnalyzerName(StrEnum):
     PHASH = "phash"
     CLIP = "clip"
     FACES = "faces"
+    #: Tempo and a beat grid, for anything with a soundtrack. Stored as a
+    #: VARCHAR with no check constraint (see ``infra.db.models._enum``), so a
+    #: new member needs no migration.
+    BEATS = "beats"
+    #: Motion energy and palette, for stills and video (Phase 8).
+    DYNAMICS = "dynamics"
 
 
 class AnalyzerKind(StrEnum):

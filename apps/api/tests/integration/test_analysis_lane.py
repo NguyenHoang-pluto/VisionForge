@@ -186,7 +186,14 @@ class TestCpuAnalysisJob:
     def test_audio_is_recorded_as_unsupported_and_the_job_still_succeeds(
         self, db: Session, project: Project, store: S3ObjectStore, media_fixtures: dict[str, Path]
     ) -> None:
-        """The Phase 3 requirement: audio must not fail analysis."""
+        """The Phase 3 requirement: audio must not fail analysis.
+
+        Phase 7 narrowed what that means. The *visual* analyzers still come back
+        ``unsupported`` -- an audio file has no blur score, which is a fact about
+        the medium -- but audio now has an analyzer of its own, so "everything is
+        unsupported" is no longer the right assertion. The requirement it was
+        protecting is unchanged and still checked: the job succeeds.
+        """
         media = _ingest(
             store, db, project, media_fixtures["audio.mp3"], MediaKind.AUDIO, duration_ms=1000
         )
@@ -196,10 +203,17 @@ class TestCpuAnalysisJob:
 
         db.refresh(job)
         assert JobStatus(job.status) is JobStatus.SUCCEEDED
-        assert all(
-            AnalysisStatus(row.status) is AnalysisStatus.UNSUPPORTED
-            for row in _analyses(db, media.id).values()
-        )
+
+        results = _analyses(db, media.id)
+        for name in (AnalyzerName.QUALITY, AnalyzerName.SCENES, AnalyzerName.PHASH):
+            assert AnalysisStatus(results[name].status) is AnalysisStatus.UNSUPPORTED
+
+        # Beat detection applies, and a silent file simply has no pulse to find:
+        # a stored result with no tempo, not a failure and not a gap.
+        beats = results[AnalyzerName.BEATS]
+        assert AnalysisStatus(beats.status) is AnalysisStatus.OK
+        assert beats.payload["bpm"] == 0
+        assert beats.payload["confidence"] == 0
 
     def test_every_step_is_recorded(
         self, db: Session, project: Project, store: S3ObjectStore, media_fixtures: dict[str, Path]
@@ -211,7 +225,15 @@ class TestCpuAnalysisJob:
 
         db.refresh(job)
         steps = sorted(job.steps, key=lambda s: s.seq)
-        assert [s.name for s in steps] == ["RESOLVE", "QUALITY", "SCENES", "PHASH", "FINALIZE"]
+        assert [s.name for s in steps] == [
+            "RESOLVE",
+            "QUALITY",
+            "SCENES",
+            "PHASH",
+            "BEATS",
+            "DYNAMICS",
+            "FINALIZE",
+        ]
         assert all(StepStatus(s.status) is StepStatus.SUCCEEDED for s in steps)
 
 

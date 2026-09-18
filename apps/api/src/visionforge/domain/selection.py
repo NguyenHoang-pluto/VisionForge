@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from visionforge.domain.analysis import (
     PHASH_DUPLICATE_MAX_DISTANCE,
@@ -38,6 +38,21 @@ class RejectionReason(StrEnum):
     TOO_SHORT = "too_short"
     NEAR_DUPLICATE = "near_duplicate"
 
+    # --- editorial (Phase 11) ---
+    #
+    # The reasons above are about usability: a clip rejected for any of them is
+    # one nobody could watch. These three are about *editing* -- the clip is
+    # fine and the edit is better without it, which is a different claim and
+    # says so rather than being filed under "duplicate".
+    #: Semantically the same shot as one already in the edit. Distinct from
+    #: ``NEAR_DUPLICATE``, which is a pixel-level match: two angles on one goal
+    #: are not near-duplicates and are the same moment.
+    SEMANTIC_DUPLICATE = "semantic_duplicate"
+    #: Nothing wrong with it; the story was already told.
+    NOT_NEEDED = "not_needed"
+    #: It argued for no role as well as the clips that took them.
+    WEAK_FOR_ROLE = "weak_for_role"
+
 
 @dataclass(frozen=True, slots=True)
 class SelectionWeights:
@@ -55,6 +70,12 @@ class SelectionWeights:
     contrast: float = 0.20
     resolution: float = 0.10
     duration: float = 0.05
+    #: How much a candidate's resemblance to a reference video's look counts
+    #: (Phase 8). Zero by default, and zero unless a style policy puts something
+    #: here, so every edit planned before references existed scores identically.
+    #: When it is non-zero the five components above have been scaled down to
+    #: make room, so the total is still one.
+    affinity: float = 0.0
 
     # --- usability floor: below these a candidate is rejected outright ---
     min_blur_score: float = 40.0
@@ -75,9 +96,23 @@ class SelectionWeights:
     resolution_reference_pixels: int = 1920 * 1080
 
     def __post_init__(self) -> None:
-        total = self.sharpness + self.exposure + self.contrast + self.resolution + self.duration
+        # A convex combination, so a score is always in 0..1 and two clips are
+        # comparable across projects. Affinity is inside the sum rather than
+        # added to it: a style reference redistributes the weight, it does not
+        # get to inflate the total and quietly raise every styled clip's score
+        # above every unstyled one's.
+        total = (
+            self.sharpness
+            + self.exposure
+            + self.contrast
+            + self.resolution
+            + self.duration
+            + self.affinity
+        )
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"selection weights must sum to 1.0, got {total}")
+        if not 0.0 <= self.affinity <= 1.0:
+            raise ValueError("affinity weight must be between 0 and 1")
         if self.sharpness_reference <= 0 or self.resolution_reference_pixels <= 0:
             raise ValueError("normalisation references must be positive")
 
@@ -112,6 +147,13 @@ class Candidate:
     # --- from the scene analyzer ---
     scene_count: int | None = None
 
+    # --- from the dynamics analyzer (Phase 8) ---
+    #: Motion energy, 0..1. ``None`` for a clip that has not been analysed, or
+    #: for a still, which cannot have any.
+    motion: float | None = None
+    #: Mean saturation, 0..1.
+    saturation: float | None = None
+
     # --- from the face analyzer ---
     #: Whether anyone appears on screen. A count, reduced to a boolean, and no
     #: identity: who is in the frame is never computed and never stored, so the
@@ -129,6 +171,52 @@ class Candidate:
 
     #: Tie-break key. The upload order is stable and meaningful; a UUID is not.
     sequence: int = 0
+
+    # --- editorial signals (Phase 11) ---
+    #
+    # Every field below is optional and defaults to "not measured". Selection
+    # itself does not read any of them, and a candidate built the Phase 4 way
+    # scores byte-identically -- they exist so the editorial layer can ask
+    # questions of the *same* object the ranker sees rather than needing a
+    # second, parallel view of the footage that could drift out of step.
+
+    #: Standard deviation of motion across the sampled points, 0..1. Separate
+    #: from ``motion`` because the two answer different questions: a steady pan
+    #: and a clip where nothing happens until something suddenly does can share
+    #: a median and are not the same shot.
+    motion_spread: float | None = None
+
+    #: Largest detected face box as a fraction of the frame's area. The one
+    #: piece of evidence that separates a close-up from a wide shot that
+    #: happens to contain a person. Still no identity: a box area, not a face.
+    face_area: float | None = None
+
+    #: Whether anyone was on screen at each deterministic sample point, in time
+    #: order. Five booleans, which is the only evidence available for "someone
+    #: walks into frame" -- and weak evidence, which is why the events derived
+    #: from it carry low confidence.
+    face_frames: tuple[bool, ...] = ()
+
+    #: Cut positions *inside* this clip, in ms from its own start. A clip that
+    #: already contains a cut is a different editorial object from one that
+    #: does not, and trimming across its boundary produces a jump nobody asked
+    #: for.
+    scene_boundaries_ms: tuple[int, ...] = ()
+
+    #: Mean shot length within the clip, when scene detection ran.
+    mean_scene_ms: int | None = None
+
+    #: Where in this clip the most movement was measured, ms from its start.
+    #: The dynamics analyzer samples five points; this is the busiest of them.
+    #: Coarse -- it names a fifth of the clip, not a frame -- but it is the
+    #: difference between trimming a goal and trimming the run-up to one.
+    motion_peak_ms: int | None = None
+
+    #: The CLIP embedding, L2-normalised. Used for semantic distance between
+    #: candidates -- "these two clips show the same thing" -- which pHash
+    #: cannot answer: two shots of the same goal from different angles are not
+    #: near-duplicates by any pixel measure and are near-identical editorially.
+    embedding: tuple[float, ...] | None = None
 
     @property
     def has_quality(self) -> bool:
@@ -169,6 +257,18 @@ class SelectionResult:
 
 
 # --------------------------------------------------------------------- scoring
+@runtime_checkable
+class StyleAffinity(Protocol):
+    """Anything that can say how close a set of look values is to its own.
+
+    Stated as a protocol rather than imported, because the concrete type lives
+    in ``domain.policy``, which imports this module -- and a cycle inside the
+    domain is exactly what the architecture contract exists to prevent.
+    """
+
+    def affinity(self, **measured: float | None) -> float | None: ...
+
+
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
@@ -226,8 +326,30 @@ def duration_component(candidate: Candidate, weights: SelectionWeights) -> float
     return _clamp(candidate.duration_ms / 10_000.0)
 
 
+def affinity_component(candidate: Candidate, target: StyleAffinity | None) -> float | None:
+    """How much this candidate looks like the reference. ``None`` when unknown.
+
+    The comparison is made on the axes the two have in common. A candidate with
+    no dynamics row still has luminance and contrast from the quality analyzer,
+    so it is compared on those rather than being excluded -- footage should not
+    rank lower because an analyzer had not reached it yet.
+    """
+    if target is None:
+        return None
+    return target.affinity(
+        luminance=(candidate.mean_luminance / 255.0)
+        if candidate.mean_luminance is not None
+        else None,
+        contrast=min(1.0, candidate.contrast / 128.0) if candidate.contrast is not None else None,
+        saturation=candidate.saturation,
+        motion=candidate.motion,
+    )
+
+
 def score_candidate(
-    candidate: Candidate, weights: SelectionWeights = DEFAULT_SELECTION_WEIGHTS
+    candidate: Candidate,
+    weights: SelectionWeights = DEFAULT_SELECTION_WEIGHTS,
+    target: StyleAffinity | None = None,
 ) -> ScoredCandidate:
     """Weighted sum of the normalised components. Always in 0..1."""
     components = {
@@ -244,6 +366,16 @@ def score_candidate(
         + components["resolution"] * weights.resolution
         + components["duration"] * weights.duration
     )
+
+    # The style term, when there is one. A candidate the target cannot be
+    # compared against keeps its share of the weight rather than forfeiting it:
+    # the alternative silently ranks unanalysed footage last.
+    if weights.affinity > 0:
+        affinity = affinity_component(candidate, target)
+        if affinity is None:
+            affinity = 1.0
+        components["affinity"] = affinity
+        score += affinity * weights.affinity
     return ScoredCandidate(
         candidate=candidate,
         score=round(score, 6),
@@ -348,6 +480,7 @@ def select(
     *,
     limit: int,
     weights: SelectionWeights = DEFAULT_SELECTION_WEIGHTS,
+    target: StyleAffinity | None = None,
 ) -> SelectionResult:
     """Rank, deduplicate and take the best ``limit`` candidates.
 
@@ -369,7 +502,7 @@ def select(
         else:
             usable.append(candidate)
 
-    scored = {c.media_id: score_candidate(c, weights) for c in usable}
+    scored = {c.media_id: score_candidate(c, weights, target) for c in usable}
     groups = group_duplicates(usable, max_distance=weights.duplicate_max_distance)
 
     # Keep the best-scoring member of each duplicate group; reject the rest.

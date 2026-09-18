@@ -9,9 +9,17 @@ pure function in the domain with no knowledge of settings or HTTP, so "what
 would automatic mode do given no provider and a written request?" is a unit test
 with no fixtures. This module is the thin part that knows about configuration.
 
-The rules engine is always constructed, whatever the mode, because it is always
-the fallback. There is no configuration in which VisionForge cannot produce an
-edit.
+Since Phase 11 there are two deterministic engines rather than one, and which
+one this factory reaches for is the single most consequential line in the file:
+
+    editorial=True   EditorialPlanner   signals, events, story, pacing, decisions
+    editorial=False  RulesEnginePlanner the Phase 4 even split, unchanged
+
+The editorial engine is the default because it is what automatic editing now
+means. The rules engine stays, is still constructed on every call, and is still
+the last resort -- there is no configuration in which VisionForge cannot produce
+an edit, and a bug in the editorial engine must degrade to a defensible first
+cut rather than to a failed request.
 """
 
 from __future__ import annotations
@@ -19,6 +27,7 @@ from __future__ import annotations
 import logging
 
 from visionforge.core.config import Settings, get_settings
+from visionforge.domain.editorial_planner import EditorialPlanner, IntentPlanner
 from visionforge.domain.llm import LlmProvider
 from visionforge.domain.llm_planner import (
     FallbackPlanner,
@@ -57,17 +66,29 @@ def build_planner(
     request_text: str | None,
     provider: LlmProvider | None,
     settings: Settings | None = None,
+    editorial: bool = True,
 ) -> PlannerSelection:
     """Resolve the mode and construct the planner it calls for.
 
-    An AI plan is always built as ``FallbackPlanner(LlmPlanner, rules)``, never
-    as a bare ``LlmPlanner``. The fallback is not an error path that might be
-    reached; it is part of what "AI planning" means here, and wiring it
+    An AI plan is always built as ``FallbackPlanner(primary, deterministic)``,
+    never as a bare model planner. The fallback is not an error path that might
+    be reached; it is part of what "AI planning" means here, and wiring it
     unconditionally means there is no configuration in which a provider failure
     becomes a failed request.
+
+    ``editorial=False`` selects the Phase 4 path end to end -- the rules engine
+    deterministically, and the directive-based ``LlmPlanner`` for AI. It exists
+    so the two generations can be compared against the same footage, which is
+    how the acceptance script proves the new engine is not the old one with
+    extra metadata.
     """
     settings = settings or get_settings()
+
+    # Constructed whatever the mode and whatever the engine: it is the floor
+    # under both, and a planner that only exists in some branches is a planner
+    # that is missing from the branch where it is needed.
     rules = RulesEnginePlanner()
+    deterministic: Planner = EditorialPlanner() if editorial else rules
 
     decision = resolve_mode(
         mode,
@@ -77,7 +98,18 @@ def build_planner(
     )
 
     if decision.mode is PlannerMode.RULES or provider is None:
-        return PlannerSelection(rules, decision)
+        return PlannerSelection(deterministic, decision)
+
+    if editorial:
+        # The model sets direction; the engine chooses the clips. See
+        # ``domain.intent`` for why the division falls there and not elsewhere.
+        primary = IntentPlanner(
+            provider,
+            engine=EditorialPlanner(),
+            timeout_s=settings.llm_timeout_s,
+            max_output_tokens=settings.llm_max_output_tokens,
+        )
+        return PlannerSelection(FallbackPlanner(primary, deterministic), decision)
 
     llm = LlmPlanner(
         provider,

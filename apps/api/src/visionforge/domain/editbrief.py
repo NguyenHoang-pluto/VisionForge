@@ -29,7 +29,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from visionforge.domain.editplan import MAX_STILL_MS
 from visionforge.domain.ids import MediaId
+from visionforge.domain.media import MediaKind
 from visionforge.domain.selection import ScoredCandidate, SelectionResult
 
 #: Ceiling on how many clips are described to the model. Beyond this the brief
@@ -68,6 +70,9 @@ class ClipBrief:
     has_audio: bool
     #: Position in the upload order, 1-based. The only chronology available.
     sequence: int
+    #: A photo rather than a video (Phase 12). Its ``duration_ms`` is then the
+    #: longest it may be held, not a length it has.
+    still: bool = False
 
     def as_payload(self) -> dict[str, Any]:
         """Compact JSON for the prompt. Omits unknowns rather than sending null.
@@ -96,6 +101,8 @@ class ClipBrief:
         if self.has_faces is not None:
             payload["faces"] = self.has_faces
         payload["audio"] = self.has_audio
+        if self.still:
+            payload["still"] = True
         return payload
 
 
@@ -160,10 +167,11 @@ def build_brief(selection: SelectionResult, *, limit: int = MAX_BRIEF_CLIPS) -> 
         handle = f"c{index}"
         candidate = scored.candidate
         handles[handle] = candidate.media_id
+        still = candidate.kind is MediaKind.IMAGE
         clips.append(
             ClipBrief(
                 handle=handle,
-                duration_ms=candidate.duration_ms or 0,
+                duration_ms=MAX_STILL_MS if still else candidate.duration_ms or 0,
                 width=candidate.width,
                 height=candidate.height,
                 score=scored.score,
@@ -174,6 +182,7 @@ def build_brief(selection: SelectionResult, *, limit: int = MAX_BRIEF_CLIPS) -> 
                 has_faces=candidate.has_faces,
                 has_audio=candidate.has_audio,
                 sequence=candidate.sequence + 1,
+                still=still,
             )
         )
 

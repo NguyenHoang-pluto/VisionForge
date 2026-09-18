@@ -8,6 +8,7 @@ planner's seat in Phase 5.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 
 import pytest
 
@@ -18,8 +19,10 @@ from visionforge.domain.editplan import (
     AspectRatio,
     AudioMode,
     EditPlan,
+    Encoder,
     FitMode,
     MediaFact,
+    MusicCue,
     OutputSpec,
     PlanInvalidError,
     QualityPreset,
@@ -355,7 +358,12 @@ class TestHostilePlans:
         The field sets are pinned exactly, so *adding* a field to the plan is a
         deliberate act that fails this test until someone confirms the new field
         cannot carry a path or a command. Phase 5 added ``quality``, which is an
-        enum of three values.
+        enum of three values. Phase 7 added ``source_gain`` and the music cue,
+        which are numbers and one media id. Phase 9 added ``transition_ms``, an
+        integer, and ``effects``, a list whose every entry is a closed enum plus
+        one number and two optional integers -- deliberately not a parameter
+        dictionary, which would be a hole in exactly the shape of an arbitrary
+        filter argument. Phase 12 added ``encoder``, an enum of two values.
         """
         plan, _ = simple_plan(1)
         payload = plan.as_payload()
@@ -367,6 +375,8 @@ class TestHostilePlans:
             "source_out_ms",
             "duration_ms",
             "transition_in",
+            "transition_ms",
+            "effects",
         }
         assert set(payload["output"]) == {
             "aspect_ratio",
@@ -376,7 +386,95 @@ class TestHostilePlans:
             "fit",
             "audio",
             "quality",
+            "encoder",
+            "source_gain",
         }
+
+    def test_an_effect_is_an_enum_and_a_number(self) -> None:
+        """No parameter dictionary, in either direction.
+
+        An effect that carried ``{"filter": "..."}`` would defeat every other
+        guarantee in this file, so the payload's field set is pinned the same
+        way the segment's is.
+        """
+        from visionforge.domain.effects import Effect, EffectKind
+
+        payload = Effect(kind=EffectKind.BRIGHTNESS, amount=0.2).as_payload()
+        assert set(payload) == {"kind", "amount", "start_ms", "end_ms"}
+        assert isinstance(payload["kind"], str)
+        assert isinstance(payload["amount"], float)
+
+    def test_subtitle_text_is_the_only_string_and_it_is_not_a_filter(self) -> None:
+        """The first user-supplied string in the plan, and what happens to it.
+
+        Text reaches the renderer inside an ASS document, never inside a filter
+        graph -- so the characters that would carry meaning to a filter or to
+        the document format are removed before storage rather than escaped at
+        render time. ``clean_text`` is where that happens; this pins that it
+        happens at all.
+        """
+        from visionforge.domain.subtitles import SubtitleCue, SubtitleTrack, clean_text
+
+        hostile = "hi':drawbox=c=red@1:t=fill,drawtext=text='pwned"
+        cleaned = clean_text(hostile)
+        assert "\\" not in cleaned
+        assert "{" not in cleaned and "}" not in cleaned
+
+        track = SubtitleTrack(cues=(SubtitleCue(0, 1_000, cleaned),))
+        payload = track.as_payload()
+        assert set(payload) == {"style", "position", "cues"}
+        assert set(payload["cues"][0]) == {"start_ms", "end_ms", "text"}
+        # Style and position are ids, never parameters: no font path, no size,
+        # no colour, nothing the renderer would take as an instruction.
+        assert isinstance(payload["style"], str)
+        assert isinstance(payload["position"], str)
+
+    def test_the_music_cue_has_no_field_for_a_path_or_a_command(self) -> None:
+        """The same guard, for the audio track.
+
+        An audio filter graph runs commands exactly as readily as a video one,
+        so the cue gets the identical treatment: a media id and six numbers,
+        pinned, with no free string anywhere in it.
+        """
+        plan, _ = simple_plan(1)
+        cue = MusicCue(
+            media_id=MediaId(uuid.uuid4()),
+            source_in_ms=0,
+            source_out_ms=8_000,
+            timeline_start_ms=0,
+            gain=0.8,
+            fade_in_ms=250,
+            fade_out_ms=750,
+        )
+        body = replace(plan, music=cue).as_payload()["music"]
+
+        assert set(body) == {
+            "media_id",
+            "source_in_ms",
+            "source_out_ms",
+            "timeline_start_ms",
+            "duration_ms",
+            "gain",
+            "fade_in_ms",
+            "fade_out_ms",
+        }
+        # One string, and it parses as a UUID or it is not a media id.
+        assert uuid.UUID(str(body["media_id"]))
+        for key, value in body.items():
+            if key != "media_id":
+                assert isinstance(value, int | float), f"{key} is not a number"
+
+    def test_a_music_media_id_must_be_a_uuid(self) -> None:
+        """A cue cannot name a path, for the same reason a segment cannot."""
+        plan, _ = simple_plan(1)
+        payload = plan.as_payload()
+        payload["music"] = {
+            "media_id": "../../etc/passwd",
+            "source_in_ms": 0,
+            "source_out_ms": 8_000,
+        }
+        with pytest.raises((ValueError, AttributeError, TypeError)):
+            plan_from_payload(payload)
 
     def test_every_plan_field_is_a_number_or_a_closed_enum(self) -> None:
         """The property behind the field list, checked rather than assumed.
@@ -394,12 +492,15 @@ class TestHostilePlans:
             "fit": {f.value for f in FitMode},
             "audio": {a.value for a in AudioMode},
             "quality": {q.value for q in QualityPreset},
+            "encoder": {e.value for e in Encoder},
         }
         for key, value in output.items():
             if isinstance(value, str):
                 assert value in allowed[key], f"{key} is a free string, not a closed enum"
             else:
-                assert isinstance(value, int), f"{key} is neither an int nor a closed enum"
+                # Gains are fractional; everything else is a whole number. Both
+                # are numbers, which is the property that matters here.
+                assert isinstance(value, int | float), f"{key} is neither a number nor an enum"
 
 
 # ------------------------------------------------------------------ round trip
@@ -442,4 +543,4 @@ class TestAssertValid:
             assert_valid(bad, {media_id: fact(media_id)})
 
         payload = exc_info.value.violations[0].as_payload()
-        assert set(payload) == {"code", "message", "segment_order"}
+        assert set(payload) == {"code", "message", "segment_order", "is_music"}

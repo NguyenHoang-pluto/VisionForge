@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     api_reload: bool = True
+
+    # --- Rendering ---
+    #: Whether the render worker's machine has an NVIDIA GPU with NVENC. Off by
+    #: default, because a render asked of an encoder that is not there fails;
+    #: set ``RENDER_GPU=true`` where there is one. 8K is offered only then.
+    render_gpu: bool = False
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     # --- Readiness ---

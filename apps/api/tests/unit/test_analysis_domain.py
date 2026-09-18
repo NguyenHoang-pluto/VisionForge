@@ -148,13 +148,21 @@ class TestAnalysisOutcome:
 
 class TestAnalyzerIdentity:
     def test_analyzer_names_are_stable_strings(self) -> None:
-        """These values are persisted; renaming one orphans every existing row."""
+        """These values are persisted; renaming one orphans every existing row.
+
+        Exhaustive on purpose: adding an analyzer should require someone to come
+        here and say so, because the string lands in a column with no check
+        constraint and a typo would be discovered by an empty query months
+        later. ``dynamics`` arrived in Phase 8.
+        """
         assert {a.value for a in AnalyzerName} == {
             "quality",
             "scenes",
             "phash",
             "clip",
             "faces",
+            "beats",
+            "dynamics",
         }
 
     def test_analyzer_kinds_match_the_queues(self) -> None:

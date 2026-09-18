@@ -194,7 +194,24 @@ def analysed_project(rules_client: TestClient, db: Session) -> Iterator[UUID]:
 
 
 def _plan(client: TestClient, project_id: UUID, **body: Any) -> dict[str, Any]:
-    response = client.post(f"/api/projects/{project_id}/edit-plan", json=body)
+    """Plan through the route, on the engine this lane is about.
+
+    ``engine="rules"`` is supplied by default rather than left off. Since Phase
+    11 the default engine is the editorial one, and every assertion in this file
+    is about the *directive* planner in front of the Phase 4 rules engine: its
+    provenance record, its handle resolution, its clamping, and what it does
+    when a model answers with something hostile. Those are still the contract
+    for that planner, and pinning the engine keeps them tested against it rather
+    than silently re-pointing them at a different planner that would satisfy
+    some of them by accident.
+
+    The editorial engine's own equivalent of this lane is
+    ``test_editorial_lane.py``; a caller here can still pass ``engine`` to
+    override.
+    """
+    response = client.post(
+        f"/api/projects/{project_id}/edit-plan", json={"engine": "rules", **body}
+    )
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -506,3 +523,202 @@ class TestServerSideLimits:
         body = ai_client.get("/api/planner/capabilities").text.lower()
         for token in ("api_key", "secret", "sk-", "authorization", "bearer"):
             assert token not in body
+
+
+# ------------------------------------------------------------ subtitles (P9)
+class CueProvider:
+    """Answers the subtitle prompt with whatever the test wants to send."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.calls: list[LlmRequest] = []
+
+    @property
+    def name(self) -> str:
+        return "cue-stub"
+
+    @property
+    def model(self) -> str:
+        return "cue-stub-1"
+
+    def complete(self, request: LlmRequest) -> LlmResponse:
+        self.calls.append(request)
+        return LlmResponse(
+            text=self._text,
+            provider=self.name,
+            model=self.model,
+            latency_ms=2.0,
+            usage=LlmUsage(input_tokens=20, output_tokens=10),
+        )
+
+
+def _suggest(client: TestClient, project_id: UUID, plan_id: str, **body: Any) -> dict[str, Any]:
+    response = client.post(
+        f"/api/projects/{project_id}/edit-plan/{plan_id}/subtitles/suggest", json=body
+    )
+    assert response.status_code == 200, response.text
+    return dict(response.json())
+
+
+class TestSubtitleSuggestion:
+    """The AI subtitle route, against a real plan in a real database.
+
+    The route is read-only by design: it drafts cues for a stored plan and the
+    user decides whether they become an edit. These tests hold that line and
+    the two that matter more -- that the model is told nothing it could name a
+    file with, and that a failure produces no subtitles rather than plausible
+    ones.
+    """
+
+    def test_no_provider_is_a_named_failure_not_a_500(
+        self, rules_client: TestClient, analysed_project: UUID
+    ) -> None:
+        plan = _plan(rules_client, analysed_project, mode="rules")
+
+        body = _suggest(rules_client, analysed_project, plan["id"])
+
+        assert body["ok"] is False
+        assert body["failure"] == "provider_disabled"
+        assert body["subtitles"] is None
+
+    def test_a_plan_from_another_project_is_not_found(
+        self, rules_client: TestClient, analysed_project: UUID, db: Session
+    ) -> None:
+        """The same ownership anchor every other route has."""
+        other = _analysed_project(rules_client, db)
+        try:
+            plan = _plan(rules_client, other, mode="rules")
+            response = rules_client.post(
+                f"/api/projects/{analysed_project}/edit-plan/{plan['id']}/subtitles/suggest",
+                json={},
+            )
+            assert response.status_code == 404
+        finally:
+            _drop_project(db, other)
+
+    def test_usable_cues_come_back_as_a_track(self, analysed_project: UUID) -> None:
+        provider = CueProvider(
+            json.dumps(
+                {
+                    "cues": [
+                        {"start_ms": 0, "end_ms": 2_000, "text": "First line"},
+                        {"start_ms": 2_500, "end_ms": 4_500, "text": "Second line"},
+                    ]
+                }
+            )
+        )
+        client = _make_client(provider)
+        with client:
+            plan = _plan(client, analysed_project, mode="rules")
+            body = _suggest(client, analysed_project, plan["id"])
+
+        assert body["ok"] is True
+        assert [cue["text"] for cue in body["subtitles"]["cues"]] == [
+            "First line",
+            "Second line",
+        ]
+
+    def test_the_cue_prompt_names_no_file_and_no_id(self, analysed_project: UUID) -> None:
+        """The claim the whole design rests on, checked against real rows.
+
+        The project has real media with real filenames and real storage keys in
+        the database. None of it is in the prompt, because the prompt is built
+        from a compiled timeline's durations.
+        """
+        provider = CueProvider(json.dumps({"cues": []}))
+        client = _make_client(provider)
+        with client:
+            plan = _plan(client, analysed_project, mode="rules")
+            _suggest(client, analysed_project, plan["id"])
+
+        assert provider.calls, "the provider was never called"
+        prompt = provider.calls[0].system + provider.calls[0].user
+
+        assert str(analysed_project) not in prompt
+        assert "clip_0.mp4" not in prompt
+        assert "storage_key" not in prompt
+        assert "projects/" not in prompt
+
+    def test_the_prompt_carries_the_timing_that_will_be_rendered(
+        self, analysed_project: UUID
+    ) -> None:
+        provider = CueProvider(json.dumps({"cues": []}))
+        client = _make_client(provider)
+        with client:
+            plan = _plan(client, analysed_project, mode="rules")
+            _suggest(client, analysed_project, plan["id"])
+
+        assert str(plan["total_duration_ms"]) in provider.calls[0].user
+
+    def test_a_model_that_answers_with_prose_produces_no_subtitles(
+        self, analysed_project: UUID
+    ) -> None:
+        """Nothing is invented to fill the gap. The point of the feature."""
+        client = _make_client(CueProvider("I am sorry, I cannot help with that."))
+        with client:
+            plan = _plan(client, analysed_project, mode="rules")
+            body = _suggest(client, analysed_project, plan["id"])
+
+        assert body["ok"] is False
+        assert body["failure"] == "no_usable_cues"
+        assert body["subtitles"] is None
+
+    def test_a_hostile_answer_reaches_the_editor_as_display_text(
+        self, analysed_project: UUID
+    ) -> None:
+        hostile = {
+            "cues": [
+                {
+                    "start_ms": 0,
+                    "end_ms": 2_000,
+                    "text": "x; drawtext=text=y:fontfile=/etc/passwd",
+                    "font": "C:\\Windows\\Fonts\\evil.ttf",
+                    "position": {"x": -9999, "y": -9999},
+                }
+            ],
+            "style": "made_up",
+            "filter_complex": "scale=1:1",
+        }
+        client = _make_client(CueProvider(json.dumps(hostile)))
+        with client:
+            plan = _plan(client, analysed_project, mode="rules")
+            body = _suggest(client, analysed_project, plan["id"])
+
+        track = body["subtitles"]
+        assert track is not None
+        # The style is the server's, the cue is three fields, and the text has
+        # lost every character that means something to a document format.
+        assert track["style"] in {"clean", "bold", "minimal", "cinematic", "social"}
+        assert set(track["cues"][0]) == {"start_ms", "end_ms", "text"}
+        assert "\\" not in track["cues"][0]["text"]
+        # Kept as *words*: it is display text, not an instruction that was
+        # neutralised. Nothing downstream parses it.
+        assert "fontfile" in track["cues"][0]["text"]
+
+    def test_the_route_writes_nothing(self, analysed_project: UUID) -> None:
+        """A model proposes; a person accepts. The stored plan is untouched."""
+        client = _make_client(
+            CueProvider(json.dumps({"cues": [{"start_ms": 0, "end_ms": 2_000, "text": "Hi"}]}))
+        )
+        with client:
+            plan = _plan(client, analysed_project, mode="rules")
+            _suggest(client, analysed_project, plan["id"])
+            stored = client.get(f"/api/projects/{analysed_project}/edit-plan/{plan['id']}")
+
+        assert stored.status_code == 200
+        assert stored.json()["plan"].get("subtitles") is None
+
+    def test_the_preset_follows_the_plans_style_unless_the_caller_chooses(
+        self, analysed_project: UUID
+    ) -> None:
+        """Phase 8's reference influence, reaching subtitles as a preference."""
+        client = _make_client(
+            CueProvider(json.dumps({"cues": [{"start_ms": 0, "end_ms": 2_000, "text": "Hi"}]}))
+        )
+        with client:
+            plan = _plan(client, analysed_project, mode="rules", style=EditStyle.CINEMATIC.value)
+            inherited = _suggest(client, analysed_project, plan["id"])
+            chosen = _suggest(client, analysed_project, plan["id"], style="social")
+
+        assert inherited["subtitles"]["style"] == "cinematic"
+        assert chosen["subtitles"]["style"] == "social"

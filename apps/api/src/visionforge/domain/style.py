@@ -24,8 +24,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from visionforge.domain.editplan import AspectRatio, AudioMode, QualityPreset
+from visionforge.domain.editplan import AspectRatio, AudioMode, QualityPreset, Resolution
 from visionforge.domain.selection import DEFAULT_SELECTION_WEIGHTS, SelectionWeights
+from visionforge.domain.subtitles import SubtitlePosition, SubtitleStyle
 
 
 class EditStyle(StrEnum):
@@ -55,12 +56,85 @@ QUALITY_SETTINGS: dict[QualityPreset, tuple[int, str]] = {
     QualityPreset.DRAFT: (28, "ultrafast"),
     QualityPreset.BALANCED: (23, "veryfast"),
     QualityPreset.HIGH: (19, "medium"),
+    # CRF 16 is visually lossless for almost all footage; ``slow`` spends the
+    # time finding it. Roughly four times the encode of ``BALANCED``.
+    QualityPreset.MAX: (16, "slow"),
 }
 
-#: Frame rates a caller may choose. Also closed: 120 fps is inside the plan
-#: validator's bounds but is not something this hardware should be asked for
-#: from a dropdown.
-FPS_PRESETS: tuple[int, ...] = (24, 30, 60)
+#: The same levels on the GPU: an NVENC constant-quality target and a preset
+#: from ``p1`` (fastest) to ``p7`` (best). The targets match the CPU CRFs so a
+#: level means about the same picture on either encoder.
+GPU_QUALITY_SETTINGS: dict[QualityPreset, tuple[int, str]] = {
+    QualityPreset.DRAFT: (28, "p1"),
+    QualityPreset.BALANCED: (23, "p4"),
+    QualityPreset.HIGH: (19, "p6"),
+    QualityPreset.MAX: (16, "p7"),
+}
+
+#: How frames are resampled, per quality level. ``None`` keeps FFmpeg's default
+#: (bicubic), which is what every level rendered with before Phase 12 and what
+#: ``DRAFT`` and ``BALANCED`` still use, so their output is unchanged. Lanczos
+#: keeps more edge detail on both upscale and downscale, at a small cost.
+SCALE_FLAGS: dict[QualityPreset, str | None] = {
+    QualityPreset.DRAFT: None,
+    QualityPreset.BALANCED: None,
+    QualityPreset.HIGH: "lanczos",
+    QualityPreset.MAX: "lanczos",
+}
+
+#: Audio bitrate per quality level, in kbps. AAC at 128 is fine for a preview;
+#: music heard at the quality the picture is shown at wants more.
+AUDIO_KBPS: dict[QualityPreset, int] = {
+    QualityPreset.DRAFT: 128,
+    QualityPreset.BALANCED: 128,
+    QualityPreset.HIGH: 192,
+    QualityPreset.MAX: 256,
+}
+
+#: Frame rates a caller may choose. Also closed, and it goes up to the plan
+#: validator's own ceiling of 120. A rate above the source's is reached by
+#: repeating frames, so it only adds smoothness when the footage was shot fast.
+FPS_PRESETS: tuple[int, ...] = (24, 25, 30, 48, 50, 60, 120)
+
+#: Output geometry per aspect ratio. A closed map rather than free width/height:
+#: the caller picks a shape, the server picks dimensions that are even (required
+#: by H.264 4:2:0) and sane for this hardware. Arbitrary geometry from a client
+#: is exactly what the plan validator would then have to defend against.
+#:
+#: In the domain rather than in the route that first needed it, because Phase 10
+#: gave it a second caller: a ``CHANGE_OUTPUT_PRESET`` operation names a shape
+#: and the patcher has to resolve it to pixels. Two copies of a table whose
+#: whole purpose is that clients cannot choose geometry is one copy too many.
+PRESET_DIMENSIONS: dict[AspectRatio, tuple[int, int]] = {
+    AspectRatio.LANDSCAPE_16_9: (1280, 720),
+    AspectRatio.PORTRAIT_9_16: (720, 1280),
+    AspectRatio.SQUARE_1_1: (720, 720),
+}
+
+
+def dimensions_for(
+    aspect: AspectRatio, resolution: Resolution = Resolution.P720
+) -> tuple[int, int]:
+    """The pixels for a shape at a size.
+
+    ``PRESET_DIMENSIONS`` is the shape at 720 lines; any other size is that
+    shape scaled until its short side has ``resolution.lines`` lines.
+    """
+    return scale_to_lines(PRESET_DIMENSIONS[aspect], resolution.lines)
+
+
+def scale_to_lines(size: tuple[int, int], lines: int) -> tuple[int, int]:
+    """Scale ``size`` so its short side is ``lines``, keeping both sides even.
+
+    Even because H.264 4:2:0 cannot encode an odd dimension, and the plan
+    validator would reject one.
+    """
+    width, height = size
+    short = min(width, height)
+    return (
+        round(width * lines / short / 2) * 2,
+        round(height * lines / short / 2) * 2,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,14 +378,67 @@ def infer_style(text: str | None) -> EditStyle | None:
     return None
 
 
+# ------------------------------------------------ style profile -> preset (§7)
+#: Which look suits which edit style.
+#:
+#: This is the whole of the reference-style influence on subtitles, and note
+#: what it maps *to*: a preset id. A cinematic reference makes the editor open
+#: on the cinematic preset; it does not make the reference's own typography,
+#: colours or margins reach the renderer, because there is no path by which a
+#: measurement of somebody else's video could become a font size here. The
+#: preset table above stays the only authority on what a look means.
+#:
+#: A preference, too, not a decision: whatever this returns is the value the UI
+#: starts on, and the user's own choice replaces it.
+STYLE_SUBTITLE_PRESET: dict[EditStyle, SubtitleStyle] = {
+    EditStyle.CINEMATIC: SubtitleStyle.CINEMATIC,
+    EditStyle.FAST_MONTAGE: SubtitleStyle.BOLD,
+    EditStyle.SPORTS_HIGHLIGHT: SubtitleStyle.BOLD,
+    EditStyle.GAMING: SubtitleStyle.BOLD,
+    EditStyle.ANIME: SubtitleStyle.CLEAN,
+    EditStyle.NATURE: SubtitleStyle.MINIMAL,
+    EditStyle.SOCIAL: SubtitleStyle.SOCIAL,
+    EditStyle.CUSTOM: SubtitleStyle.CLEAN,
+}
+
+
+def subtitle_style_for(style: EditStyle | None) -> SubtitleStyle:
+    """The preset an edit style suggests. ``CLEAN`` when nothing was chosen."""
+    if style is None:
+        return SubtitleStyle.CLEAN
+    return STYLE_SUBTITLE_PRESET.get(style, SubtitleStyle.CLEAN)
+
+
+def subtitle_position_for(aspect: str | None) -> SubtitlePosition:
+    """Where the text sits, given the output shape.
+
+    Vertical output is the one case where the default moves: a 9:16 frame is
+    played in an interface that draws its own controls over the bottom of the
+    picture, so the bottom margin that is correct on a 16:9 master puts the
+    line underneath a share button. Every other ratio gets the bottom.
+    """
+    if aspect in {"9:16", "4:5"}:
+        return SubtitlePosition.CENTER
+    return SubtitlePosition.BOTTOM
+
+
 __all__ = [
+    "AUDIO_KBPS",
     "FPS_PRESETS",
     "NEUTRAL_PROFILE",
+    "PRESET_DIMENSIONS",
     "QUALITY_SETTINGS",
+    "SCALE_FLAGS",
     "STYLE_PROFILES",
+    "STYLE_SUBTITLE_PRESET",
     "EditStyle",
     "QualityPreset",
+    "Resolution",
     "StyleProfile",
+    "dimensions_for",
     "infer_style",
     "profile_for",
+    "scale_to_lines",
+    "subtitle_position_for",
+    "subtitle_style_for",
 ]

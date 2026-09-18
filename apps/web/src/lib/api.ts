@@ -54,11 +54,17 @@ export interface MediaAsset {
   bytes_size: number | null;
   mime_type: string | null;
   sha256: string | null;
+  container_format: string | null;
   duration_ms: number | null;
   width: number | null;
   height: number | null;
   fps: number | null;
   codec: string | null;
+  pix_fmt: string | null;
+  bit_rate: number | null;
+  sample_rate: number | null;
+  /** Audio channel count from ffprobe. `null` means the file has no audio. */
+  channels: number | null;
   error: { code?: string; message?: string; hint?: string } | null;
   created_at: string;
   has_thumbnail: boolean;
@@ -105,7 +111,7 @@ export interface Job {
   steps: JobStep[];
 }
 
-export type AnalyzerName = "quality" | "scenes" | "phash" | "clip" | "faces";
+export type AnalyzerName = "quality" | "scenes" | "phash" | "clip" | "faces" | "beats";
 export type AnalysisStatus = "ok" | "unsupported" | "failed";
 
 /** Analyzer-specific. Deliberately loose: each analyzer reports a different shape. */
@@ -145,11 +151,17 @@ export interface SimilarMediaResponse {
 }
 
 export type AspectRatio = "16:9" | "9:16" | "1:1";
+
+/** Output size, by the lines on the frame's short side. The server owns the pixels. */
+export type Resolution = "720p" | "1080p" | "1440p" | "2160p" | "4320p";
+
+/** Which hardware encodes: x264 on the CPU, or NVENC on an NVIDIA GPU. */
+export type Encoder = "cpu" | "gpu";
 export type ClipOrder = "score_desc" | "sequence";
 export type RenderStatus = "pending" | "rendering" | "ready" | "failed" | "cancelled";
 
 export type PlannerMode = "automatic" | "rules" | "ai";
-export type QualityPreset = "draft" | "balanced" | "high";
+export type QualityPreset = "draft" | "balanced" | "high" | "max";
 export type EditStyle =
   | "cinematic"
   | "fast_montage"
@@ -159,6 +171,171 @@ export type EditStyle =
   | "nature"
   | "social"
   | "custom";
+
+/* ------------------------------------------------------ editorial (Phase 11) */
+
+/** Which genre policy an edit is cut under. A closed set, served by the API. */
+export type PolicyId =
+  | "football"
+  | "gaming"
+  | "anime"
+  | "cinematic_travel"
+  | "nature"
+  | "vlog"
+  | "social"
+  | "product"
+  | "fashion"
+  | "automotive"
+  | "neutral";
+
+/** What a clip is doing in the edit, in narrative order. */
+export type StoryRole = "hook" | "setup" | "build" | "peak" | "reaction" | "ending";
+
+/** The shape of the energy curve an edit is paced against. */
+export type PacingShape = "ramp" | "build" | "wave" | "steady" | "decay";
+
+/** The named alternatives the variants endpoint can produce. */
+export type VariantId = "high_energy" | "cinematic" | "social_fast_cut";
+
+export type MetricDirection = "higher_is_better" | "lower_is_better";
+
+export interface EditorialPolicyInfo {
+  id: PolicyId;
+  label: string;
+  description: string;
+  pacing: PacingShape;
+  min_clip_ms: number;
+  target_clip_ms: number;
+  max_clip_ms: number;
+  default_duration_ms: number;
+  prefer_chronological: boolean;
+  arc: { name: string; roles: StoryRole[] };
+}
+
+export interface EditorialVariantInfo {
+  id: VariantId;
+  label: string;
+  description: string;
+  pacing: PacingShape;
+}
+
+/** One observation about a clip, with how far it should be trusted. */
+export interface EditorialEventRecord {
+  event: string;
+  confidence: number;
+  evidence: string[];
+}
+
+/**
+ * One position in the finished edit, as the engine decided it.
+ *
+ * This is what the editorial panel draws: the role, the length, the energy, the
+ * beat relationship and the short structured reasons the clip was chosen. There
+ * is no prose here and no model output -- `reasons` are tokens from a closed
+ * vocabulary that the UI renders in the user's own language.
+ */
+export interface EditorialSegment {
+  slot: number;
+  role: StoryRole;
+  media_id: string;
+  sequence: number;
+  source_in_ms: number;
+  source_out_ms: number;
+  duration_ms: number;
+  output_ms: number;
+  energy: number;
+  target_energy: number;
+  events: EditorialEventRecord[];
+  reasons: string[];
+  score: number;
+  components: Record<string, number>;
+  beats: number | null;
+  on_beat: boolean;
+  transition: TransitionKind;
+  transition_ms: number;
+  effects: { kind: EffectKind; amount: number }[];
+}
+
+export interface EditorialRejection {
+  media_id: string;
+  reasons: string[];
+  similar_to?: string;
+  score?: number;
+}
+
+/**
+ * One measurement of an edit. `value` is null when it could not be measured --
+ * an edit with no music has no beat alignment, and reporting zero would read as
+ * "every cut missed".
+ */
+export interface EditMetric {
+  name: string;
+  value: number | null;
+  direction: MetricDirection;
+  sample_size: number;
+  unmeasurable: string | null;
+}
+
+export interface PacingSlotRecord {
+  index: number;
+  position: number;
+  energy: number;
+  duration_ms: number;
+  start_ms: number;
+  beats: number | null;
+  on_beat: boolean;
+  emphasis: number;
+}
+
+/** The editorial account of an edit, recorded on the plan that produced it. */
+export interface EditorialRecord {
+  version: string;
+  policy: PolicyId;
+  arc: string;
+  variant: VariantId | null;
+  segments: EditorialSegment[];
+  rejected: EditorialRejection[];
+  metrics: Record<string, EditMetric>;
+  pacing: {
+    curve: { shape: PacingShape; points: number[]; peak_position: number };
+    target_ms: number;
+    total_ms: number;
+    cut_count: number;
+    shot_density: number;
+    beat_sync: Record<string, unknown> | null;
+    slots: PacingSlotRecord[];
+  };
+  fit: {
+    requested_clips: number;
+    achieved_clips: number;
+    relaxed_max_clip_ms: number | null;
+    target_ms: number;
+    achieved_ms: number;
+    shortfall_ms: number;
+    /** Present when the edit filled a template (Phase 12). */
+    template?: {
+      id: string;
+      name: string;
+      source: "builtin" | "user";
+      version: string;
+      slots: number;
+      reused: number;
+    };
+  };
+  policy_detail: EditorialPolicyInfo;
+  intent: Record<string, unknown> | null;
+}
+
+/** One previewed alternative. Nothing is stored until the user asks for it. */
+export interface EditorialVariantPreview {
+  variant: VariantId | null;
+  label: string;
+  description: string;
+  policy: PolicyId;
+  clip_count: number;
+  total_duration_ms: number;
+  editorial: EditorialRecord;
+}
 
 /** What the server can plan with. Never contains a credential. */
 export interface PlannerCapabilities {
@@ -179,10 +356,155 @@ export interface PlannerCapabilities {
     max_clip_ms: number;
   }[];
   aspect_ratios: { value: AspectRatio; width: number; height: number }[];
+  resolutions: Resolution[];
+  encoders: Encoder[];
+  /** Sizes the CPU encoder does not make. */
+  gpu_only_resolutions: Resolution[];
   fps_presets: number[];
   quality_presets: QualityPreset[];
   prompt_version: string;
   max_request_chars: number;
+  /**
+   * The bounds the server's plan validator enforces.
+   *
+   * The timeline clamps a drag against these while the pointer is moving, so it
+   * needs them client-side. Taking them from here rather than hard-coding them
+   * is what keeps the browser's idea of a legal trim identical to the one that
+   * is actually enforced.
+   */
+  segment_bounds: {
+    min_clip_ms: number;
+    max_clip_ms: number;
+    max_clips: number;
+    min_total_ms: number;
+    max_total_ms: number;
+  };
+
+  /**
+   * The same declaration for audio.
+   *
+   * A volume slider and two fade handles need clamping while the pointer is
+   * moving, for exactly the reason a trim handle does -- and a copy of the
+   * numbers in the browser would drift out of agreement with the validator
+   * that actually enforces them.
+   */
+  audio_bounds: {
+    min_gain: number;
+    max_gain: number;
+    min_music_ms: number;
+    max_music_ms: number;
+    max_fade_ms: number;
+  };
+
+  /**
+   * What beat detection reports, and when the planner will act on it.
+   *
+   * The confidence floor is here so the editor can explain a grid the server
+   * has decided not to trust, rather than offering a toggle that silently does
+   * nothing.
+   */
+  /**
+   * The Phase 9 vocabulary, declared by the server.
+   *
+   * The same argument as `segment_bounds`: the editor has to grey out a
+   * transition the clips are too short for while the pointer is moving, and a
+   * slider whose range disagrees with the validator is a slider that produces
+   * a 422. These are read once and applied over the module's defaults.
+   */
+  transitions: {
+    value: TransitionKind;
+    consumes_time: boolean;
+    needs_previous: boolean;
+    min_ms: number;
+    max_ms: number;
+    max_share: number;
+  }[];
+  effects: {
+    kind: EffectKind;
+    minimum: number;
+    maximum: number;
+    neutral: number;
+    whole_segment_only: boolean;
+  }[];
+  /** What each preset actually looks like, so the panel previews it honestly
+   *  rather than guessing at the font the renderer will use. */
+  subtitle_styles: { id: SubtitleStyle; label: string; font: string; size: number; bold: boolean }[];
+  subtitle_positions: SubtitlePosition[];
+  subtitle_bounds: {
+    min_cue_ms: number;
+    max_cue_ms: number;
+    max_chars: number;
+    max_cues: number;
+    max_effects_per_clip: number;
+  };
+
+  beat_sync: {
+    analyzer: AnalyzerName;
+    min_bpm: number;
+    max_bpm: number;
+    min_confidence: number;
+  };
+
+  /**
+   * The closed vocabulary a co-edit may use (Phase 10).
+   *
+   * Declared for the same reason every other bound is: the panel should offer
+   * what the parser accepts, and an operation removed on the server should stop
+   * being offered rather than become a 422.
+   */
+  operations: { kind: OperationKind }[];
+  coedit_prompt_version: string;
+
+  /**
+   * The editorial vocabulary (Phase 11).
+   *
+   * Policies, variants, roles, curves, events, reasons and metric directions,
+   * all generated server-side from the domain tables that actually drive the
+   * engine. The panel renders whatever is here: a policy added on the server
+   * appears without a change in the browser, and one removed stops being
+   * offered rather than producing a 422.
+   */
+  editorial_policies: EditorialPolicyInfo[];
+  variants: EditorialVariantInfo[];
+  story_roles: StoryRole[];
+  pacing_shapes: { value: PacingShape; points: number[] }[];
+  editorial_events: string[];
+  editorial_reasons: string[];
+  editorial_metrics: { name: string; direction: MetricDirection }[];
+  editorial_version: string;
+}
+
+/**
+ * A music bed, as the API takes it.
+ *
+ * Note what is absent, and note that it is the same list absent from every
+ * other request type here: no path, no storage key, no codec, no filter. A cue
+ * is a media id the project already owns plus six numbers.
+ */
+export interface MusicRequest {
+  media_id: string;
+  source_in_ms: number;
+  source_out_ms: number;
+  timeline_start_ms: number;
+  /** Linear; 1.0 is unity. Shown to the user as a percentage. */
+  volume: number;
+  fade_in_ms: number;
+  fade_out_ms: number;
+}
+
+/** The cue as it comes back on a stored plan. Carries its derived duration. */
+export interface PlanMusic extends MusicRequest {
+  duration_ms: number;
+  gain: number;
+}
+
+/** Tempo and beat positions, from the `beats` analyzer. */
+export interface BeatsPayload {
+  bpm: number;
+  confidence: number;
+  beat_count: number;
+  beats_ms: number[];
+  source_duration_ms: number | null;
 }
 
 /** Which planner ran, and why. Present on every plan. */
@@ -215,6 +537,16 @@ export interface PlanSegment {
   source_out_ms: number;
   duration_ms: number;
   transition_in: string;
+  /** Present from Phase 9. Absent on plans stored before it. */
+  transition_ms?: number;
+  effects?: EffectRequest[];
+}
+
+/** Subtitles as the plan records them: ids, cues, and no styling. */
+export interface PlanSubtitles {
+  cues: { start_ms: number; end_ms: number; text: string }[];
+  style: SubtitleStyle;
+  position: SubtitlePosition;
 }
 
 export interface PlanDocument {
@@ -229,7 +561,10 @@ export interface PlanDocument {
     fit: string;
     audio: string;
     quality: QualityPreset;
+    source_gain: number;
   };
+  music: PlanMusic | null;
+  subtitles?: PlanSubtitles | null;
   segments: PlanSegment[];
   total_duration_ms: number;
   metadata: Record<string, unknown>;
@@ -253,6 +588,11 @@ export interface EditPlan {
   selection: SelectionRecord;
   mode: ModeRecord | null;
   llm: LlmRecord | null;
+  /**
+   * How the edit was decided (Phase 11). Null on a hand-cut plan and on
+   * anything the Phase 4 rules engine produced, so every reader checks.
+   */
+  editorial: EditorialRecord | null;
 }
 
 export interface Render {
@@ -274,6 +614,227 @@ export interface Render {
   playback_expires_in_s: number | null;
 }
 
+/**
+ * How a clip enters. A closed set, validated server-side (Phase 9).
+ *
+ * Only `crossfade` changes the length of the edit -- it overlaps the previous
+ * clip -- which is why the editor computes durations from the same rule the
+ * server does rather than summing clip lengths.
+ */
+export type TransitionKind = "cut" | "crossfade" | "fade_in" | "fade_to_black";
+
+/* -------------------------------------------------------- templates (Phase 12) */
+
+/** What kind of media a template slot is best filled with. */
+export type SlotPreference = "any" | "video" | "still";
+
+/** One position in a template: a length, an energy and how it is entered. */
+export interface TemplateSlot {
+  duration_ms: number;
+  energy: number;
+  role: StoryRole;
+  transition_in: TransitionKind;
+  transition_ms: number;
+  /** How a photo placed here moves. */
+  motion: EffectKind | null;
+  prefer: SlotPreference;
+  beats: number | null;
+}
+
+/** An edit's structure with the footage taken out. */
+export interface EditTemplate {
+  /** A library template's name (`travel`), or a UUID for the user's own. */
+  id: string;
+  name: string;
+  source: "builtin" | "user";
+  aspect: AspectRatio;
+  bpm: number | null;
+  total_ms: number;
+  slot_count: number;
+  still_slots: number;
+  slots: TemplateSlot[];
+  source_media_id: string | null;
+  /** How the measurement went, for a user's template. */
+  extraction: {
+    shots: number;
+    merged: number;
+    split: number;
+    dropped: number;
+    unmeasured: number;
+    beat_synced: boolean;
+    transitions: string;
+  } | null;
+  created_at: string | null;
+}
+
+export interface TemplateList {
+  library: EditTemplate[];
+  mine: EditTemplate[];
+}
+
+export const TRANSITIONS: TransitionKind[] = ["cut", "crossfade", "fade_in", "fade_to_black"];
+
+/** Transitions that overlap the previous clip and shorten the programme. */
+export const OVERLAPPING: TransitionKind[] = ["crossfade"];
+
+export type EffectKind =
+  | "zoom_in"
+  | "zoom_out"
+  | "pan_left"
+  | "pan_right"
+  | "pan_up"
+  | "pan_down"
+  | "slow_motion"
+  | "speed_up"
+  | "brightness"
+  | "contrast"
+  | "saturation";
+
+/**
+ * One effect: a kind and a number, with the number's meaning set by the kind.
+ *
+ * There is no parameter object here for the same reason there is none on the
+ * server: a free-form bag on a renderer instruction is a hole in the shape of
+ * an arbitrary filter argument.
+ */
+export interface EffectRequest {
+  kind: EffectKind;
+  amount: number;
+  /** Offsets inside the clip. Only the colour effects accept a window. */
+  start_ms?: number | null;
+  end_ms?: number | null;
+}
+
+/** The server's bounds per kind, mirrored so a slider cannot offer an invalid
+ *  value. The server validates regardless; this is about not showing the user a
+ *  control whose range would be refused. */
+export const EFFECT_BOUNDS: Record<
+  EffectKind,
+  { min: number; max: number; neutral: number; step: number; wholeClipOnly: boolean }
+> = {
+  zoom_in: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  zoom_out: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  pan_left: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  pan_right: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  pan_up: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  pan_down: { min: 0, max: 0.3, neutral: 0, step: 0.01, wholeClipOnly: true },
+  slow_motion: { min: 0.25, max: 1, neutral: 1, step: 0.05, wholeClipOnly: true },
+  speed_up: { min: 1, max: 4, neutral: 1, step: 0.05, wholeClipOnly: true },
+  brightness: { min: -1, max: 1, neutral: 0, step: 0.05, wholeClipOnly: false },
+  contrast: { min: 0.5, max: 1.5, neutral: 1, step: 0.05, wholeClipOnly: false },
+  saturation: { min: 0, max: 2, neutral: 1, step: 0.05, wholeClipOnly: false },
+};
+
+export const TRANSITION_BOUNDS = { min: 80, max: 4000 } as const;
+
+export type SubtitleStyle = "clean" | "bold" | "minimal" | "cinematic" | "social";
+export type SubtitlePosition = "bottom" | "center" | "top" | "bottom_left" | "bottom_right";
+
+export const SUBTITLE_STYLES: SubtitleStyle[] = [
+  "clean",
+  "bold",
+  "minimal",
+  "cinematic",
+  "social",
+];
+export const SUBTITLE_POSITIONS: SubtitlePosition[] = [
+  "bottom",
+  "center",
+  "top",
+  "bottom_left",
+  "bottom_right",
+];
+
+/** Cue bounds, mirrored from the server so the editor can refuse locally too. */
+export const CUE_BOUNDS = { minMs: 400, maxMs: 10_000, maxChars: 120, maxCues: 300 } as const;
+
+export const MIN_CUE_MS = CUE_BOUNDS.minMs;
+
+/** A transition may eat at most half of the shorter side it joins. Mirrors
+ *  `MAX_TRANSITION_SHARE` in the domain, for the same reason the other bounds
+ *  are mirrored: to disable a control rather than to offer a 422. */
+export const MAX_TRANSITION_SHARE = 0.5;
+
+export interface SubtitleCueRequest {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+}
+
+/**
+ * Subtitles as the API takes them.
+ *
+ * `style` and `position` are ids. There is no font, size, colour or coordinate
+ * here: the server's preset table decides all of them, which is what keeps a
+ * font path out of the render.
+ */
+export interface SubtitleTrackRequest {
+  cues: SubtitleCueRequest[];
+  style: SubtitleStyle;
+  position: SubtitlePosition;
+}
+
+/**
+ * What the AI subtitle route answers.
+ *
+ * Two states and no third: `ok` with a track, or not-ok with a `failure` naming
+ * which of the known failures happened. There is no partial result and nothing
+ * is filled in when the model could not answer -- an empty panel that says why
+ * beats subtitles nobody wrote.
+ */
+export type SubtitleFailure =
+  | "provider_disabled"
+  | "provider_unavailable"
+  | "provider_error"
+  | "unreadable"
+  | "no_usable_cues"
+  | "timeline_too_short";
+
+export interface SubtitleSuggestion {
+  ok: boolean;
+  subtitles: SubtitleTrackRequest | null;
+  failure: SubtitleFailure | null;
+  detail: string;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  latency_ms: number;
+}
+
+/** One clip on a hand-cut timeline. Position in the array is the edit order. */
+export interface ManualCut {
+  media_id: string;
+  source_in_ms: number;
+  source_out_ms: number;
+  transition_in?: TransitionKind;
+  transition_ms?: number;
+  effects?: EffectRequest[];
+}
+
+/**
+ * A timeline the user assembled, submitted for validation.
+ *
+ * Carries intent only. There is no width, height, CRF or path here for the
+ * same reason there is none on `PlanOptions` -- the server owns geometry and
+ * encoder settings, and the editor never learns them.
+ */
+export interface ManualPlanOptions {
+  segments: ManualCut[];
+  aspect_ratio?: AspectRatio;
+  resolution?: Resolution;
+  encoder?: Encoder;
+  fps?: number;
+  quality?: QualityPreset;
+  audio?: "none" | "source";
+  /** Gain on the clips' own audio, independent of the bed. */
+  source_gain?: number;
+  /** The bed the editor placed, if any. */
+  music?: MusicRequest | null;
+  /** Subtitles the editor wrote (Phase 9). */
+  subtitles?: SubtitleTrackRequest | null;
+  derived_from_edit_plan_id?: string | null;
+}
+
 export interface PlanOptions {
   mode?: PlannerMode;
   style?: EditStyle | null;
@@ -283,9 +844,96 @@ export interface PlanOptions {
   max_clips?: number;
   min_clips?: number;
   aspect_ratio?: AspectRatio;
+  resolution?: Resolution;
+  encoder?: Encoder;
   fps?: number;
   order?: ClipOrder;
   quality?: QualityPreset;
+  source_gain?: number;
+  music?: MusicRequest | null;
+  /** Let the track's detected beats decide clip length. */
+  beat_sync?: boolean;
+  /**
+   * How much of the project's reference video to apply (Phase 8).
+   *
+   * There is deliberately no field naming the reference itself: which clip that
+   * is belongs to the project and is resolved server-side, so a request cannot
+   * point at media it does not own.
+   */
+  style_strength?: StyleStrength;
+
+  /**
+   * Which genre policy to edit under (Phase 11). Omitted means "derive one from
+   * the style", which is what every request before Phase 11 effectively said.
+   */
+  editorial_policy?: PolicyId | null;
+  /**
+   * Which previewed alternative to produce. Planning is deterministic, so
+   * asking for a variant reproduces exactly what the preview showed.
+   */
+  variant?: VariantId | null;
+  /**
+   * The template to fill (Phase 12): a library template's name or the id of
+   * one of the caller's own. The server resolves it and fills its slots.
+   */
+  template_id?: string | null;
+}
+
+/** The five stops on the style dial. A closed set, validated server-side. */
+export type StyleStrength = "0" | "25" | "50" | "75" | "100";
+
+export const STYLE_STRENGTHS: StyleStrength[] = ["0", "25", "50", "75", "100"];
+
+/**
+ * A measured value and how far it should be trusted.
+ *
+ * The two travel together rather than being folded into one number, because a
+ * confidently-measured zero and an unmeasured field are different facts and the
+ * UI has to be able to show the difference.
+ */
+export interface Measurement {
+  value: number;
+  confidence: number;
+}
+
+/**
+ * What a reference video measured as.
+ *
+ * Every field is nullable, and every null means "not measured" -- never zero,
+ * never an average. Nothing here is a path, a key or a filename: the profile is
+ * numbers and bounded enums by construction.
+ */
+export interface ReferenceProfile {
+  media_id: string;
+  version: string;
+  duration_ms: number;
+  confidence: number;
+  usable: boolean;
+
+  pacing: "slow" | "measured" | "brisk" | "rapid" | null;
+  scene_count: number | null;
+  shot_ms: Measurement | null;
+  shot_ms_p25: number | null;
+  shot_ms_p75: number | null;
+  cut_rate: Measurement | null;
+
+  luminance: Measurement | null;
+  contrast: Measurement | null;
+  saturation: Measurement | null;
+  motion: Measurement | null;
+
+  bpm: number | null;
+  beat_confidence: number | null;
+  beat_sync: Measurement | null;
+  /** Advisory: the server never switches beat sync on by itself. */
+  suggests_beat_sync: boolean;
+}
+
+export interface ReferenceState {
+  media_id: string | null;
+  /** Analyzers this reference still owes, so the UI can say what to run. */
+  pending_analyzers: string[];
+  profile: ReferenceProfile | null;
 }
 
 /** One planning call, successful or not. */
@@ -304,6 +952,169 @@ export interface LlmRun {
   fallback_detail: string | null;
   created_at: string;
 }
+
+/**
+ * The operations a co-edit may ask for. A closed set, mirrored from the server.
+ *
+ * Note what a client cannot construct: there is no operation here that names a
+ * file, a path, a filter or an encoder setting, because there is none on the
+ * server either. The mirror is for labelling and for disabling controls -- the
+ * server validates regardless.
+ */
+export type OperationKind =
+  | "REMOVE_SEGMENT"
+  | "REORDER_SEGMENT"
+  | "TRIM_SEGMENT"
+  | "CHANGE_DURATION"
+  | "CHANGE_STYLE_STRENGTH"
+  | "CHANGE_TRANSITION"
+  | "ADD_EFFECT"
+  | "REMOVE_EFFECT"
+  | "MODIFY_EFFECT"
+  | "ADD_SUBTITLE"
+  | "MODIFY_SUBTITLE"
+  | "REMOVE_SUBTITLE"
+  | "CHANGE_MUSIC_VOLUME"
+  | "CHANGE_MUSIC_FADE"
+  | "CHANGE_BEAT_SYNC"
+  | "CHANGE_OUTPUT_PRESET";
+
+/**
+ * One operation, as it travels.
+ *
+ * Deliberately loose on this side: the fields differ per kind and the server
+ * owns the schema. The editor never builds one of these by hand -- it sends a
+ * sentence and hands back whatever the preview returned -- so a precise union
+ * here would be a second copy of the vocabulary to keep in step for no gain.
+ */
+export interface EditOperation {
+  kind: OperationKind;
+  [field: string]: unknown;
+}
+
+/** One line of the before/after the panel draws. Already formatted by the server. */
+export interface DiffEntry {
+  field: string;
+  label: string;
+  before: string;
+  after: string;
+  /** 1-based, when the change is about one clip. */
+  clip: number | null;
+}
+
+export interface PlanDiff {
+  entries: DiffEntry[];
+  /** What the operations said they would do, in their own words. */
+  applied: string[];
+  /** Adjustments the server made on its own to keep the plan renderable. */
+  adjustments: string[];
+}
+
+/** Why a change produced nothing. Named, so the panel can explain rather than shrug. */
+export type CoEditFailure =
+  | "provider_disabled"
+  | "provider_unavailable"
+  | "provider_error"
+  | "unreadable"
+  | "no_usable_operations"
+  | "not_understood"
+  | "empty_request";
+
+/** Which resolver read the request. `rules` never touches a model. */
+export type CoEditSource = "rules" | "llm" | "client";
+
+/**
+ * What a change would do. Nothing has been written when this comes back.
+ *
+ * `needs_confirmation` is false when the server's own rules resolved the
+ * request, which is the signal the panel uses to apply a simple change
+ * immediately instead of showing a diff nobody needs to read.
+ */
+export interface CoEditPreview {
+  ok: boolean;
+  base_version_id: string | null;
+  base_version: number | null;
+  operations: EditOperation[];
+  rationale: string;
+  diff: PlanDiff;
+  failure: CoEditFailure | null;
+  detail: string;
+  source: CoEditSource;
+  provider: string;
+  model: string;
+  latency_ms: number;
+  violations: { code: string; message: string; index: number | null }[];
+  needs_confirmation: boolean;
+}
+
+/**
+ * One step in the edit history.
+ *
+ * No request text, only a digest: the server stores a fingerprint of what was
+ * asked and never the words, so there is nothing else to send.
+ */
+export interface EditVersion {
+  id: string;
+  version: number;
+  parent_id: string | null;
+  edit_plan_id: string;
+  origin: "generated" | "manual" | "co_edit" | "undo" | "redo";
+  is_current: boolean;
+  applied: string[];
+  operation_count: number;
+  source: string;
+  provider: string | null;
+  model: string | null;
+  latency_ms: number | null;
+  request_digest: string | null;
+  total_duration_ms: number;
+  segment_count: number;
+  created_at: string;
+  render_id: string | null;
+  render_status: RenderStatus | null;
+}
+
+export interface EditVersionList {
+  items: EditVersion[];
+  total: number;
+  current_version_id: string | null;
+  /** Decided by the server that owns the history, not guessed from the list. */
+  can_undo: boolean;
+  can_redo: boolean;
+}
+
+/** A committed change: the new version, its plan, and what it did. */
+export interface CoEditResult {
+  version: EditVersion;
+  plan: EditPlan;
+  diff: PlanDiff;
+  rationale: string;
+  source: CoEditSource;
+  provider: string;
+  model: string;
+  latency_ms: number;
+}
+
+/**
+ * A change request.
+ *
+ * Either words or operations from a preview the user approved. There is no
+ * field here for a plan, a segment's media id or an output setting: a change
+ * names what to change about the edit the server already holds.
+ */
+export interface CoEditRequest {
+  request_text?: string | null;
+  operations?: EditOperation[] | null;
+  base_version_id?: string | null;
+}
+
+export interface SignedUrl {
+  url: string;
+  expires_in_s: number;
+}
+
+/** What a plan listing returns: provenance without the document. */
+export type EditPlanSummary = Omit<EditPlan, "plan" | "selection">;
 
 export interface UploadTicket {
   media_id: string;
@@ -398,9 +1209,17 @@ export const api = {
     ),
 
   thumbnailUrl: (projectId: string, mediaId: string) =>
-    request<{ url: string; expires_in_s: number }>(
-      `/api/projects/${projectId}/media/${mediaId}/thumbnail`,
-    ),
+    request<SignedUrl>(`/api/projects/${projectId}/media/${mediaId}/thumbnail`),
+
+  /**
+   * The 720p proxy, for scrubbing.
+   *
+   * Always the proxy, never the original: a 4K source would stall the preview
+   * and the network on every seek, and the proxy exists precisely so that the
+   * editor never touches the master file.
+   */
+  proxyUrl: (projectId: string, mediaId: string) =>
+    request<SignedUrl>(`/api/projects/${projectId}/media/${mediaId}/proxy`),
 
   // --- jobs ---
   listProjectJobs: (projectId: string) =>
@@ -438,9 +1257,58 @@ export const api = {
       body: JSON.stringify(options),
     }),
 
+  /**
+   * Four editorial plans over the same footage: the base edit and each variant.
+   *
+   * Nothing is stored. The user compares alternatives, then asks for the one
+   * they want through `createEditPlan` with the same options plus `variant` --
+   * which, because the engine is deterministic, reproduces what they saw.
+   */
+  editVariants: (projectId: string, options: PlanOptions = {}) =>
+    request<{ items: EditorialVariantPreview[] }>(
+      `/api/projects/${projectId}/edit-plan/variants`,
+      { method: "POST", body: JSON.stringify(options) },
+    ),
+
+  /**
+   * Plan summaries. Note the type: the listing carries no `plan` document, by
+   * design -- twenty plans would mean twenty embedded segment arrays. Use
+   * `getEditPlan` for the one being looked at.
+   */
   listEditPlans: (projectId: string) =>
-    request<{ items: EditPlan[]; total: number }>(
+    request<{ items: EditPlanSummary[]; total: number }>(
       `/api/projects/${projectId}/edit-plan`,
+    ),
+
+  getEditPlan: (projectId: string, editPlanId: string) =>
+    request<EditPlan>(`/api/projects/${projectId}/edit-plan/${editPlanId}`),
+
+  /** Store a timeline the user cut by hand. The server validates it. */
+  createManualEditPlan: (projectId: string, options: ManualPlanOptions) =>
+    request<EditPlan>(`/api/projects/${projectId}/edit-plan/manual`, {
+      method: "POST",
+      body: JSON.stringify(options),
+    }),
+
+  /**
+   * Ask a model to draft subtitles for a stored plan.
+   *
+   * Against a stored plan, so the model is shown the timing that will actually
+   * be rendered. Read-only: the cues come back to the editor and reach the
+   * database only if the user submits a plan containing them.
+   *
+   * Never throws for "the model could not": a failure arrives as `ok: false`
+   * with a named reason, because an empty panel with an explanation is the
+   * honest outcome and invented subtitles are not.
+   */
+  suggestSubtitles: (
+    projectId: string,
+    editPlanId: string,
+    body: { request_text?: string | null; style?: SubtitleStyle; position?: SubtitlePosition },
+  ) =>
+    request<SubtitleSuggestion>(
+      `/api/projects/${projectId}/edit-plan/${editPlanId}/subtitles/suggest`,
+      { method: "POST", body: JSON.stringify(body) },
     ),
 
   createRender: (projectId: string, editPlanId: string) =>
@@ -449,6 +1317,11 @@ export const api = {
       body: JSON.stringify({ edit_plan_id: editPlanId }),
     }),
 
+  /**
+   * Render summaries. Like the plan listing, deliberately thinner than the
+   * detail: `playback_url` is presigned per call and is only issued by
+   * `getRender`.
+   */
   listRenders: (projectId: string) =>
     request<{ items: Render[]; total: number }>(
       `/api/projects/${projectId}/renders`,
@@ -460,8 +1333,94 @@ export const api = {
   // --- planner ---
   plannerCapabilities: () => request<PlannerCapabilities>("/api/planner/capabilities"),
 
+  // ------------------------------------------------------------ templates
+  /** The shipped library, and the caller's own measured templates. */
+  templates: () => request<TemplateList>("/api/templates"),
+
+  /** Measure a template from an analysed video in this project, and keep it. */
+  measureTemplate: (projectId: string, mediaId: string, name: string) =>
+    request<EditTemplate>(`/api/projects/${projectId}/templates`, {
+      method: "POST",
+      body: JSON.stringify({ media_id: mediaId, name }),
+    }),
+
+  renameTemplate: (templateId: string, name: string) =>
+    request<EditTemplate>(`/api/templates/${templateId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteTemplate: (templateId: string) =>
+    request<null>(`/api/templates/${templateId}`, { method: "DELETE" }),
+
+  // ------------------------------------------------------------ reference
+  /** The project's style reference and what it measures as. */
+  reference: (projectId: string) =>
+    request<ReferenceState>(`/api/projects/${projectId}/reference`),
+
+  /** Nominate a clip in this project. The server checks it is one. */
+  setReference: (projectId: string, mediaId: string) =>
+    request<ReferenceState>(`/api/projects/${projectId}/reference`, {
+      method: "PUT",
+      body: JSON.stringify({ media_id: mediaId }),
+    }),
+
+  /** Stop styling after anything. The clip itself is untouched. */
+  clearReference: (projectId: string) =>
+    request<ReferenceState>(`/api/projects/${projectId}/reference`, {
+      method: "DELETE",
+    }),
+
   listLlmRuns: (projectId: string) =>
     request<{ items: LlmRun[]; total: number }>(`/api/projects/${projectId}/llm-runs`),
+
+  // ----------------------------------------------------------- co-editor
+  /**
+   * What a change would do. Writes nothing.
+   *
+   * The whole pipeline runs server-side and everything but the diff is thrown
+   * away, so what this returns cannot disagree with what applying it does.
+   */
+  previewCoEdit: (projectId: string, body: CoEditRequest) =>
+    request<CoEditPreview>(`/api/projects/${projectId}/edit-plan/co-edit/preview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Apply a change and store it as a new version.
+   *
+   * Does not render. A plan change must not queue an encode -- the render is a
+   * separate, explicit request through the route that already exists.
+   */
+  applyCoEdit: (projectId: string, body: CoEditRequest) =>
+    request<CoEditResult>(`/api/projects/${projectId}/edit-plan/co-edit`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listEditVersions: (projectId: string) =>
+    request<EditVersionList>(`/api/projects/${projectId}/edit-plan/versions`),
+
+  /**
+   * Step back one version. The server is authoritative: no plan is written and
+   * the restored version is the one that was stored, not a recomputation.
+   */
+  undoEditVersion: (projectId: string) =>
+    request<EditVersion>(`/api/projects/${projectId}/edit-plan/versions/undo`, {
+      method: "POST",
+    }),
+
+  redoEditVersion: (projectId: string) =>
+    request<EditVersion>(`/api/projects/${projectId}/edit-plan/versions/redo`, {
+      method: "POST",
+    }),
+
+  restoreEditVersion: (projectId: string, versionId: string) =>
+    request<EditVersion>(
+      `/api/projects/${projectId}/edit-plan/versions/${versionId}/restore`,
+      { method: "POST" },
+    ),
 };
 
 /**

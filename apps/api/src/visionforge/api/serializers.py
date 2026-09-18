@@ -149,6 +149,11 @@ def serialize_edit_plan(row: EditPlanRow, *, include_plan: bool = False) -> Edit
         selection=row.selection if include_plan else {},
         mode=metadata.get("mode"),
         llm=metadata.get("llm"),
+        # Carried on the detail only. The editorial document runs to a few
+        # kilobytes per plan -- every segment's reasons, events and score
+        # components, plus every rejection -- and a listing of twenty plans has
+        # no use for twenty copies of it.
+        editorial=metadata.get("editorial") if include_plan else None,
     )
 
 

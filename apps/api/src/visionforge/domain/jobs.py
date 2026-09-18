@@ -137,11 +137,19 @@ MEDIA_INGEST_STEPS: tuple[str, ...] = (
 )
 
 #: CPU analysis: deterministic signals, no model weights, no GPU.
+#:
+#: This tuple is the *contract* -- it is what a job's ``job_steps`` rows are
+#: created from, so a step missing here never runs however well it is registered
+#: in the worker's dispatch table. ``BEATS`` is audio-only and returns
+#: ``unsupported`` for everything else, which is a stored answer rather than a
+#: skipped step.
 MEDIA_ANALYZE_CPU_STEPS: tuple[str, ...] = (
     "RESOLVE",
     "QUALITY",
     "SCENES",
     "PHASH",
+    "BEATS",
+    "DYNAMICS",
     "FINALIZE",
 )
 
