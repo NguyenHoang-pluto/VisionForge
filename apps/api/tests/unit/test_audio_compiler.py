@@ -283,7 +283,8 @@ class TestFromTheTimeline:
         args = compile_render_argv(built)
 
         assert built.music is not None
-        assert args.count("-i") == 2
+        # Two segments of one clip are two inputs (Phase 12), plus the track.
+        assert args.count("-i") == 3
         assert "-map" in args and "[aout]" in args
 
     def test_the_music_file_becomes_an_ordinary_input(self) -> None:
@@ -294,9 +295,13 @@ class TestFromTheTimeline:
             local_paths={CLIP: "/w/clip.mp4", TRACK: "/w/track.mp3"},
             output_path="/w/out.mp4",
         )
-        assert [i.local_path for i in built.inputs] == ["/w/clip.mp4", "/w/track.mp3"]
+        assert [i.local_path for i in built.inputs] == [
+            "/w/clip.mp4",
+            "/w/clip.mp4",
+            "/w/track.mp3",
+        ]
         assert built.music is not None
-        assert built.music.input_index == 1
+        assert built.music.input_index == 2
 
     def test_a_missing_music_path_is_refused(self) -> None:
         cue = MusicCue(media_id=TRACK, source_in_ms=0, source_out_ms=30_000)
@@ -311,7 +316,7 @@ class TestFromTheTimeline:
         )
         assert built.music is None
         assert built.source_gain == 1.0
-        assert len(built.inputs) == 1
+        assert len(built.inputs) == 2
 
 
 # ------------------------------------------------------------------ security

@@ -81,10 +81,15 @@ def codes(violations: list) -> set[str]:  # type: ignore[type-arg]
 
 # ============================================================ effects
 class TestEffectVocabulary:
-    def test_the_kinds_are_the_seven_that_ship(self) -> None:
+    def test_the_kinds_are_the_eleven_that_ship(self) -> None:
+        """Seven from Phase 9, and the four pans Phase 12 added for stills."""
         assert {kind.value for kind in EffectKind} == {
             "zoom_in",
             "zoom_out",
+            "pan_left",
+            "pan_right",
+            "pan_up",
+            "pan_down",
             "slow_motion",
             "speed_up",
             "brightness",

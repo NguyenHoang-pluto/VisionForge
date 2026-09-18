@@ -565,6 +565,14 @@ def test_change_output_preset_derives_geometry_server_side() -> None:
     ]
 
 
+def test_change_of_shape_keeps_the_output_size() -> None:
+    """A 4K edit turned vertical is still 4K, not the 720p the table is in."""
+    base = plan(output=OutputSpec(width=3840, height=2160))
+    outcome = patch(base, ChangeOutputPreset(aspect_ratio=AspectRatio.PORTRAIT_9_16))
+    assert outcome.ok
+    assert (outcome.plan.output.width, outcome.plan.output.height) == (2160, 3840)
+
+
 def test_an_fps_this_server_does_not_offer_is_refused() -> None:
     outcome = patch(plan(), ChangeOutputPreset(fps=120))
     assert not outcome.ok

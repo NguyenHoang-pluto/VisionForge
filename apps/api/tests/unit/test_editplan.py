@@ -19,6 +19,7 @@ from visionforge.domain.editplan import (
     AspectRatio,
     AudioMode,
     EditPlan,
+    Encoder,
     FitMode,
     MediaFact,
     MusicCue,
@@ -362,7 +363,7 @@ class TestHostilePlans:
         integer, and ``effects``, a list whose every entry is a closed enum plus
         one number and two optional integers -- deliberately not a parameter
         dictionary, which would be a hole in exactly the shape of an arbitrary
-        filter argument.
+        filter argument. Phase 12 added ``encoder``, an enum of two values.
         """
         plan, _ = simple_plan(1)
         payload = plan.as_payload()
@@ -385,6 +386,7 @@ class TestHostilePlans:
             "fit",
             "audio",
             "quality",
+            "encoder",
             "source_gain",
         }
 
@@ -490,6 +492,7 @@ class TestHostilePlans:
             "fit": {f.value for f in FitMode},
             "audio": {a.value for a in AudioMode},
             "quality": {q.value for q in QualityPreset},
+            "encoder": {e.value for e in Encoder},
         }
         for key, value in output.items():
             if isinstance(value, str):

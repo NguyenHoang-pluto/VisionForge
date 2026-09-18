@@ -129,10 +129,14 @@ class TestMediaFactFromMedia:
         trusted -- and a failed asset has no bytes worth reading."""
         assert fact(status=status).is_audio_asset is False
 
-    def test_an_image_is_neither(self) -> None:
+    def test_an_image_is_a_renderable_still(self) -> None:
+        """Phase 12: a photo can be placed in the edit, and is never a bed."""
         image = fact(kind=MediaKind.IMAGE)
-        assert image.is_renderable is False
+        assert image.is_renderable is True
+        assert image.is_still is True
         assert image.is_audio_asset is False
+        # A still's probed length is one frame; nothing may trim against it.
+        assert image.duration_ms is None
 
     def test_the_fact_carries_no_storage_key(self) -> None:
         """The property the whole split exists for: the validator cannot come to
@@ -146,6 +150,7 @@ class TestMediaFactFromMedia:
             "width",
             "height",
             "is_audio_asset",
+            "is_still",
         }
         assert not any("key" in f or "path" in f or "url" in f for f in fields)
 

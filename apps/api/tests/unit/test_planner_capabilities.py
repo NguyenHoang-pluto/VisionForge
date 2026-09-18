@@ -72,7 +72,7 @@ class TestPlannerCapabilities:
 
     def test_declares_the_offered_presets(self, capabilities: dict) -> None:
         assert capabilities["fps_presets"] == list(FPS_PRESETS)
-        assert set(capabilities["quality_presets"]) == {"draft", "balanced", "high"}
+        assert set(capabilities["quality_presets"]) == {"draft", "balanced", "high", "max"}
         assert {item["value"] for item in capabilities["aspect_ratios"]} == {
             "16:9",
             "9:16",

@@ -316,13 +316,26 @@ class TestCreateManualPlan:
         assert "media_not_renderable" in {v.code for v in caught.value.violations}
 
     @pytest.mark.asyncio
-    async def test_an_image_is_not_renderable_as_a_timeline_clip(self) -> None:
+    async def test_an_image_is_held_as_a_timeline_clip(self) -> None:
+        """Phase 12: a still is a clip. It is held from zero, not trimmed."""
         media_id = MediaId(uuid.uuid4())
         service, _, _ = service_for([FakeRecord(media_id, kind=MediaKind.IMAGE)])
 
-        with pytest.raises(PlanInvalidError):
+        await service.create_manual_plan(
+            project_id=PROJECT,
+            cuts=[Cut(media_id=media_id, source_in_ms=0, source_out_ms=4000)],
+            output=output(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_image_held_from_past_zero_is_refused(self) -> None:
+        media_id = MediaId(uuid.uuid4())
+        service, _, _ = service_for([FakeRecord(media_id, kind=MediaKind.IMAGE)])
+
+        with pytest.raises(PlanInvalidError) as caught:
             await service.create_manual_plan(
                 project_id=PROJECT,
-                cuts=[Cut(media_id=media_id, source_in_ms=0, source_out_ms=4000)],
+                cuts=[Cut(media_id=media_id, source_in_ms=500, source_out_ms=4000)],
                 output=output(),
             )
+        assert "still_not_from_zero" in {v.code for v in caught.value.violations}
